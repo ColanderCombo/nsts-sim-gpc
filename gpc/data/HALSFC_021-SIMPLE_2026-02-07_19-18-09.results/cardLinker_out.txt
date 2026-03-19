@@ -1,0 +1,39 @@
+node ..\..\objModuleLoader.js cards.bin                                                                                   
+-----
+Module: MODULE0
+  Sections:
+    ESD#1: $0SIMPLE (96 bytes) @ 0x0
+    ESD#2: #ESIMPLE (12 bytes) @ 0x0
+    ESD#3: #DSIMPLE (82 bytes) @ 0x0
+  Externals:
+    ESD#4: @0SIMPLE
+    ESD#5: #QIOINIT
+    ESD#6: #QCOUT
+    ESD#7: #QEIN
+    ESD#8: #QEOUT
+  Relocations: 13
+
+Module: STACK $0SIMPLE
+  Sections:
+    ESD#1: START (4 bytes) @ 0x0
+  Externals:
+    ESD#2: $0SIMPLE
+  Relocations: 1
+  Entry: ESD#1 + 0x0
+
+--- Linking ---
+
+Unresolved external: @0SIMPLE
+Unresolved external: #QIOINIT
+Unresolved external: #QCOUT
+Unresolved external: #QIOINIT
+Unresolved external: #QEIN
+Unresolved external: #QIOINIT
+Unresolved external: #QCOUT
+Unresolved external: #QEOUT
+Unresolved external: #QCOUT
+Unresolved external: #QEOUT
+Wrote 194 bytes to cards.fcm (little-endian)
+Wrote listing to cards.fcm.LIST
+
+Entry point: 0x00005f

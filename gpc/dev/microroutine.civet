@@ -1,0 +1,155 @@
+//
+// 
+// IBM-75-A97-001/p.24
+//
+//   0x000  No Store Back
+//  (0x001) Disable All Interrupts
+//          Set External 1 Interrupt Latch
+//          Generate Interrupt Code in Upper Byte
+//          Store Code Into M.S. Location 0067
+//          Reset Age Interrupt Latch
+//          Enable Interrupts
+//          Fech Next Micro-Instruction
+//          Begin Macro Operation
+//  (0x009) 
+//
+//   0x00E  Disable Interrupts
+//          GOTO ext1
+//   0x00F  No Store Back
+//          Disable All Interrupts
+//          Store Current PSW Into Main Store (M.S.) Location 0010 Thru 0013
+//          Store General Reg. Set 1 into M.S. Locations 00C0 Thru 00CF
+//          Store General Reg Set 2 Into M.S. Locations 00D0 Thru 00DF
+//          Store Floating Point Reg Set Into M.S. Locations 00E0 Thru 00EF
+//          Store Microprogramers Working Reg. Set Into M.S. Locations 00F0 Thru 00FF
+//          Store Low 16 Bits of Counters 1 & 2 Into M.S. Locations 0101 & 0102
+//          Store Operational Register into M.S. Location 0103
+//  (38us)  Stop Clocks Micro-order
+//          Load Current PSW From M.S. Location 0010 Thru 0013
+//          Reset Putaway Interrupt Latch
+//          Enable Interrupts
+//          Fetch Next Macro Instruction
+//          Continue Macro Operation
+//   0x010  Fixed Point Store Back
+//          GOTO 0x001
+//
+//   0x01E  Disable Interrupts
+//          GOTO ext1
+//   0x01F  GOTO 0x00F
+//   0x020  Fltg Point Store Back
+//          GOTO 0x001
+//
+//   0x02E  Disable Interrupts
+//          GOTO ext1
+//   0x02F  GOTO 0x00F
+//   0x031  Disable Interrupts    # Address Specif.
+//          Reset Address Spec Intpt Latch
+//          Generate I/O Interrupt Code in Hi Byte 0300
+//   isIO:  Microbranch A: Caused by IO?
+//            No: To Remaining Operation of CPU Typical Interrupt Microroutine
+//            Yes:
+//   ioOps: Set External 1 Interrupt Latch
+//          Save Data Flow Reg's A, B & C
+//          Store Intrpt Code Into Main Store Location 0087
+//          Restore Data Flow Reg's A,B & C
+//          Enable Interrupts
+//          Return to Micro Seq. Prior to Interrupt Occurrence
+//          Return
+//   0x03B  Disable Interrupts # I/O Addrs Parity
+//          Reset I/O Address Parity Interrupt Latch
+//          Generate Interrupt Code In Hi Byte 0500
+//          GOTO ioOps
+//   0x03D  Disable Interrupts # I/O Data Parity
+//          Reset I/O Data Parity Interrupt Latch
+//          Microbranch B: PCI or DMA?
+//            PCI:
+//              Generate Interrupt Code In Hi Byte 0100
+//            DMA:
+//              Generate Interrupt Code In Hi Byte 0200
+//          GOTO ioOps
+//   0x03E  Disable Interrupts # Store Protect
+//          Reset Store Protect Interrupt Latch
+//          Generate I/O Inter. Code in Hi Byte 0400
+//          GOTO isIO
+//   0x03F  Micro-Code Entered via Power On or System Reset Interrupts
+//          Disable All Interrupts
+//          Microbranch A: I/O Lockout
+//            On:
+//              # IPL Operations
+//              Set Store Protect Override Logic
+//              Enable DMAS
+//              Microbranch B: I/O Lockout
+//                On:
+//                  GOTO B
+//                Off:
+//                  Reset Store Protect Override Latch
+//                  Disable DMAs
+//            Off:
+//              # Initialization Operation
+//                Set Counters 1 & 2 to Max Values
+//                Reset Status Registers
+//                Reset All Interrupts and Store Protect Latch
+//              Microbranch C: Syst. Reset Latch
+//                On:
+//                  Load PSW From 0014-0017 In Main Store
+//                  Reset Syst. Reset Latch
+//                Off:
+//                  Load PWS From 0004-0007 in Main Store
+//          Enable DMA'S & Interrupts
+//          Fetch 1st Macro Instruction
+//          Start Macro Program
+
+//   0x00C1
+//
+//   0x01C
+//
+//   0x02C
+
+//   ext1:  Reset External 1 Interrupt Latch
+//          Fetch Interrupt Code From Upper Byte of MS Location 0087
+//          Perform PSW Swap at MS location 0080 Thru 0083 & Zero MS Location 0087
+//          Enable Interrupt
+//          Fetch Next Macro Instruction
+//          Begin Macro Operations Using the New PSW
+
+0x000   INT 5   0101
+0x002   INT 9   1001
+0x004   INT 3   0011
+0x006   INT 7   0111
+0x008   INT 4   0100
+0x00A   INT 8   1000
+0x00C   INT 2   0011
+0x00E   INT 6   0110
+0x00F   INT 1   0001
+0x010   
+0x012
+0x014
+0x016
+
+0x01A
+0x01C
+0x01E
+0x01F
+0x020
+0x022
+0x024
+0x026
+0x02A
+0x02C
+0x02E
+0x02F
+
+0x031
+0x032
+0x033
+
+0x035
+0x036
+0x037
+
+0x03A
+0x03B
+
+0x03D
+0x03E
+0x03F

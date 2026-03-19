@@ -1,0 +1,18 @@
+TESTBRCH    CSECT
+            ENTRY   TESTBRNCH
+            B     X'2A'(6,2)
+            BZ    X'2A'(6,2)
+            BNZ   X'2A'(6,2)
+            BM    X'2A'(6,2)
+            BNM   X'2A'(6,2)
+            BP    X'2A'(6,2)
+            BNP   X'2A'(6,2)
+            BE    X'2A'(6,2)
+            BNE   X'2A'(6,2)
+            BO    X'2A'(6,2)
+            BNO   X'2A'(6,2)
+            BH    X'2A'(6,2)
+            BNH   X'2A'(6,2)
+            BL    X'2A'(6,2)
+            BNL   X'2A'(6,2)
+            BC    7,X'2A'(6,2)

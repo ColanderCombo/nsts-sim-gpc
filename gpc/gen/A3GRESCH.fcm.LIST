@@ -1,0 +1,328 @@
+000000-000060  #DGRESCH ****
+000000         #DGRESCH+0000 0000       A    
+000001         #DGRESCH+0001 0000       A    
+000002         #DGRESCH+0002 0000       A    
+000003         #DGRESCH+0003 0000       A    
+000004         #DGRESCH+0004 0000       A    
+000005         #DGRESCH+0005 0000       A    
+000006         #DGRESCH+0006 0000       A    
+000007         #DGRESCH+0007 0000       A    
+000008         #DGRESCH+0008 0000       A    
+000009         #DGRESCH+0009 0000       A    
+00000a         #DGRESCH+000a 0000       A    
+00000b         #DGRESCH+000b 0000       A    
+00000c         #DGRESCH+000c 0000       A    
+00000d         #DGRESCH+000d 0000       A    
+00000e         #DGRESCH+000e 0000       A    
+00000f         #DGRESCH+000f 0000       A    
+000010         #DGRESCH+0010 0000       A    
+000011         #DGRESCH+0011 0000       A    
+000012         #DGRESCH+0012 0000       A    
+000013         #DGRESCH+0013 0000       A    
+000014         #DGRESCH+0014 0000       A    
+000015         #DGRESCH+0015 0000       A    
+000016         #DGRESCH+0016 0000       A    
+000017         #DGRESCH+0017 0000       A    
+000018         #DGRESCH+0018 0000       A    
+000019         #DGRESCH+0019 0000       A    
+00001a         #DGRESCH+001a 0000       A    
+00001b         #DGRESCH+001b 0000       A    
+00001c         #DGRESCH+001c 0000       A    
+00001d         #DGRESCH+001d 0000       A    
+00001e         #DGRESCH+001e 0000       A    
+00001f         #DGRESCH+001f 0000       A    
+000020         #DGRESCH+0020 0000       A    
+000021         #DGRESCH+0021 0000       A    
+000022         #DGRESCH+0022 0000       A    
+000023         #DGRESCH+0023 0000       A    
+000024         #DGRESCH+0024 0000       A    
+000025         #DGRESCH+0025 0000       A    
+000026         #DGRESCH+0026 0000       A    
+000027         #DGRESCH+0027 0000       A    
+000028         #DGRESCH+0028 0000       A    
+000029         #DGRESCH+0029 0001       A    
+00002a         #DGRESCH+002a 0002       A    
+00002b         #DGRESCH+002b 0003       A    
+00002c         #DGRESCH+002c 0001       A    
+00002d         #DGRESCH+002d 0000       A    
+00002e         #DGRESCH+002e 0000       A    
+00002f         #DGRESCH+002f 0000       A    
+000030         #DGRESCH+0030 0000       A    
+000031         #DGRESCH+0031 0000       A    
+000032         #DGRESCH+0032 0000       A    
+000033         #DGRESCH+0033 0000       A    
+000034         #DGRESCH+0034 0000       A    
+000035         #DGRESCH+0035 0000       A    
+000036         #DGRESCH+0036 0000       A    
+000037         #DGRESCH+0037 0000       A    
+000038         #DGRESCH+0038 0000       A    
+000039         #DGRESCH+0039 0000       A    
+00003a         #DGRESCH+003a 0000       A    
+00003b         #DGRESCH+003b 0000       A    
+00003c         #DGRESCH+003c 0000       A    
+00003d         #DGRESCH+003d 0000       A    
+00003e         #DGRESCH+003e 0000       A    
+00003f         #DGRESCH+003f 0000       A    
+000040         #DGRESCH+0040 0000       A    
+000041         #DGRESCH+0041 0000       A    
+000042         #DGRESCH+0042 0000       A    
+000043         #DGRESCH+0043 0000       A    
+000044         #DGRESCH+0044 0000       A    
+000045         #DGRESCH+0045 0000       A    
+000046         #DGRESCH+0046 0000       A    
+000047         #DGRESCH+0047 0000       A    
+000048         #DGRESCH+0048 0000       A    
+000049         #DGRESCH+0049 0000       A    
+00004a         #DGRESCH+004a 0000       A    
+00004b         #DGRESCH+004b 0000       A    
+00004c         #DGRESCH+004c 0000       A    
+00004d         #DGRESCH+004d 0000       A    
+00004e         #DGRESCH+004e 0000       A    
+00004f         #DGRESCH+004f 0000       A    
+000050         #DGRESCH+0050 0000       A    
+000051         #DGRESCH+0051 0000       A    
+000052         #DGRESCH+0052 0000       A    
+000053         #DGRESCH+0053 0000       A    
+000054         #DGRESCH+0054 0000       A    
+000055         #DGRESCH+0055 0000       A    
+000056         #DGRESCH+0056 0000       A    
+000057         #DGRESCH+0057 0000       A    
+000058         #DGRESCH+0058 0000       A    
+000059         #DGRESCH+0059 0001       A    
+00005a         #DGRESCH+005a 0002       A    
+00005b         #DGRESCH+005b 0003       A    
+00005c         #DGRESCH+005c 0001       A    
+00005d         #DGRESCH+005d 0000       A    
+00005e         #DGRESCH+005e 0000       A    
+00005f         #DGRESCH+005f 0000       A    
+000060-00007e  #LOCAL   ****
+000060         #LOCAL  +0000 0000       A    
+000061         #LOCAL  +0001 0000       A    
+000062         #LOCAL  +0002 0000       A    
+000063         #LOCAL  +0003 0000       A    
+000064         #LOCAL  +0004 0000       A    
+000065         #LOCAL  +0005 0000       A    
+000066         #LOCAL  +0006 0000       A    
+000067         #LOCAL  +0007 0000       A    
+000068         #LOCAL  +0008 0000       A    
+000069         #LOCAL  +0009 0000       A    
+00006a         #LOCAL  +000a 0000       A    
+00006b         #LOCAL  +000b 0000       A    
+00006c         #LOCAL  +000c 0000       A    
+00006d         #LOCAL  +000d 0000       A    
+00006e         #LOCAL  +000e 0000       A    
+00006f         #LOCAL  +000f 0000       A    
+000070         #LOCAL  +0010 0000       A    
+000071         #LOCAL  +0011 0000       A    
+000072         #LOCAL  +0012 0000       A    
+000073         #LOCAL  +0013 0000       A    
+000074         #LOCAL  +0014 0000       A    
+000075         #LOCAL  +0015 0000       A    
+000076         #LOCAL  +0016 0000       A    
+000077         #LOCAL  +0017 0000       A    
+000078         #LOCAL  +0018 0000       A    
+000079         #LOCAL  +0019 0000       A    
+00007a         #LOCAL  +001a 0000       A    
+00007b         #LOCAL  +001b 0000       A    
+00007c         #LOCAL  +001c 0000       A    
+00007d         #LOCAL  +001d 0000       A    
+00007e-000082  #0A3GRESCH ****
+00007e-00007f  #0A3GRESCH+0000 b600 0000  NIST ,X'0000'
+000080-000081  #0A3GRESCH+0002 b600 0000  NIST ,X'0000'
+000082-000094  STACK    ****
+000082         STACK   +0000 0000       A    
+000083         STACK   +0001 0000       A    
+000084         STACK   +0002 0000       A    
+000085         STACK   +0003 0000       A    
+000086         STACK   +0004 0000       A    
+000087         STACK   +0005 0000       A    
+000088         STACK   +0006 0000       A    
+000089         STACK   +0007 0000       A    
+00008a         STACK   +0008 0000       A    
+00008b         STACK   +0009 0000       A    
+00008c         STACK   +000a 0000       A    
+00008d         STACK   +000b 0000       A    
+00008e         STACK   +000c 0000       A    
+00008f         STACK   +000d 0000       A    
+000090         STACK   +000e 0000       A    
+000091         STACK   +000f 0000       A    
+000092         STACK   +0010 0000       A    
+000093         STACK   +0011 0000       A    
+000094-000169  A3GRESCH ****
+000094         A3GRESCH+0000 e800       LA   
+000095-000096  A3GRESCH+0001 c8f8 0009  STM  X'0009'
+000097         A3GRESCH+0003 9800       LH   
+000098         A3GRESCH+0004 9800       LH   
+000099         A3GRESCH+0005 9800       LH   
+00009a         A3GRESCH+0006 7800       LE   
+00009b         A3GRESCH+0007 18e0       LR   
+00009c         A3GRESCH+0008 8000       AH   
+00009d         A3GRESCH+0009 9800       LH   
+00009e         A3GRESCH+000a 5800       SE   
+00009f-0000a0  A3GRESCH+000b c0f0 0000  BC   X'0000'
+0000a1         A3GRESCH+000d 78e8       LECR 
+0000a2-0000a3  A3GRESCH+000e 48f8 0016  CE   X'0016'
+0000a4-0000a5  A3GRESCH+0010 c0f0 0000  BC   X'0000'
+0000a6         A3GRESCH+0012 9800       LH   
+0000a7         A3GRESCH+0013 8000       AH   
+0000a8-0000a9  A3GRESCH+0014 c0f0 0000  BC   X'0000'
+0000aa         A3GRESCH+0016 08e0       SR   
+0000ab         A3GRESCH+0017 b800       STH  
+0000ac         A3GRESCH+0018 8000       AH   
+0000ad         A3GRESCH+0019 9000       CH   
+0000ae-0000af  A3GRESCH+001a c0f0 0005  BC   X'0005'
+0000b0         A3GRESCH+001c 9800       LH   
+0000b1         A3GRESCH+001d 8000       AH   
+0000b2         A3GRESCH+001e 8000       AH   
+0000b3-0000b4  A3GRESCH+001f c0f0 0000  BC   X'0000'
+0000b5         A3GRESCH+0021 9800       LH   
+0000b6         A3GRESCH+0022 9800       LH   
+0000b7         A3GRESCH+0023 9800       LH   
+0000b8         A3GRESCH+0024 f000       SLL  
+0000b9         A3GRESCH+0025 9800       LH   
+0000ba         A3GRESCH+0026 9800       LH   
+0000bb         A3GRESCH+0027 9800       LH   
+0000bc         A3GRESCH+0028 9000       CH   
+0000bd-0000be  A3GRESCH+0029 c0f0 0000  BC   X'0000'
+0000bf         A3GRESCH+002b 28e0       OR   
+0000c0-0000c1  A3GRESCH+002c c0f0 0000  BC   X'0000'
+0000c2         A3GRESCH+002e 18e0       LR   
+0000c3-0000c4  A3GRESCH+002f b4e0 ffff  XHI  X'ffff'
+0000c5         A3GRESCH+0031 20e0       NR   
+0000c6         A3GRESCH+0032 f002       SRL  
+0000c7         A3GRESCH+0033 8000       AH   
+0000c8         A3GRESCH+0034 9000       CH   
+0000c9-0000ca  A3GRESCH+0035 c0f0 0028  BC   X'0028'
+0000cb         A3GRESCH+0037 b800       STH  
+0000cc         A3GRESCH+0038 9800       LH   
+0000cd         A3GRESCH+0039 9800       LH   
+0000ce         A3GRESCH+003a 9800       LH   
+0000cf         A3GRESCH+003b 9800       LH   
+0000d0         A3GRESCH+003c 20e0       NR   
+0000d1         A3GRESCH+003d f002       SRL  
+0000d2         A3GRESCH+003e 8800       SH   
+0000d3-0000d4  A3GRESCH+003f c0f0 0000  BC   X'0000'
+0000d5         A3GRESCH+0041 8800       SH   
+0000d6-0000d7  A3GRESCH+0042 c0f0 0000  BC   X'0000'
+0000d8         A3GRESCH+0044 8800       SH   
+0000d9-0000da  A3GRESCH+0045 c0f0 0000  BC   X'0000'
+0000db         A3GRESCH+0047 8800       SH   
+0000dc-0000dd  A3GRESCH+0048 c0f0 0000  BC   X'0000'
+0000de-0000df  A3GRESCH+004a c0f0 0000  BC   X'0000'
+0000e0         A3GRESCH+004c 9800       LH   
+0000e1         A3GRESCH+004d 8800       SH   
+0000e2         A3GRESCH+004e b800       STH  
+0000e3-0000e4  A3GRESCH+004f c0f0 0000  BC   X'0000'
+0000e5         A3GRESCH+0051 9800       LH   
+0000e6         A3GRESCH+0052 b800       STH  
+0000e7         A3GRESCH+0053 b800       STH  
+0000e8-0000e9  A3GRESCH+0054 c0f0 0000  BC   X'0000'
+0000ea         A3GRESCH+0056 9800       LH   
+0000eb         A3GRESCH+0057 8800       SH   
+0000ec         A3GRESCH+0058 b800       STH  
+0000ed         A3GRESCH+0059 b800       STH  
+0000ee         A3GRESCH+005a 9800       LH   
+0000ef         A3GRESCH+005b 20e0       NR   
+0000f0         A3GRESCH+005c b800       STH  
+0000f1         A3GRESCH+005d 9800       LH   
+0000f2         A3GRESCH+005e f000       SLL  
+0000f3-0000f4  A3GRESCH+005f b4e0 ffff  XHI  X'ffff'
+0000f5         A3GRESCH+0061 9800       LH   
+0000f6         A3GRESCH+0062 20e0       NR   
+0000f7         A3GRESCH+0063 b800       STH  
+0000f8-0000f9  A3GRESCH+0064 ccf8 0000  LM   X'0000'
+0000fa         A3GRESCH+0066 c0e8       BCRE 
+0000fb         A3GRESCH+0067 e800       LA   
+0000fc-0000fd  A3GRESCH+0068 c8f8 0012  STM  X'0012'
+0000fe         A3GRESCH+006a 9800       LH   
+0000ff         A3GRESCH+006b 9800       LH   
+000100         A3GRESCH+006c 9800       LH   
+000101         A3GRESCH+006d 0059       A    
+000102         A3GRESCH+006e 7800       LE   
+000103         A3GRESCH+006f 005d       A    
+000104         A3GRESCH+0070 18e0       LR   
+000105         A3GRESCH+0071 8000       AH   
+000106         A3GRESCH+0072 9800       LH   
+000107         A3GRESCH+0073 0059       A    
+000108         A3GRESCH+0074 5800       SE   
+000109         A3GRESCH+0075 005d       A    
+00010a-00010b  A3GRESCH+0076 c0f0 000e  BC   X'000e'
+00010c         A3GRESCH+0078 78e8       LECR 
+00010d-00010e  A3GRESCH+0079 48f8 0046  CE   X'0046'
+00010f-000110  A3GRESCH+007b c0f0 0016  BC   X'0016'
+000111         A3GRESCH+007d 9800       LH   
+000112         A3GRESCH+007e 004a       A    
+000113         A3GRESCH+007f 8000       AH   
+000114-000115  A3GRESCH+0080 c0f0 0017  BC   X'0017'
+000116         A3GRESCH+0082 08e0       SR   
+000117         A3GRESCH+0083 b800       STH  
+000118         A3GRESCH+0084 004a       A    
+000119         A3GRESCH+0085 8000       AH   
+00011a         A3GRESCH+0086 9000       CH   
+00011b-00011c  A3GRESCH+0087 c0f0 006c  BC   X'006c'
+00011d         A3GRESCH+0089 9800       LH   
+00011e         A3GRESCH+008a 8000       AH   
+00011f         A3GRESCH+008b 8000       AH   
+000120-000121  A3GRESCH+008c c0f0 0064  BC   X'0064'
+000122         A3GRESCH+008e 9800       LH   
+000123         A3GRESCH+008f 9800       LH   
+000124         A3GRESCH+0090 9800       LH   
+000125         A3GRESCH+0091 f000       SLL  
+000126         A3GRESCH+0092 9800       LH   
+000127         A3GRESCH+0093 9800       LH   
+000128         A3GRESCH+0094 9800       LH   
+000129         A3GRESCH+0095 9000       CH   
+00012a         A3GRESCH+0096 004a       A    
+00012b-00012c  A3GRESCH+0097 c0f0 002e  BC   X'002e'
+00012d         A3GRESCH+0099 28e0       OR   
+00012e-00012f  A3GRESCH+009a c0f0 0032  BC   X'0032'
+000130         A3GRESCH+009c 18e0       LR   
+000131-000132  A3GRESCH+009d b4e0 ffff  XHI  X'ffff'
+000133         A3GRESCH+009f 20e0       NR   
+000134         A3GRESCH+00a0 f002       SRL  
+000135         A3GRESCH+00a1 8000       AH   
+000136         A3GRESCH+00a2 9000       CH   
+000137-000138  A3GRESCH+00a3 c0f0 0095  BC   X'0095'
+000139         A3GRESCH+00a5 b800       STH  
+00013a         A3GRESCH+00a6 9800       LH   
+00013b         A3GRESCH+00a7 9800       LH   
+00013c         A3GRESCH+00a8 9800       LH   
+00013d         A3GRESCH+00a9 9800       LH   
+00013e         A3GRESCH+00aa 20e0       NR   
+00013f         A3GRESCH+00ab f002       SRL  
+000140         A3GRESCH+00ac 8800       SH   
+000141-000142  A3GRESCH+00ad c0f0 004c  BC   X'004c'
+000143         A3GRESCH+00af 8800       SH   
+000144-000145  A3GRESCH+00b0 c0f0 0064  BC   X'0064'
+000146         A3GRESCH+00b2 8800       SH   
+000147-000148  A3GRESCH+00b3 c0f0 0051  BC   X'0051'
+000149         A3GRESCH+00b5 8800       SH   
+00014a-00014b  A3GRESCH+00b6 c0f0 0056  BC   X'0056'
+00014c-00014d  A3GRESCH+00b8 c0f0 0064  BC   X'0064'
+00014e         A3GRESCH+00ba 9800       LH   
+00014f         A3GRESCH+00bb 8800       SH   
+000150         A3GRESCH+00bc b800       STH  
+000151-000152  A3GRESCH+00bd c0f0 0053  BC   X'0053'
+000153         A3GRESCH+00bf 9800       LH   
+000154         A3GRESCH+00c0 b800       STH  
+000155         A3GRESCH+00c1 b800       STH  
+000156-000157  A3GRESCH+00c2 c0f0 005a  BC   X'005a'
+000158         A3GRESCH+00c4 9800       LH   
+000159         A3GRESCH+00c5 8800       SH   
+00015a         A3GRESCH+00c6 b800       STH  
+00015b         A3GRESCH+00c7 b800       STH  
+00015c         A3GRESCH+00c8 9800       LH   
+00015d         A3GRESCH+00c9 20e0       NR   
+00015e         A3GRESCH+00ca b800       STH  
+00015f         A3GRESCH+00cb 9800       LH   
+000160         A3GRESCH+00cc f000       SLL  
+000161-000162  A3GRESCH+00cd b4e0 ffff  XHI  X'ffff'
+000163         A3GRESCH+00cf 9800       LH   
+000164         A3GRESCH+00d0 20e0       NR   
+000165         A3GRESCH+00d1 b800       STH  
+000166-000167  A3GRESCH+00d2 ccf8 0009  LM   X'0009'
+000168         A3GRESCH+00d4 c0e8       BCRE 
+	SYMBOLS
+
+#DGRESCH 000030   #LOCAL   00006f   A3GRESCH 000080   STACK    00008b   
+OLDSTACK 00008b   

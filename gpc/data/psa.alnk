@@ -1,0 +1,4 @@
+d gpc/data/bal
+o gpc/gen
+f FCMPSA.bal
+r asm.fcm

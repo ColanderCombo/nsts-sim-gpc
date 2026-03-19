@@ -1,0 +1,48 @@
+
+  GRE_3ELEM:
+    PROCEDURE;
+       DECLARE GREV_PAIR ARRAY(3) SCALAR,
+               GREV_I_FAULTPAIRS INTEGER;
+       GREV_PAIR$1 = ABS(GREV_DATA$1 - GREV_DATA$2);
+       GREV_PAIR$2 = ABS(GREV_DATA$2 - GREV_DATA$3);
+       GREV_PAIR$3 = ABS(GREV_DATA$3 - GREV_DATA$1);
+       DO FOR GREV_J = 1 TO 3;
+         IF GREV_PAIR$GREV_J > GREV_TOLERANCE THEN
+            GREV_FAILCNTR$GREV_J = GREV_FAILCNTR$GREV_J + 1;
+         ELSE
+            GREV_FAILCNTR$GREV_J = 0
+         END;
+      END;
+      IF [GREV_FAILCNTR] ~= 0 THEN
+         DO;
+            WORD = BITPTR = 1;
+            DO FOR GREV_J = 1 TO 3;
+               IF GREV_FAILCNTR$GREV_J >= GREV_FAILCNT THEN
+                  GREB_FAULTFAIRS$(GREV_J+WORD) = ON;
+               ELSE
+                  GREB_FAULTPAIRS$(GREV_J+WORD) = OFF;
+            END;
+            BIT4 = GREB_FAULTPAIRS$(3 AT BITPTR);
+            GREV_I_FAULTPAIRS = INTEGER(BIT4);
+            DO CASE GREV_I_FAULTPAIRS = 2;
+               ELSE
+                  ;
+               DO;
+                  GREB_FDIRSTATUS$(BITPTR+2) = OFF;
+                  GREB_SFFAULT$3 = OFF;
+                  GREV_FAILCNTR$2,GREV_FAILCNTR$3 = 0;
+               END;
+               ;
+               DO;
+                  GREB_FDIRSTATUS$BITPTR = OFF;
+                  GREB_SFFAULT$1 = OFF;
+                  GREV_FAILCNTR$1,GREV_FAILCNTR$3 = 0;
+               END;
+               DO;
+                  GREB_FDIRSTATUS$(BITPTR+1) = OFF;
+                  GREB_SFFAULT$2 = OFF;
+                  GREV_FAILCNTR$1,GREV_FAILCNTR$2 = 0;
+               END;
+            END;
+         END;
+   CLOSE;

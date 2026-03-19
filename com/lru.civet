@@ -1,0 +1,47 @@
+"civet coffeeCompat"
+//
+// Space Shuttle DPS bus connected Line Replaceable Unit (LRU)
+//
+{Bus, busConfig} from './bus.civet.jsx'
+
+class LRU
+  @(@config)
+    @id = @config.id
+    @_setupSimControl()
+    @_setupBuses()
+    @_scReady()
+    console.log("LRU #{@id}", @)
+    
+  _setupSimControl()
+    config = busConfig['__SIMCONTROL']
+    @simControlBus = new Bus('__SIMCONTROL', config)
+    
+  _recvSimControl(busID, msg, remote)
+    console.log "#{@id}: CONTROL #{busID} recv #{msg}"
+  
+  _scReady()
+    null
+    // Send ready report
+    // @simControlBus.send
+    
+  _setupBuses()
+    @bus = {}
+    @busRecvCB = {}
+    for busName in @config.busses
+      if busName not of busConfig
+        console.log "UNDEFINED BUS: ", busName, busConfig
+      else
+        @bus[busName] = new Bus(busName,  busConfig[busName])
+    
+    for id, bus of @bus
+      bus.onReceive @recvBus
+      @busRecvCB[id] = undefined
+  
+  recvBus(busID, msg, remote)
+    console.log "RECV", busID, msg, "||", @busRecvCB[busID], "||",  @busRecvCB
+    if @busRecvCB[busID]?
+      @busRecvCB[busID](busID, msg, remote)
+    else
+      console.log "#{@id}: #{busID} recv #{msg}"
+      
+export { LRU }

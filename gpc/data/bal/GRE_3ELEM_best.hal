@@ -1,0 +1,41 @@
+  GRE_3ELEM:
+   PROCEDURE;
+      DECLARE GREV_INDEX ARRAY(4) INTEGER INITIAL(1,2,3,1)
+      DECLARE PICK ARRAY(8) INTEGER INITIAL(10,10,2,20,0,1,10,10);
+      DO FOR GREV_J = 1 TO 3;
+         IF ABS(GREV_DATA$(GREV_INDEX$GREV_J)) - GREV_DATA$(GREV_INDEX$(GREV_J+1)) > GREV_TOLERANCE THEN
+            GREV_FAILCNTR$GREV_J = GREV_FAILCNTR$GREV_J + 1;
+         ELSE
+            GREV_FAILCNTR$GREV_J = 0;
+      END;
+      IF [GREV_FAILCNTR] ~= 0;
+         DO;
+            TEMPORARY ACC INTEGER;
+            ACC = 0;
+            IF GREV_FAILCNTR$1 >= GREV_FAILCNT THEN
+               ACC = 4;
+            IF GREV_FAILCNTR$2 >= GREV_FAILCNT THEN
+               ACC = ACC + 2;
+            IF GREV_FAILCNTR$3 >= GREV_FAILCNT THEN
+               ACC = ACC + 1;
+            GREB_FAILTPAIRS$(3 AT BITPTR) = SUBBIT(ACC);
+            DO CASE ACC - 2;
+               ELSE
+                  ;
+               DO;
+                  GREB_SFFAULT$3 = OFF;
+                  GREV_FAILCNTR$2, GREV_FAILCNTR$3 = 0;
+               END;
+               ;
+               DO;
+                  GREB_SFFAULT$1 = OFF;
+                  GREV_FAILCNTR$1, GREV_FAILCNTR$3 = 0;
+               END;
+               DO;
+                  GREB_SFFAULT$2 = OFF;
+                  GREV_FAILCNTR$1, GREV_FAILCNTR$2 = 0;
+               END;
+            END;
+            GREV_FDIRSTATUS$(BITPTR+PICK$ACC) = OFF;
+         END;
+   CLOSE;

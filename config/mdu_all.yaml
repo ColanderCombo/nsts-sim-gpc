@@ -1,0 +1,216 @@
+start:
+  - idp1
+  - idp2
+  - idp3
+  - cdr1
+  - cdr2
+  - crt1
+  - crt2
+  - crt3
+  - mfd1
+  - mfd2
+  - plt1
+  - plt2
+startD:
+  - idp1
+  - cdr1
+  - cdr2
+  - crt1
+  - crt2
+  - crt3
+  - mfd1
+  - mfd2
+startD3:
+  - idp1
+  - cdr1
+startSharedWindow: true
+lrus:
+  idp1:
+    shared: true
+    lru: IDP
+    module: ../meds/idp.coffee
+    config:
+      lru: IDP1
+  idp2:
+    shared: true
+    lru: IDP
+    module: ../meds/idp.coffee
+    config:
+      lru: IDP2
+  idp3:
+    shared: true
+    lru: IDP
+    module: ../meds/idp.coffee
+    config:
+      lru: IDP3
+  cdr1:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 0
+      y: 300
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: CDR1
+    init:
+      menu: FLT_INST
+      display: AE_PFD
+  cdr2:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 330
+      y: 300
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: CDR2
+    init:
+      menu: SUBSYS
+      display: SPI
+  crt1:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 660
+      y: 100
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: CRT1
+    init:
+      menu: DPS
+      display: DPS
+  crt2:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 990
+      y: 300
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: CRT2
+    init:
+      menu: DPS
+      display: DPS
+  crt3:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 1512
+      y: 100
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: CRT3
+    init:
+      menu: DPS
+      display: DPS
+  mfd1:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 660
+      y: 460
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: MFD1
+    init:
+      menu: SUBSYS
+      display: OMS_MPS
+  mfd2:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 1320
+      y: 460
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: MFD2
+    init:
+      menu: SUBSYS
+      display: APU_HYD
+  plt1:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 0
+      y: 300
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: PLT1
+    init:
+      menu: FLT_INST
+      display: AE_PFD
+  plt2:
+    lru: MDU
+    window:
+      width: 512
+      height: 512
+      x: 330
+      y: 300
+      fullscreen: false
+      html: index.html
+    module: ../meds/mdu.coffee
+    enableTouchbar: false
+    supersample: 4
+    widthThinLine: 0.2
+    widthThickLine: 0.15
+    config:
+      lru: PLT2
+    init:
+      menu: SUBSYS
+      display: SPI

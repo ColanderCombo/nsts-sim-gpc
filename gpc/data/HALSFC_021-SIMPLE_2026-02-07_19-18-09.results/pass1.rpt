@@ -1,0 +1,176 @@
+  HAL/S REL32V0                T I T A N  S Y S T E M S  C O R P .                 FEBRUARY 7, 2026    19:18:9.45     PAGE 1
+
+
+   HAL/S COMPILER PHASE 1 -- VERSION OF FEBRUARY 7, 2026.  CLOCK TIME = 19:0:35.00.
+
+
+TODAY IS FEBRUARY 7, 2026.  CLOCK TIME = 19:18:9.45.
+ 
+ PARM FIELD: NOTABLES,LIST,CARDTYPE=YCZ
+
+
+ COMPLETE LIST OF COMPILE-TIME OPTIONS IN EFFECT
+
+
+       *** TYPE 1 OPTIONS ***
+ 
+        NOADDRS
+        NODECK
+        NODUMP
+        NOHALMAT
+        NOHIGHOPT
+          LFXI
+          LIST
+        NOLISTING2
+          MICROCODE
+        NOREGOPT
+        NOSDL
+        NOSREF
+        NOSRN
+        NOTABDMP
+        NOTABLES
+        NOTABLST
+        NOTEMPLATE
+        NOVARSYM
+          ZCON
+
+
+       *** TYPE 2 OPTIONS ***
+ 
+       BLOCKSUM = 400
+       CARDTYPE = YCZ
+       COMPUNIT = 0
+            DSR = 1
+      LABELSIZE = 1200
+         LINECT = 59
+     LITSTRINGS = 2000
+      MACROSIZE = 500
+           MFID = 
+          PAGES = 2500
+        SYMBOLS = 200
+          TITLE = 
+       XREFSIZE = 2000
+ 
+
+ *** NO LANGUAGE SUBSET IN EFFECT ***
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  HAL/S REL32V0                T I T A N  S Y S T E M S  C O R P .                 FEBRUARY 7, 2026    19:18:9.45     PAGE 2
+STMT                                                                  SOURCE                                                                  REVISION
+
+
+
+     C| / This sample basically comes from PDF p. 21 of "Programming in HAL/S",                             |
+     C| / but I've knocked it up a notch.  Bam!                                                             |
+     D| EBUG `E                                                                                             |
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  HAL/S REL32V0                T I T A N  S Y S T E M S  C O R P .                 FEBRUARY 7, 2026    19:18:9.45     PAGE 3
+STMT                                                  SOURCE                                                  CURRENT SCOPE
+
+   1 M| SIMPLE:                                                                                             |SIMPLE
+   1 M| PROGRAM;                                                                                            |SIMPLE
+
+     C|  CODE IN THIS TYPEFACE IS                                                                           |SIMPLE
+     C|  HAL/S SOURCE                                                                                       |SIMPLE
+   2 M|   DECLARE PI CONSTANT(3.14159266);                                                                  |SIMPLE
+   3 M|   DECLARE R SCALAR;                                                                                 |SIMPLE
+   4 M|   WRITE(6) 'Input R to compute PI R**2, or -1 to quit.';                                            |SIMPLE
+   5 M|   DO WHILE TRUE;                                                                                    |SIMPLE
+   6 M| 1   READ(5) R;                                                                                      |SIMPLE
+   7 M| 1   IF R < 0 THEN                                                                                   |SIMPLE
+   8 M| 1     EXIT;                                                                                         |SIMPLE
+
+     E|                                             2                                                       | 
+   9 M| 1   WRITE(6) 'R =', R, 'and PI R**2 =', PI R ;                                                      |SIMPLE
+  10 M|   END;                                                                                              |ST#5
+
+     C|  %SVCI(0);                                                                                          |SIMPLE
+  11 M| CLOSE SIMPLE;                                                                                       |SIMPLE
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  HAL/S REL32V0                T I T A N  S Y S T E M S  C O R P .                 FEBRUARY 7, 2026    19:18:9.45     PAGE 4
+
+
+
+**** C O M P I L A T I O N   L A Y O U T ****
+
+ SIMPLE: PROGRAM;  
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  HAL/S REL32V0                T I T A N  S Y S T E M S  C O R P .                 FEBRUARY 7, 2026    19:18:9.45     PAGE 5
+
+
+
+S Y M B O L  &  C R O S S   R E F E R E N C E   T A B L E   L I S T I N G :
+
+         (CROSS REFERENCE FLAG KEY:  4 = ASSIGNMENT, 2 = REFERENCE, 1 = SUBSCRIPT USE, 0 = DEFINITION)
+
+ DCL  NAME           TYPE                          ATTRIBUTES & CROSS REFERENCE
+ 
+   2  PI       SCALAR                             SINGLE, ALIGNED, STATIC, CONSTANT         XREF: 0 0002  2 0009  
+   3  R        SCALAR                             SINGLE, ALIGNED, STATIC   XREF: 0 0003  4 0006  2 0007  2 0009  
+   1  SIMPLE   PROGRAM                              XREF: 0 0001  
+
+
+
+L I T E R A L   T A B L E   D U M P:
+
+ LOC  TYPE          LITERAL
+ 
+   1 ARITH  413243F6AA40DBBE
+   2 ARITH  4160000000000000
+   3  CHAR  Input R to compute PI R**2, or -1 to quit.
+   4  BIT   00000001 (1)
+   5 ARITH  4150000000000000
+   6 ARITH  0000000000000000
+   7 ARITH  4160000000000000
+   8  CHAR  R =
+   9  CHAR  and PI R**2 =
+  10 ARITH  4120000000000000
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  HAL/S REL32V0                T I T A N  S Y S T E M S  C O R P .                 FEBRUARY 7, 2026    19:18:9.45     PAGE 6
+
+
+       OPTIONAL TABLE SIZES
+
+NAME       REQUESTED    USED
+^^^^       ^^^^^^^^^    ^^^^
+ 
+LITSTRINGS      2000      61
+SYMBOLS          200       3
+MACROSIZE        500       0
+XREFSIZE        2000       7
+BLOCKSUM         400       0
+
+
+CALLS TO SCAN        = 59
+CALLS TO IDENTIFY    = 9
+NUMBER OF REDUCTIONS = 159
+MAX STACK SIZE       = 8
+MAX IND. STACK SIZE  = 5
+END IND. STACK SIZE  = 1
+END ARRAY STACK SIZE = 0
+MAX EXT_ARRAY INDEX  = 1
+STATEMENT COUNT      = 11
+MINOR COMPACTIFIES   = 0
+MAJOR COMPACTIFIES   = 0
+REALLOCATIONS        = 0
+MAX NESTING DEPTH    = 1
+FREE STRING AREA     = 16620316
+
+
+END OF HAL/S PHASE 1, FEBRUARY 7, 2026.  CLOCK TIME = 19:18:9.45.
+
+17 CARDS WERE PROCESSED.
+NO ERRORS WERE DETECTED DURING PHASE 1 .
+
+
+NUMBER OF FILE 6 LOCATES          = 1
+NUMBER OF FILE 6 READS            = 0
+NUMBER OF FILE 6 WRITES           = 0
+
+
+TOTAL CPU TIME FOR PHASE 1      0:0:0.00.
+CPU TIME FOR PHASE 1 SET UP     0:0:0.00.
+CPU TIME FOR PHASE 1 PROCESSING 0:0:0.00.
+CPU TIME FOR PHASE 1 CLEAN UP   0:0:0.00.
+

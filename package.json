@@ -1,0 +1,33 @@
+{
+  "name": "nsts-sim-gpc",
+  "version": "1.0.0",
+  "description": "Space Shuttle AP-101 GPC Simulator",
+  "scripts": {
+    "dev": "electron-esbuild dev",
+    "batch:build": "node esbuild/esbuild.batch.config.js",
+    "batch": "node dist/gpc-batch.js",
+    "fcmdump:build": "node esbuild/esbuild.fcmdump.config.js",
+    "fcmdump": "node dist/gpc-dump.js"
+  },
+  "devDependencies": {
+    "@babel/preset-react": "^7.23.3",
+    "electron": "^27.0.4",
+    "electron-builder": "^24.6.4",
+    "electron-devtools-installer": "^3.2.0",
+    "electron-esbuild": "^8.0.0",
+    "esbuild": "^0.18.20",
+    "esbuild-coffeescript": "^2.2.0",
+    "esbuild-plugin-svg": "^0.1.0",
+    "esbuild-plugin-wasm": "^1.1.0",
+    "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "@danielx/civet": "^0.6.50",
+    "@electron/remote": "^2.1.0",
+    "commander": "^14.0.3",
+    "lit": "^2.8.0",
+    "long": "^5.3.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}

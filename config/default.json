@@ -1,0 +1,24 @@
+{
+  "start": [
+    "gpc1"
+  ],
+  "enableQuitHotkey": true,
+  "startSharedWindow": false,
+  "lrus": {
+    "gpc1": {
+      "lru": "GPC",
+      "module": "gpc/ap101",
+      "window": {
+        "width": 1400,
+        "height": 800,
+        "x": 50,
+        "y": 10,
+        "backgroundColor": "#111111",
+        "fullscreen": false
+      },
+      "config": {
+        "lru": "GPC1"
+      }
+    }
+  }
+}

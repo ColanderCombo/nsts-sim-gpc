@@ -1,0 +1,15 @@
+mainConfig:
+  type: esbuild
+  path: esbuild/esbuild.main.config.ts
+  src: simRunner/main/main.civet
+  output:
+    dir: dist/main
+    filename: main.js
+rendererConfig:
+  type: esbuild
+  path: esbuild/esbuild.renderer.config.ts
+  html: simRunner/renderer/index.html
+  src: simRunner/renderer/startup.civet
+  output:
+    dir: dist/renderer
+    filename: startup.js

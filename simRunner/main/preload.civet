@@ -1,0 +1,15 @@
+
+console.log("preload2")
+dgram := require 'dgram'
+window.dgram = dgram
+
+fs := require 'fs'
+window.fs = fs
+
+window.Buffer = Buffer
+
+{ipcRenderer,webFrame} from 'electron'
+window.ipcRenderer = ipcRenderer
+window.webFrame = webFrame
+
+console.log("preload3")

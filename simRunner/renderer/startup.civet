@@ -1,0 +1,25 @@
+"civet coffeeCompat"
+
+import * as gpc from './../../gpc/run_debug.coffee'
+
+ipcRenderer := window.ipcRenderer
+reactClient := require 'react-dom/client';
+
+ipcRenderer.on "set-config", async (e,CONFIG) =>
+  console.log("CONFIG --> ", CONFIG)
+  for lruName in CONFIG.thisStart
+    console.log("NAME: ", lruName)
+    lruConf .= CONFIG.lrus[lruName]
+    console.log("START LRU", lruConf)
+    lruConf.NSTS_TOP = CONFIG.NSTS_TOP
+    lruMap .= {
+      'gpc/ap101': gpc
+    }
+    console.log(lruMap[lruConf.module])
+    lru .= lruMap[lruConf.module].default.start(lruConf)
+    if lru.initWindow?
+      container .= document.getElementById("root")
+      await reactClient.createRoot(container!).render(await lru.initWindow())
+    console.log("LRU",lru)
+    window.lru = lru
+    lru.start()

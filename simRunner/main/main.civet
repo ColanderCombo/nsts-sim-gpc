@@ -1,0 +1,199 @@
+
+{app, BrowserWindow, Menu, ipcMain} from 'electron'
+* as remote from '@electron/remote/main';
+* as path from 'path'
+* as fs from 'fs'
+{format} from 'url'
+// CUE config support removed — using JSON configs only
+
+import 'process'
+
+import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
+
+process.env.ELECTRON_DISABLE_SECURITY_WARNINGS="1"
+process.traceProcessWarnings = true
+process.traceDeprecation = true
+// app.commandLine.appendSwitch('--')
+// app.commandLine.appendSwitch('--remote-debugging-port', '9222')
+// app.commandLine.appendSwitch('--inspect', '9230')
+
+import 'dgram'
+
+
+class SimRunner
+  windows: { [name: string]: BrowserWindow | null } = {}
+  CONFIG = {}
+
+  // Deep merge helper for config objects
+  deepMerge(target: any, source: any): any
+    for key of Object.keys(source)
+      if source[key] and typeof source[key] == 'object' and !Array.isArray(source[key])
+        target[key] ?= {}
+        @deepMerge(target[key], source[key])
+      else
+        target[key] = source[key]
+    return target
+
+  async loadConfig()
+    let c
+    c = JSON.parse fs.readFileSync(path.join(__dirname, '../../config/default.json'), 'utf8')
+    
+    // Check for override config via NSTS_SIM_CONFIG env var
+    overridePath := process.env.NSTS_SIM_CONFIG
+    if overridePath
+      try
+        overrideFile := path.isAbsolute(overridePath) 
+          ? overridePath 
+          : path.join(__dirname, '../../', overridePath)
+        override := JSON.parse fs.readFileSync(overrideFile, 'utf8')
+        // Deep merge override into default config
+        @deepMerge(c, override)
+        console.log `[SimRunner] Loaded config override from ${overridePath}`
+      catch e2
+        console.error `[SimRunner] Failed to load config override: ${overridePath}`, e2
+    
+    c['NSTS_TOP'] = path.join(__dirname, '../../')
+
+    // CLI override: --fcm <path> [--symbols <path>] launches GPC debugger directly
+    fcmIdx := process.argv.indexOf('--fcm')
+    if fcmIdx >= 0 and process.argv[fcmIdx + 1]
+      fcmPath := path.resolve(process.argv[fcmIdx + 1])
+
+      // Resolve symbols: explicit --symbols or auto-detect .sym.json
+      symIdx := process.argv.indexOf('--symbols')
+      symPath .= ''
+      if symIdx >= 0 and process.argv[symIdx + 1]
+        symPath = path.resolve(process.argv[symIdx + 1])
+      else
+        autoSym := fcmPath.replace(/\.fcm$/i, '.sym.json')
+        if autoSym != fcmPath and fs.existsSync(autoSym)
+          symPath = autoSym
+
+      // Override config to launch GPC debugger with this FCM
+      c.start = ['gpc1']
+      c.lrus ?= {}
+      c.lrus.gpc1 ?= {}
+      c.lrus.gpc1.module ?= 'gpc/ap101'
+      c.lrus.gpc1.window = { width: 1800, height: 1333, x: 50, y: 10, backgroundColor: '#111111' }
+      c.lrus.gpc1.config ?= {}
+      c.lrus.gpc1.config.fcmFile = fcmPath
+      if symPath.length > 0
+        c.lrus.gpc1.config.symbolsFile = symPath
+      console.log `[SimRunner] CLI: --fcm ${fcmPath}${if symPath.length > 0 then ' (symbols: ' + symPath + ')' else ''}`
+
+    return c
+  
+  webPreferences =
+    preload: path.join(__dirname, 'preload.js')
+    nodeIntegration: true
+    contextIsolation: false
+  
+
+  async startLRU(CONFIG, lruName: string, thisStart: Array<string>): Promise<BrowserWindow | null>
+    lruConf := CONFIG.lrus[lruName]
+    if 'window' in lruConf
+      newWindow := new BrowserWindow {
+        webPreferences: @webPreferences,
+        width: lruConf.window.width+10,
+        height: lruConf.window.height+30,
+        x: lruConf.window.x,
+        y: lruConf.window.y,
+        frame: false,
+        fullscreen: lruConf.window.fullscreen,
+        backgroundColor: "#101336"
+      }
+      remote.enable newWindow.webContents
+      newWindow.webContents.on 'before-input-event', (event, input) =>
+        // Ctrl+Shift+D toggles DevTools as a detached window
+        if input.control and input.shift and input.key.toLowerCase() == 'd'
+          event.preventDefault()
+          if newWindow.webContents.isDevToolsOpened()
+            newWindow.webContents.closeDevTools()
+          else
+            newWindow.webContents.openDevTools({ mode: 'detach' })
+        // Ctrl+Q quits the application (when enabled in config)
+        if CONFIG.enableQuitHotkey and input.control and input.key.toLowerCase() == 'q'
+          event.preventDefault()
+          app.quit()
+      CONFIG.thisStart = thisStart
+      newWindow.webContents.on 'did-finish-load', () =>
+        newWindow.webContents.send 'set-config', CONFIG
+      rendererIndex := path.join(__dirname, '../renderer/index.html')
+      if fs.existsSync rendererIndex
+        await newWindow.webContents.loadFile rendererIndex
+      else
+        await newWindow.webContents.loadURL 'http://localhost:9080'
+      return newWindow
+    else
+      return null
+    
+    if "start" not in CONFIG
+      console.log "ERROR: missing LRU start list in config"
+      process.exit(-1)
+
+    missingLRUConfigs: Array<string> := CONFIG.start.filter((x:string):boolean => x not in CONFIG.lrus)
+    if missingLRUConfigs.length > 0
+      console.log "\nERROR: Undefined LRU configs referenced: ${missingLRUConfigs}"
+      process.exit(-1)
+
+
+  async createWindow(): Promise<void>
+    @CONFIG := await @loadConfig()
+    ipcMain.handle('CONFIG', () => @CONFIG)
+    ipcMain.handle('dgram', () => dgram)
+    // Handle F12 toggle-devtools from renderer
+    ipcMain.on 'toggle-devtools', (event) =>
+      win := BrowserWindow.fromWebContents(event.sender)
+      if win
+        if win.webContents.isDevToolsOpened()
+          win.webContents.closeDevTools()
+        else
+          win.webContents.openDevTools({ mode: 'detach' })
+    // CDE window controls
+    ipcMain.on 'window-minimize', (event) =>
+      BrowserWindow.fromWebContents(event.sender)?.minimize()
+    ipcMain.on 'window-maximize', (event) =>
+      win := BrowserWindow.fromWebContents(event.sender)
+      if win
+        if win.isMaximized() then win.unmaximize() else win.maximize()
+    ipcMain.on 'window-close', (event) =>
+      BrowserWindow.fromWebContents(event.sender)?.close()
+    // Collect shared (headless) LRUs from the start list
+    sharedLRUs .= @CONFIG.start.filter((x:string):boolean => @CONFIG.lrus[x]?.shared)
+    if @CONFIG.startSharedWindow
+      await @startLRU(@CONFIG, 'shared', sharedLRUs)
+    for startName of @CONFIG.start
+      lruConf := @CONFIG.lrus[startName]
+      if lruConf?.shared
+        continue // shared LRUs don't get their own window
+      // Bundle shared LRUs into the first windowed LRU's renderer
+      thisStart .= [startName]
+      if not @CONFIG.startSharedWindow and sharedLRUs.length > 0
+        thisStart = thisStart.concat(sharedLRUs)
+        sharedLRUs = [] // only attach to first window
+      @windows[startName] = await @startLRU(@CONFIG, startName, thisStart)
+        
+
+  async start(): Promise<void>
+    Menu.setApplicationMenu(null)
+    app.on 'ready', () : void =>
+      // installExtension(REACT_DEVELOPER_TOOLS)
+      //   .then((name) => console.log(`Added Extension: ${name}`))
+      //   .catch((err) => console.log('An error occurred: ', err))
+      @createWindow()
+    app.on 'window-all-closed', (): void =>
+      app.quit()
+    app.on 'before-quit', (): void =>
+      // Force kill all renderer processes so lingering UDP sockets don't keep them alive
+      for window of BrowserWindow.getAllWindows()
+        window.destroy()
+    app.on 'activate', (): void =>
+      if BrowserWindow.getAllWindows().length == 0
+        @createWindow()
+      
+      
+main := async () : void ->
+  simRunner := new SimRunner()
+  await simRunner.start()
+
+main()

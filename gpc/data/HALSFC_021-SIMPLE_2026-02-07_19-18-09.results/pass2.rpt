@@ -1,0 +1,247 @@
+PAGE 1
+
+
+   HAL/S COMPILER PHASE 2  --  VERSION OF FEBRUARY 7, 2026.  CLOCK TIME = 19:1:59.00
+
+HAL/S PHASE 2 ENTERED FEBRUARY 7, 2026.  CLOCK TIME = 19:18:10.38
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 2
+SYMBOL   TYPE  ID  ADDR  LEN(HEX)  LEN(DEC)         BLOCK NAME
+
+
+$0SIMPLE  SD 0001 000000 000030          48         SIMPLE
+#ESIMPLE  SD 0002 000000 000006           6
+#DSIMPLE  SD 0003 000000 000029          41
+@0SIMPLE  ER 0004                          
+#QIOINIT  ER 0005                          
+#QCOUT    ER 0006                          
+#QEIN     ER 0007                          
+#QEOUT    ER 0008                          
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 3
+  LOC    CODE        EFFAD           LABEL   INSN   OPERANDS            SYMBOLIC OPERAND
+
+
+0000000                             ST#1     EQU    *
+00000                               #ESIMPLE CSECT        ESDID= 0002
+00000 0000                                   DC     X'0000'             
+00001 0000                                   DC     X'0000'             
+00002 00000700                               DC     A'00000700'         #DSIMPLE
+00004 0000                                   DC     X'0000'             
+00005 0005                                   DC     X'0005'             
+00000                               $0SIMPLE CSECT        ESDID= 0001
+0000000                             SIMPLE   EQU    *
+00000 E8F3 0000                              LHI    R0,0()              TIME: 0.25; @0SIMPLE
+00002 E9F3 0000                              LHI    R1,0()              TIME: 0.25; #DSIMPLE
+00004 B914           0005                    STH    R1,5(R0)            TIME: 0.5
+00005 E0FB 0014                              IAL    R0,20()             TIME: 0.5
+00007 EB11           0004                    LA     R3,4(R1)            TIME: 0.25
+00008 BB24           0009                    STH    R3,9(R0)            TIME: 0.5
+0000009                             ST#2     EQU    *
+0000009                             ST#3     EQU    *
+0000009                             ST#4     EQU    *
+00009 BEE8                                   LFXI   R6,6                TIME: 0.75
+0000A BDE5                                   LFXI   R5,3                TIME: 0.75
+0000B D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QIOINIT
+0000D EA4D           0013                    LA     R2,19(R1)           TIME: 0.25; C'Input R to compute PI R**2, or -1 to quit.'
+0000E D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QCOUT
+0000010                             ST#5     EQU    *
+0000010                             LBL#3    EQU    *
+0000010                             ST#6     EQU    *
+00010 BEE7                                   LFXI   R6,5                TIME: 0.75
+00011 75E5                                   XR     R5,R5               TIME: 0.25
+00012 D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QIOINIT
+00014 EA0B           0006                    LA     R2,2(R3)            TIME: 0.25; R
+00015 D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QEIN
+0000017                             ST#7     EQU    *
+00017 7807           0006                    LE     F0,2(R3)            TIME: 1.2; R
+00018 DD04           001A                    BCF    5,*+2               TIME: 0.25; BNM   LBL#5 (WITHIN ST#9)
+0000019                             ST#8     EQU    *
+00019 DF50           002E                    BCF    7,*+21              TIME: 0.25; B     LBL#4 (WITHIN ST#10)
+000001A                             ST#9     EQU    *
+000001A                             LBL#5    EQU    *
+0001A BEE8                                   LFXI   R6,6                TIME: 0.75
+0001B BDE5                                   LFXI   R5,3                TIME: 0.75
+0001C D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QIOINIT
+0001E EA41           0010                    LA     R2,16(R1)           TIME: 0.25; C'R ='
+0001F D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QCOUT
+00021 7807           0006                    LE     F0,2(R3)            TIME: 1.2; R
+00022 D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QEOUT
+00024 EA21           0008                    LA     R2,8(R1)            TIME: 0.25; C'and PI R**2 ='
+00025 D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QCOUT
+00027 7F07           0006                    LE     F7,2(R3)            TIME: 1.2; R
+00028 67E7                                   MER    F7,F7               TIME: 5.5
+00029 6705           0002                    ME     F7,2(R1)            TIME: 5.75; X'413243F6', S' 3.141592E+00'
+0002A 78E7                                   LER    F0,F7               TIME: 1.0
+0002B D0FF 3800                              SCAL@# R0,0(R1,R3)         TIME: 24.5 (SEE POO); #QEOUT
+000002D                             ST#10    EQU    *
+0002D DF7A           0010                    BCB    7,*-29              TIME: 0.25; B     LBL#3 (WITHIN ST#5)
+000002E                             LBL#4    EQU    *
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 4
+  LOC    CODE        EFFAD           LABEL   INSN   OPERANDS            SYMBOLIC OPERAND
+
+000002E                             ST#11    EQU    *
+000002E                             LBL#2    EQU    *
+0002E C9F9 0000      0000                    SVC    0(R1)               TIME: 20.25; H'21', X'0015'
+00006                               #DSIMPLE CSECT        ESDID= 0003
+00006 000000                                 ORG    *-6
+00000 0015                                   DC     X'0015'             
+00002 413243F6                               DC     X'413243F6'         
+00004 000008                                 ORG    *+4
+00008 000D616E                               DC     X'000D616E'
+0000A 64205049                               DC     X'64205049'
+0000C 20522A2A                               DC     X'20522A2A'
+0000E 32203D00                               DC     X'32203D00'
+00010 00035220                               DC     X'00035220'
+00012 3D00                                   DC     X'3D00'
+00013 002A496E                               DC     X'002A496E'
+00015 70757420                               DC     X'70757420'
+00017 5220746F                               DC     X'5220746F'
+00019 20636F6D                               DC     X'20636F6D'
+0001B 70757465                               DC     X'70757465'
+0001D 20504920                               DC     X'20504920'
+0001F 522A2A32                               DC     X'522A2A32'
+00021 2C206F72                               DC     X'2C206F72'
+00023 202D3120                               DC     X'202D3120'
+00025 746F2071                               DC     X'746F2071'
+00027 7569742E                               DC     X'7569742E'
+                                             END
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 5
+
+
+RLD INFORMATION
+
+POS.ID (P) IS THE ESDID OF SD FOR THE CONTROL SECTION THAT CONTAINS THE ADDRESS CONSTANT
+REL.ID (R) IS THE ESDID OF ESD ENTRY FOR THE SYMBOL BEING REFERRED TO
+
+         FLAG        TYPE                                ACTION PERFORMED
+
+       V00000ST      YCON      RELOCATION FACTOR IS ADDED TO ADDRESS CONSTANT.  IF ADDRESS IS GREATER THAN 15 BITS, SET BIT "0" ON.
+       000001ST      ACON      RELOCATION FACTOR IS ADDED TO ADDRESS CONSTANT.
+       V00100ST      ZCON      ADD RELOCATION FACTOR TO FIRST HALFWORD.  IF GREATER THAN 15 BITS, UPDATE BSR FIELD.
+                               (BRANCH RELOCATION FOR 32-BIT BRANCH)
+       V10000ST      ZCON      UPDATE DSR FIELD WITH HIGH ORDER 4 BITS OF THE 19-BIT RELOCATION FACTOR.
+                               (DATA RELOCATION FOR 32-BIT BRANCH)
+       V01000ST      ZCON      UPDATE BSR FIELD WITH HIGH ORDER 4 BITS OF THE 19-BIT RELOCATION FACTOR.
+                               (BRANCH RELOCATION FOR 32-BIT DATA)
+       V10100ST      ZCON      ADD RELOCATION FACTOR TO FIRST HALFWORD.  IF GREATER THAN 15-BITS, UPDATE DSR FIELD.
+                               (DATA RELOCATION FOR 32-BIT DATA)
+
+       V = SIGN OF THE YCON IN THE TEXT RECORD
+            0 = THE YCON IS POSITIVE
+            1 = THE YCON IS THE ABSOLUTE VALUE OF A NEGATIVE NUMBER
+       S = DIRECTION OF RELOCATION
+            0 = POSITIVE
+            1 = NEGATIVE
+       T = TYPE OF NEXT RLD ITEM
+            0 = NEXT RLD ITEM HAS DIFFERENT R OR P POINTERS; THEY ARE IN THE NEXT ITEM
+            1 = NEXT RLD ITEM HAS SAME R AND P POINTERS; HENCE THEY ARE OMITTED
+
+ POS.ID    CSECT(P)    ADDRESS   FLAGS      REL.ID    CSECT(R)
+
+  0001     $0SIMPLE    000001     00         0004     @0SIMPLE
+  0001     $0SIMPLE    000003     00         0003     #DSIMPLE
+  0001     $0SIMPLE    00000C     00         0005     #QIOINIT
+  0001     $0SIMPLE    00000F     00         0006     #QCOUT  
+  0001     $0SIMPLE    000013     00         0005     #QIOINIT
+  0001     $0SIMPLE    000016     00         0007     #QEIN   
+  0001     $0SIMPLE    00001D     00         0005     #QIOINIT
+  0001     $0SIMPLE    000020     00         0006     #QCOUT  
+  0001     $0SIMPLE    000023     00         0008     #QEOUT  
+  0001     $0SIMPLE    000026     00         0006     #QCOUT  
+  0001     $0SIMPLE    00002C     00         0008     #QEOUT  
+  0002     #ESIMPLE    000002     10         0001     $0SIMPLE
+  0002     #ESIMPLE    000002     40         0003     #DSIMPLE
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 6
+
+
+
+ VARIABLE OFFSET TABLE
+    LOC IS THE CSECT-RELATIVE ADDRESS IN HEX OF THE DECLARED VARIABLE.
+    B IS THE BASE REGISTER USED FOR ADDRESSING THE DECLARED VARIABLE.  IF B IS NEGATIVE, THIS IS A VIRTUAL REGISTER AND CODE
+          MUST BE GENERATED TO LOAD A REAL REGISTER.
+    DISP IS THE DISPLACEMENT USED FOR GENERATING BASE-DISPLACEMENT ADDRESSES FOR ACCESSING THE DATA ITEMS.
+    LENGTH IS THE SIZE IN DECIMAL HALFWORDS OF THE VARIABLE.
+    BIAS IS THE AMOUNT OF THE ZEROTH ELEMENT OFFSET.
+    NAME IS THE NAME OF THE VARIABLE.
+
+
+  LOC    B DISP     LENGTH    BIAS   NAME
+
+         UNDER SIMPLE     STACK=20
+000006   1 006          2       0    R
+ 
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 7
+
+
+
+MEMORY MAP FOR DATA CSECT #DSIMPLE
+
+NAME                  LEN(DEC)  OFFSET(DEC)   B  DISP(HEX)  SCOPE
+
+**LOCAL BLOCK DATA**        2         4                     SIMPLE
+R                           2         6       1    0006     SIMPLE
+
+TOTAL SIZE OF ALIGNMENT GAPS FOR CSECT: 0 HW
+
+
+
+INSTRUCTION FREQUENCIES
+
+INSN  COUNT
+LFXI    5
+XR      1
+LER     1
+MER     1
+STH     2
+LA      5
+SCAL    9
+IAL     1
+LE      3
+ME      1
+BCB     1
+BCF     2
+SVC     1
+LHI     2
+
+
+       OPTIONAL TABLE SIZES
+
+NAME       REQUESTED    USED
+^^^^       ^^^^^^^^^    ^^^^
+ 
+LITSTRINGS      2000      61
+LABELSIZE       1200       5
+ 
+ 
+42 HALMAT OPERATORS CONVERTED
+ 
+35 INSTRUCTIONS GENERATED
+ 
+54 HALFWORDS OF PROGRAM, 41 HALFWORDS OF DATA.
+ 
+MAX. OPERAND STACK SIZE            =2
+END  OPERAND STACK SIZE            =0
+MAX. STORAGE DESCRIPTOR STACK SIZE =1
+END  STORAGE DESCRIPTOR STACK SIZE =0
+NUMBER OF MINOR COMPACTIFIES       =0
+NUMBER OF MAJOR COMPACTIFIES       =0
+NUMBER OF REALLOCATIONS            =3
+FREE STRING AREA                   =16623696
+ 
+END OF HAL/S PHASE 2 FEBRUARY 7, 2026.  CLOCK TIME = 19:18:10.39
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+PAGE 8
+ 
+
+TOTAL CPU TIME FOR PHASE 2       0:0:0.00
+CPU TIME FOR PHASE 2 SET UP      0:0:0.00
+CPU TIME FOR PHASE 2 GENERATION  0:0:0.00
+CPU TIME FOR PHASE 2 CLEAN UP    0:0:0.00

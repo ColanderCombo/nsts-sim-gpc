@@ -1,0 +1,161 @@
+dgram = window.dgram
+Buffer = window.Buffer
+// {lookup} from 'lookup-dns-cache'
+
+busConfig := {
+  IC1: { gpcBceNum :  1, port: 6901, nom: "Intercomputer 1" }
+  IC2: { gpcBceNum :  2, port: 6902, nom: "Intercomputer 2" }
+  IC3: { gpcBceNum :  3, port: 6903, nom: "Intercomputer 3" }
+  IC4: { gpcBceNum :  4, port: 6904, nom: "Intercomputer 4" }
+  IC5: { gpcBceNum :  5, port: 6905, nom: "Intercomputer 5" }
+  DK1: { gpcBceNum :  6, port: 6906, nom: "Display/Keyboard 1" }
+  DK2: { gpcBceNum :  7, port: 6907, nom: "Display/Keyboard 2" }
+  DK3: { gpcBceNum :  8, port: 6908, nom: "Display/Keyboard 3" }
+  DK4: { gpcBceNum :  9, port: 6909, nom: "Display/Keyboard 4" }
+  PL1: { gpcBceNum : 10, port: 6910, nom: "Payload 1" }
+  PL2: { gpcBceNum : 11, port: 6911, nom: "Payload 2" }
+  LB1: { gpcBceNum : 12, port: 6912, nom: "Launch Bus 1" }
+  LB2: { gpcBceNum : 13, port: 6913, nom: "Launch Bus 2" }
+  FC5: { gpcBceNum : 14, port: 6914, nom: "Flight Critical 5" }
+  FC6: { gpcBceNum : 15, port: 6915, nom: "Flight Critical 6" }
+  FC7: { gpcBceNum : 16, port: 6916, nom: "Flight Critical 7" }
+  FC8: { gpcBceNum : 17, port: 6917, nom: "Flight Critical 8" }
+  MM1: { gpcBceNum : 18, port: 6918, nom: "Mass Memory 1" }
+  MM2: { gpcBceNum : 19, port: 6919, nom: "Mass Memory 2" }
+  FC1: { gpcBceNum : 20, port: 6920, nom: "Flight Critical 1" }
+  FC2: { gpcBceNum : 21, port: 6921, nom: "Flight Critical 2" }
+  FC3: { gpcBceNum : 22, port: 6922, nom: "Flight Critical 3" }
+  FC4: { gpcBceNum : 23, port: 6923, nom: "Flight Critical 4" }
+  IP1: { gpcBceNum : 24, port: 6924, nom: "IP1", gpc: 1}
+  IP2: { gpcBceNum : 24, port: 6925, nom: "IP2", gpc: 2}
+  IP3: { gpcBceNum : 24, port: 6925, nom: "IP3", gpc: 3}
+  IP4: { gpcBceNum : 24, port: 6926, nom: "IP4", gpc: 4}
+  IP5: { gpcBceNum : 24, port: 6927, nom: "IP5", gpc: 5}
+
+  _KYBD1: { port: 6931, nom: "DPS IDP Keyboard 1" }
+  _KYBD2: { port: 6932, nom: "DPS IDP Keyboard 2" }
+  _KYBD3: { port: 6933, nom: "DPS IDP Keyboard 3" }
+
+  _IDP1: { port: 6941, nom: "MEDS IDP/MDU 1533B Bus 1" }
+  _IDP2: { port: 6942, nom: "MEDS IDP/MDU 1533B Bus 2" }
+  _IDP3: { port: 6943, nom: "MEDS IDP/MDU 1533B Bus 3" }
+  _IDP4: { port: 6944, nom: "MEDS IDP/MDU 1533B Bus 4" }
+
+  _FF1_mdmIO: { port: 6950, nom: "MDM FF1 I/O" }
+
+  _NSP1_data: { port: 6960, nom: "NSP1 to PCMMU"}
+  _NSP2_data: { port: 6960, nom: "NSP1 to PCMMU"}
+
+  _GSE_PCMMU_T0: { port: 6970, nom: "PCCMU to GSE via T-0 umbilical"}
+
+  _LPS_FR1_CDBFR: { port: 6501, nom: "LPS FR1 CDBFR"}
+
+  __SIMCONTROL: { port: 6700, nom:'Simulation Control'}
+
+}
+
+bceNumToBusConfig .= {}
+for [name,config] in busConfig
+  if config.gpcBceNum?
+    bceNumToBusConfig[config.gpcBceNum] = config
+    bceNumToBusConfig[config.gpcBceNum].name = name
+
+
+class BusMsg
+  length16: number = 0
+  rawData : Buffer
+  data16 : Uint16Array = null
+  data8 : Uint8Array = null
+  inNetworkOrder: bool = false
+  sendBuffer : Buffer
+
+  @(@length16)
+    @rawData = Buffer.alloc(@length16*2)
+    @data16 = new Uint16Array(@rawData.buffer, @rawData.byteOffset, @rawData.byteLength/2)
+    @data8 = new Uint8Array(@rawData.buffer, @rawData.byteOffset, @rawData.byteLength)
+    @inNetworkOrder = false
+
+  @FromNetBuf(buf)
+    msg := new BusMsg(Math.ceil(buf.length/2))
+    buf.copy(msg.rawData, 0, 0, msg.rawData.length)
+    msg.rawData.swap16()
+    return msg
+
+
+  cvtToNet()
+    if @inNetworkOrder == false
+      @rawData.swap16()
+      @inNetworkOrder = true
+
+  cvtToLoc()
+    if @inNetworkOrder 
+      @rawData.swap16()
+      @inNetworkOrder = false
+
+  getBytes()
+    retBuf := Buffer.from(@rawData)
+    if @inNetworkOrder == false
+      retBuf.swap16()
+    return retBuf
+
+class Bus
+  busID : string = ''
+  busDesc : string = ''
+  isShuttleBus : boolean = false
+  iua : number = 0
+  sendBuffer : typeof Buffer = Buffer
+  server : any = null
+  recvCB : any = null
+  cbObj : object = null
+
+  @(@busID, @busDesc, @isShuttleBus=false, @iua=0x00)
+    @sendBuffer = Buffer.alloc(16)
+    @_startMulticast()
+
+  _startMulticast()
+    // @server = dgram.createSocket({type:"udp4", reuseAddr:true, lookup:lookup})
+    @server = dgram.createSocket({type:"udp4", reuseAddr:true})
+    @server.bind @busDesc.port, () =>
+      @server.setBroadcast(true)
+      @server.setMulticastLoopback(true)
+      @server.setMulticastTTL(128)
+      @server.addMembership("239.255.1.1")
+      @server.on('message', @_recvMessage)
+    // Don't let this socket prevent process exit
+    @server.unref()
+
+  onReceive(@recvCB, @cbObj)
+    return
+
+  _recvMessage(message, remote)
+    if @isShuttleBus
+      if message[0] != @iua
+        return
+      message = message.slice(2)
+    msg .= BusMsg.FromNetBuf(message)
+    if @recvCB
+      //console.log "RECV ON BUS", msg
+      @recvCB(@cbObj,@busID, msg, remote)
+    else
+      console.log "RECV UNHANDLED", @busID, message
+
+  send(data,len=undefined)
+    len ?= data.length
+    @server.send data, 0, len, @busDesc.port, "239.255.1.1"
+
+  sendMsg(msg)
+    // send a message across a generic bus (16-bit big endian)
+    len .= msg.rawData.length
+    copyOffset .= 0
+    if @isShuttleBus == true
+      len += 2
+      copyOffset = 2
+    if @sendBuffer.length < len
+      @sendBuffer = Buffer.allocUnsafe(len)
+    msg.rawData.copy(@sendBuffer, copyOffset, 0, len)
+    @sendBuffer.swap16()
+    if @isShuttleBus
+      @sendBuffer[0] = @iua
+    @send @sendBuffer, len
+
+export { Bus, BusMsg, busConfig, bceNumToBusConfig };
