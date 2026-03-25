@@ -61,6 +61,14 @@ class BatchRunner
   # Fatal error: print message and exit
   fatal: (msg) ->
     process.stderr.write "FATAL: #{msg}\n"
+    # Synchronously write any buffered channel output before exiting
+    for ch, stream of @outStreams
+      if stream? and not stream.destroyed
+        try
+          fd = stream.fd ? stream._writableState?.fd
+          if fd? then fs.fdatasyncSync(fd)
+        catch e
+          # ignore sync errors
     @flush()
     process.exit(1)
 
@@ -309,7 +317,9 @@ class BatchRunner
     if not @inStreams[ch]?
       @fatal "Program requests input on channel #{ch} (#{HalUCP.iocodeTypeName(iocode)}) but no --infile#{ch} was provided"
     if @inStreams[ch].length == 0
-      @fatal "Input exhausted on channel #{ch} (#{HalUCP.iocodeTypeName(iocode)}): no more lines in #{@inFiles[ch]}"
+      # Input exhausted: return "0" to let the program's own quit logic handle it.
+      process.stderr.write "HalUCP: Input exhausted on channel #{ch} — returning '0'\n"
+      return "0"
     line = @inStreams[ch].shift()
     # Validate (for comma-separated numeric input, validate only the first value)
     if iocode != 13 and line.indexOf(',') >= 0
@@ -654,6 +664,10 @@ program
   .option('--infile1 <file>', 'read input for channel 1')
   .option('--infile2 <file>', 'read input for channel 2')
   .option('--infile3 <file>', 'read input for channel 3')
+  .option('--infile4 <file>', 'read input for channel 4')
+  .option('--infile5 <file>', 'read input for channel 5')
+  .option('--infile6 <file>', 'read input for channel 6')
+  .option('--infile7 <file>', 'read input for channel 7')
   .option('--outfile0 <file>', 'write output for channel 0')
   .option('--outfile1 <file>', 'write output for channel 1')
   .option('--outfile2 <file>', 'write output for channel 2')
@@ -670,7 +684,7 @@ o = program.opts()
 # Build inFiles/outFiles maps from individual options
 inFiles = {}
 outFiles = {}
-for ch in [0..3]
+for ch in [0..7]
   inFiles[ch] = o["infile#{ch}"] if o["infile#{ch}"]
 for ch in [0..7]
   outFiles[ch] = o["outfile#{ch}"] if o["outfile#{ch}"]

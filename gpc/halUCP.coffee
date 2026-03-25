@@ -289,7 +289,7 @@ export class HalUCP
     switch iocode
       when 8  # BOUT - bit string
         len = @cpu.mainStorage.get16(@iobufAddr)
-        bits = @get32(@iobufAddr + 1)
+        bits = @get32(@iobufAddr + 2)
         # Format as binary string of specified length
         bitStr = (bits >>> 0).toString(2).padStart(32, '0')
         text = bitStr.substring(32 - len)

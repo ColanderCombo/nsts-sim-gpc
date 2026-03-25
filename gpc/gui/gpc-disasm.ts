@@ -90,10 +90,8 @@ export class GpcDisasm extends LitElement {
 
   frameNIA(): void {
     if (!this.cpu) return;
-    const nia = this.cpu.psw.getNIA();
-    const count = this._getLineCount();
-    this._viewAddr = this._alignAddr(Math.max(0, nia - Math.floor(count / 2)));
-    this._followNIA = false;
+    this._viewAddr = null;
+    this._followNIA = true;
     this.refresh();
   }
 
@@ -392,7 +390,7 @@ export class GpcDisasm extends LitElement {
   }
 
   private _currentStart(): number {
-    if (this._viewAddr != null) {
+    if (this._viewAddr != null && !this._followNIA) {
       return this._viewAddr;
     }
     if (!this.cpu) return 0;
@@ -436,8 +434,6 @@ export class GpcDisasm extends LitElement {
   }
 
   private _onFrameNIA(): void {
-    this._viewAddr = null;
-    this._followNIA = true;
     this.frameNIA();
   }
 

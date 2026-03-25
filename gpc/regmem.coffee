@@ -11,7 +11,7 @@ export class RAM
         @data8 = new Uint8Array(@rawData)
 
     _get16:(i) -> (@data8[i*2] << 8) | (@data8[(i*2)+1])
-    _get32:(i) -> (@_get16(i) << 16) | @_get16(i+1)
+    _get32:(i) -> ((@_get16(i) << 16) | @_get16(i+1)) >>> 0
 
     get16: (i) -> @_get16(i)
     get32: (i) -> @_get32(i)

@@ -8,7 +8,7 @@ _now = if typeof window != 'undefined' and window.performance? then (-> window.p
 
 ADDR_HALFWORD = 1
 ADDR_FULLWORD = 2
-ADDR_DBLEWORD = 4
+ADDR_DBLEWORD = 3
 
 OPTYPE_DATA = 1
 OPTYPE_BRCH = 2
@@ -76,10 +76,11 @@ export class CPU
 
   incrNIA: (incr=1) -> @setNIA(@psw.getNIA()+incr)
   computeCCarith: (v1,v2) ->
-      result = v1 - v2
-      if result == 0
+      sv1 = v1 | 0
+      sv2 = v2 | 0
+      if sv1 == sv2
           @psw.setCC(0)
-      else if result < 0
+      else if sv1 < sv2
           @psw.setCC(3)
       else
           @psw.setCC(1)
@@ -592,11 +593,8 @@ export class CPU
                   #      If XC=0, postindexing will occur.
                   #
                   if v.ia==1 and v.ii==1
-                    #   console.log "g_EA ZCON"
                       indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
                       indirectFW = @ram.get32(indirectAddr)
-                      
-                    #   console.log "g_EA ZCON indirectAddr=#{indirectAddr.asHex()} indirectFW=#{indirectFW.asHex(8)}"
                       # Parse fullword indirect address pointer fields
                       # Bit layout (bit 0 = MSB):
                       #   0-15:  Address (bit 0 is always 1 for expansion)
@@ -864,8 +862,8 @@ export class CPU
   g_SHIFT_CNT: (hw1) ->
           # 6246156B/p.78
           #
-          # If bits 8-13 of instruction are < 55, that's the shift count
-          # Else, shift is in the low order 5 bits of a general register:
+          # If bits 8-13 of instruction are < 56, that's the shift count
+          # Else, shift is in bits 10-15 of a general register:
           #       111000 (56) -> Bit 10-15 of R0
           #       111001 (57) -> Bit 10-15 of R1
           #           ...
@@ -873,8 +871,8 @@ export class CPU
           #
           insBits = (hw1 >>> 2) & 0x3f  # instruction bits 8-13
           if insBits > 55
-              srcReg = 0x3f - insBits
-              return @r(srcReg).get32() & 0x3f
+              srcReg = insBits - 56
+              return (@r(srcReg).get32() >>> 16) & 0x3f
           else
               return insBits
 

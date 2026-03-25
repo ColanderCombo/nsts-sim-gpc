@@ -113,21 +113,16 @@ export class FloatIBM
     @normalize()
 
   to32: () ->
-    return ((@data8[0] << 24) & 0xff000000) \
-          |((@data8[1] << 16) & 0x00ff0000) \
-          |((@data8[2] <<  8) & 0x0000ff00) \
-          |((@data8[3]      ) & 0x000000ff)
+    ((@data8[0] << 24) | (@data8[1] << 16) | (@data8[2] << 8) | @data8[3]) >>> 0
 
   to64x: () -> return @to32()
   to64y: () ->
-    return ((@data8[4] << 24) & 0xff000000) \
-          |((@data8[5] << 16) & 0x00ff0000) \
-          |((@data8[6] <<  8) & 0x0000ff00) \
-          |((@data8[7]      ) & 0x000000ff)
+    ((@data8[4] << 24) | (@data8[5] << 16) | (@data8[6] << 8) | @data8[7]) >>> 0
 
   @FromFloat: (x) -> new FloatIBM(x)
 
   setFrom32: (x) ->
+    x = x >>> 0
     @data8[0] = (x >>> 24) & 0xff
     @data8[1] = (x >>> 16) & 0xff
     @data8[2] = (x >>>  8) & 0xff
@@ -135,6 +130,9 @@ export class FloatIBM
     @data8[4] = @data8[5] = @data8[6] = @data8[7] = 0
 
   setFrom64: (x1,x2) ->
+    # Ensure unsigned 32-bit interpretation — get32() may return signed values
+    x1 = x1 >>> 0
+    x2 = x2 >>> 0
     @data8[0] = (x1 >>> 24) & 0xff
     @data8[1] = (x1 >>> 16) & 0xff
     @data8[2] = (x1 >>>  8) & 0xff
@@ -260,8 +258,9 @@ export addE = (x,y) ->
     x.sFrac(x.gFracBits().shiftRightUnsigned(shift*4))
     newExp = x.gExp()+shift
     if x.gExp() > 63
-      process.stderr.write "FloatIBM.addE EXPONENT OVERFLOW", x, y
-      return [null, "EXPONENT OVERFLOW"]
+      # Exponent overflow during alignment: the smaller operand underflows
+      # to zero, so the result is just the larger operand.
+      return y
     x.sExp(newExp)
 
   #console.log "x SH=", x.gExp(), x.gFrac(), x.gFracBits(), x.toFloat()
@@ -286,7 +285,10 @@ export addE = (x,y) ->
     intFrac = intFrac.shiftRightUnsigned(4)
     intExp += 1
     if intExp > 63
-      return [null, "EXPONENT OVERFLOW"]
+      # Exponent overflow: return max-magnitude value (IBM hex FP saturates)
+      result.sExp(63)
+      result.sFrac(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
+      return result
 
   #console.log "AE RESULT=", intExp.toString(16), intFrac.toString(16)
   result.sExp(intExp)
@@ -299,12 +301,99 @@ export addE = (x,y) ->
 
 
 export subE = (x,y) ->
-  y.sSign(y.gSign()*-1)
-  return addE(x,y)
+  # Clone y to avoid mutating the caller's operand — addE may swap x/y
+  # and the sign flip would leak into subsequent operations.
+  yNeg = new FloatIBM()
+  yNeg.setFrom64(y.to64x(), y.to64y())
+  yNeg.sSign(y.gSign()*-1)
+  return addE(x,yNeg)
 
 export compE = (x,y) ->
   r = subE(x,y)
   return r
+
+export mulE = (x, y) ->
+  # use Long.js integer arithmetic.
+  #
+  # The 56-bit mantissa is split: M = Mh*2^28 + Ml
+  # Product = (xH*yH)*2^56 + (xH*yL + xL*yH)*2^28 + xL*yL
+  # We keep the top 56 bits of this 112-bit result.
+
+  xFrac = x.gFracBits()
+  yFrac = y.gFracBits()
+
+  # Zero handling
+  if xFrac.isZero() or yFrac.isZero()
+    return new FloatIBM()
+
+  # Result sign and exponent
+  resultSign = x.gSign() * y.gSign()
+  resultExp = x.gExp() + y.gExp()
+
+  # Split each 56-bit mantissa into high 28 and low 28 bits
+  MASK28 = Long.fromInt(0x0FFFFFFF, true)
+  xL = xFrac.and(MASK28).toUnsigned()
+  xH = xFrac.shiftRightUnsigned(28).toUnsigned()
+  yL = yFrac.and(MASK28).toUnsigned()
+  yH = yFrac.shiftRightUnsigned(28).toUnsigned()
+
+  # Partial products (each ≤ 56 bits, fits in unsigned Long)
+  hh = xH.multiply(yH)         # bits 112:56 of full product
+  hl = xH.multiply(yL)         # bits 84:28
+  lh = xL.multiply(yH)         # bits 84:28
+  # xL*yL only contributes to bits 56:0, we need its carry into bit 56
+  ll = xL.multiply(yL)         # bits 56:0
+
+  # Combine: top 56 bits = hh + (hl + lh + (ll >> 28)) >> 28
+  mid = hl.add(lh).add(ll.shiftRightUnsigned(28))
+  resultFrac = hh.add(mid.shiftRightUnsigned(28))
+
+  result = new FloatIBM()
+  if resultSign < 0
+    result.sSign(-1)
+  result.sExp(resultExp)
+  result.sFrac(resultFrac)
+  result.normalize()
+  return result
+
+
+export divE = (x, y) ->
+  # using Long.js integer arithmetic:
+  # Full 56-bit precision: dividend / divisor.
+  #
+  # dividend_mantissa / divisor_mantissa * 2^56 gives the result mantissa.
+  # shift dividend left by 56 bits relative to divisor before dividing.
+
+  xFrac = x.gFracBits()
+  yFrac = y.gFracBits()
+
+  # Zero handling
+  if yFrac.isZero()
+    return new FloatIBM()  # divide by zero -> return 0 XXX trap
+  if xFrac.isZero()
+    return new FloatIBM()
+
+  # Result sign and exponent
+  resultSign = x.gSign() * y.gSign()
+  resultExp = x.gExp() - y.gExp()
+
+  shifted = xFrac.shiftLeft(28).toUnsigned()
+  yU = yFrac.toUnsigned()
+  qH = shifted.divide(yU)
+  rem = shifted.subtract(qH.multiply(yU))
+  remShifted = rem.shiftLeft(28).toUnsigned()
+  qL = remShifted.divide(yU)
+
+  resultFrac = qH.shiftLeft(28).add(qL)
+
+  result = new FloatIBM()
+  if resultSign < 0
+    result.sSign(-1)
+  result.sExp(resultExp)
+  result.sFrac(resultFrac)
+  result.normalize()
+  return result
+
 
 export cvfx = (x) ->
   x.unNormalizeToExp(4)

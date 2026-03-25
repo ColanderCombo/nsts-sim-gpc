@@ -36,7 +36,7 @@ export class MCM
 
   get32: (addr, trackRead=true) ->
     addr = addr & 0x7fffe
-    return (@get16(addr, trackRead) << 16) | @get16(addr+1, trackRead)
+    return ((@get16(addr, trackRead) << 16) | @get16(addr+1, trackRead)) >>> 0
 
   set16: (i, v, checkProtect=true, trackWrite=true) ->
     if checkProtect and @protData[i]

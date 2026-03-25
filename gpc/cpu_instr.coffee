@@ -1,9 +1,10 @@
 import {PackedBits} from 'gpc/util'
-import {FloatIBM,addE,subE} from 'gpc/floatIBM'
+import {FloatIBM,addE,subE,mulE,divE} from 'gpc/floatIBM'
+import {q31_mul32, q15_mul, q31_div} from 'gpc/q31'
 
 ADDR_HALFWORD = 1
 ADDR_FULLWORD = 2
-ADDR_DBLEWORD = 4
+ADDR_DBLEWORD = 3
 
 OPTYPE_DATA = 1
 OPTYPE_BRCH = 2
@@ -66,7 +67,7 @@ class Instruction extends PackedBits
                     d.ii = (hw2 >>> 11) & 1
                     d.d = hw2 & 0x7ff
 
-        if desc.type == 'SRS'
+        if desc.type == 'SRS' and desc.opType != OPTYPE_SHFT
             if d.d == 0x3c || (desc.nm == 'IAL' and d.d == 0x3e)
                 d.extended = true
                 d.d = hw2
@@ -852,30 +853,22 @@ class Instruction extends PackedBits
                     f:['R R1,R2'],
                     d:'01001xxx11100yyy'
                     e:(t,v) ->
-                        if v.x % 2
-                            r1p1 = 0
-                        else
-                            r1p1 = t.r(v.x+1).get32()
-                        v1 = (t.r(v.x).get32() * 0x100000000) + (r1p1 >>> 0)
-                        v2 = t.r(v.y).get32()
-                        result = (Math.floor(v1/v2)) & 0xffffffff
-                        t.r(v.x).set32(result)
-                        t.computeCCarith(result,0)
+                        hi = t.r(v.x).get32()
+                        lo = if v.x % 2 then 0 else t.r(v.x+1).get32()
+                        {quotient, overflow} = q31_div(hi, lo, t.r(v.y).get32())
+                        t.r(v.x).set32(quotient)
+                        if overflow then t.psw.setOverflow(1)
                 }
         D:      {
                     n:'Divide'
                     f:['D R1,D2(B2)','D R1,D2(X2,B2)']
                     d:'01001xxxddddddbb'
                     e:(t,v) ->
-                        if v.x % 2
-                            r1p1 = 0
-                        else
-                            r1p1 = t.r(v.x+1).get32()
-                        v1 = (t.r(v.x).get32() * 0x100000000) + (r1p1 >>> 0)
-                        v2 = t.g_EAF(v)
-                        result = (Math.floor(v1/v2)) & 0xffffffff
-                        t.r(v.x).set32(result)
-                        t.computeCCarith(result,0)
+                        hi = t.r(v.x).get32()
+                        lo = if v.x % 2 then 0 else t.r(v.x+1).get32()
+                        {quotient, overflow} = q31_div(hi, lo, t.g_EAF(v))
+                        t.r(v.x).set32(quotient)
+                        if overflow then t.psw.setOverflow(1)
                 }
 
         # EXCHANGE UPPER AND LOWER HALFWORDS
@@ -996,7 +989,9 @@ class Instruction extends PackedBits
                     f:['LR R1,R2'],
                     d:'00011xxx11100yyy'
                     e:(t,v) ->
-                        t.r(v.x).set32(t.r(v.y).get32())
+                        val = t.r(v.y).get32()
+                        t.r(v.x).set32(val)
+                        t.computeCCarith(val, 0)
                 }
         L:      {
                     n:'Load'
@@ -1004,7 +999,9 @@ class Instruction extends PackedBits
                     d:'00011xxxddddddbb',
                     a:ADDR_FULLWORD
                     e:(t,v) ->
-                        t.r(v.x).set32(t.g_EAF(v))
+                        val = t.g_EAF(v)
+                        t.r(v.x).set32(val)
+                        t.computeCCarith(val, 0)
                 }
 
         # LOAD ADDRESS
@@ -1258,52 +1255,30 @@ class Instruction extends PackedBits
                     f:['MR R1,R2'],
                     d:'01000xxx11100yyy'
                     e:(t,v) ->
-                        # AP-101 fractional multiply: product is shifted left 1 bit
                         if v.x % 2 == 0
-                            # Fullword: R1+1 * R2 -> 64-bit fractional result in (R1, R1+1)
-                            v1 = t.r(v.x + 1).get32()
-                            v2 = t.r(v.y).get32()
-                            v1n = BigInt(v1 | 0)
-                            v2n = BigInt(v2 | 0)
-                            product64 = (v1n * v2n) << 1n
-                            t.r(v.x).set32(Number((product64 >> 32n) & 0xFFFFFFFFn))
-                            t.r(v.x + 1).set32(Number(product64 & 0xFFFFFFFFn))
-                            if (v1 | 0) == (0x80000000 | 0) and (v2 | 0) == (0x80000000 | 0)
-                                t.psw.setOverflow(1)
+                            {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.r(v.y).get32())
+                            t.r(v.x).set32(hi)
+                            t.r(v.x + 1).set32(lo)
+                            if overflow then t.psw.setOverflow(1)
                         else
-                            # Halfword: upper16(R1) * upper16(R2) -> 32-bit fractional in R1
-                            v1 = t.r(v.x).get32() >> 16
-                            v2 = t.r(v.y).get32() >> 16
-                            product = v1 * v2
-                            t.r(v.x).set32((product << 1) | 0)
-                            if v1 == -32768 and v2 == -32768
-                                t.psw.setOverflow(1)
+                            {result, overflow} = q15_mul(t.r(v.x).get32() >> 16, t.r(v.y).get32() >> 16)
+                            t.r(v.x).set32(result)
+                            if overflow then t.psw.setOverflow(1)
                 }
         M:      {
                     n:'Multiply'
                     f:['M R1,D2(B2)','M R1,D2(X2,B2)']
                     d:'01000xxxddddddbb'
                     e:(t,v) ->
-                        # AP-101 fractional multiply: product is shifted left 1 bit
                         if v.x % 2 == 0
-                            # Fullword: R1+1 * memory -> 64-bit fractional result in (R1, R1+1)
-                            v1 = t.r(v.x + 1).get32()
-                            v2 = t.g_EAF(v)
-                            v1n = BigInt(v1 | 0)
-                            v2n = BigInt(v2 | 0)
-                            product64 = (v1n * v2n) << 1n
-                            t.r(v.x).set32(Number((product64 >> 32n) & 0xFFFFFFFFn))
-                            t.r(v.x + 1).set32(Number(product64 & 0xFFFFFFFFn))
-                            if (v1 | 0) == (0x80000000 | 0) and (v2 | 0) == (0x80000000 | 0)
-                                t.psw.setOverflow(1)
+                            {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.g_EAF(v))
+                            t.r(v.x).set32(hi)
+                            t.r(v.x + 1).set32(lo)
+                            if overflow then t.psw.setOverflow(1)
                         else
-                            # Halfword: upper16(R1) * upper16(memory) -> 32-bit fractional in R1
-                            v1 = t.r(v.x).get32() >> 16
-                            v2 = t.g_EAF(v) >> 16
-                            product = v1 * v2
-                            t.r(v.x).set32((product << 1) | 0)
-                            if v1 == -32768 and v2 == -32768
-                                t.psw.setOverflow(1)
+                            {result, overflow} = q15_mul(t.r(v.x).get32() >> 16, t.g_EAF(v) >> 16)
+                            t.r(v.x).set32(result)
+                            if overflow then t.psw.setOverflow(1)
                 }
 
         # MULTIPLY HALFWORD
@@ -1332,17 +1307,12 @@ class Instruction extends PackedBits
                     d:'10101xxxddddddbb'
                     a:ADDR_HALFWORD
                     e:(t,v) ->
-                        # Multiplicand: bits 0-15 of R1 (signed halfword)
                         v1 = t.r(v.x).get32() >> 16
-                        # Multiplier: halfword from memory (signed)
                         v2 = t.g_EAH(v)
                         if v2 & 0x8000 then v2 = v2 - 0x10000
-                        # AP-101 fractional multiply: product shifted left 1 bit
-                        product = v1 * v2
-                        t.r(v.x).set32((product << 1) | 0)
-                        # Overflow: halfword fractional -1 * -1
-                        if v1 == -32768 and v2 == -32768
-                            t.psw.setOverflow(1)
+                        {result, overflow} = q15_mul(v1, v2)
+                        t.r(v.x).set32(result)
+                        if overflow then t.psw.setOverflow(1)
                 }
 
         # MULTIPLY HALFWORD IMMEDIATE
@@ -1371,16 +1341,12 @@ class Instruction extends PackedBits
                     d:'1011011111100yyy/I'
                     a:ADDR_HALFWORD
                     e:(t,v) ->
-                        # Multiplier: immediate data (signed halfword)
                         v1 = v.I
                         if v1 & 0x8000 then v1 = v1 - 0x10000
-                        # Multiplicand: bits 0-15 of R2 (signed halfword)
                         v2 = t.r(v.y).get32() >> 16
-                        # AP-101 fractional multiply: product shifted left 1 bit
-                        product = v1 * v2
-                        t.r(v.y).set32((product << 1) | 0)
-                        if v1 == -32768 and v2 == -32768
-                            t.psw.setOverflow(1)
+                        {result, overflow} = q15_mul(v1, v2)
+                        t.r(v.y).set32(result)
+                        if overflow then t.psw.setOverflow(1)
                 }
 
         # MULTIPLY INTEGER HALFWORD
@@ -1599,7 +1565,7 @@ class Instruction extends PackedBits
         # Program Interrupt - Fixed point overflow
         #
         SST:    {
-                    n:'Subtract and Store'
+                    n:'Subtract From Storage'
                     f:['SST R1,D2(B2)','SST R1,D2(X2,B2)']
                     d:'00001xxx11111abb/X'
                     e:(t,v) ->
@@ -1948,7 +1914,7 @@ class Instruction extends PackedBits
         # initialized by the use of the BRANCH AND LINK instruction.
         #
         BCRE:   {
-                    n:'Branch on Condition Register Even'
+                    n:'Branch on Condition (Extended)'
                     f:['BCRE M1,R2']
                     d:'11000xxx11101yyy'
                     t:OPTYPE_BRCH
@@ -3523,12 +3489,108 @@ class Instruction extends PackedBits
                 }
         CE:     {
                     n:'Compare Short'
-                    f:['CE R1,D2(B2)','CE R1,D2(X2,B2)']
+                    f:['CE R1,D2(B2)','x R1,D2(X2,B2)']
                     d:'01001xxx11111abb/X'
                     a:ADDR_HALFWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
+                        result = subE(v1,v2)
+                        if result.gFracBits().isZero()
+                            t.psw.setCC(0)
+                        else if result.gSign() > 0
+                            t.psw.setCC(1)
+                        else
+                            t.psw.setCC(3)
+                }
+
+        # COMPARE (LONG OPERANDS)
+        #   AP-101S
+        #
+        #   The long first operand is compared with the long second operand, 
+        #   and the condition code indicates the result.
+        #
+        #   The long second operand is compares with the contents of the 
+        # floating point register pair specified by regster R1.  Comparison
+        # is algebraic, taking into account the sign, fraction, and exponent 
+        # of each number.  An equality is establised by following the rules 
+        # for normalized  floating-point subtraction. Neither operand is 
+        # changed as a result of the operation.
+        #
+        #   Exponent overflow, exponent underflow, or lost significance cannot
+        # occur.
+        #
+        # RESULTING CONDITION CODE
+        #
+        #   00  Operands are not equal
+        #   11  First operand is less than the second operand
+        #   01  First operand is greater than the second operand
+        #
+        # PROGRAMMING NOTE
+        #
+        #   Numbers with zero fraction compare equal even when they differ in
+        # sign or characteristic.
+        #
+        # ANOMALY NOTE:
+        #
+        #   False indications of equality can occur in some cases when the
+        # fractional portion of the operands differ by x'80 0000' after 
+        # prealignment
+        #
+        # Prealignment shifts the fraction, of the oeprand with the smaller
+        # exponent, right a number of hex digits equal to the absolute value of
+        # the difference between the two exponents. The fraction being shifted
+        # is left filled with zeroes. After prealignment, the comparison is 
+        # based on 64 fractional bits (right filled with zeroes) and a possible 
+        # guard bit.  Note that unnormalized numbers are not first normalized 
+        # and are compared in the same manner as normalized numbers.
+        #
+        # Examples of failing cases (return false indications of equality)
+        #
+        # Operand 1:   423F FFFF 0000 1234
+        # Operand 2:   423F FFFF 0080 1234
+        # Absolute difference of OP2 and OP1 is .00 0000 0080 0000
+        # Returns CC of 00 (equal); correct CC is 11 (OP1 < OP2)
+        #
+        # Operand 1:   BEFF FFFF FB07 6890
+        # Operand 2:   BF10 0000 0030 7689
+        # Absolute difference of OP2 and OP1 is .00 0000 0080 0000
+        # Returns CC Of 00 (equal); correct CC is 01 (OP1 > OP2)
+        #
+        # Operand 1:   4010 0000 0000 1234
+        # Operand 2:   3FFF FFFF F801 2340
+        # Absolute difference of OP2 and OP1 is .00 0000 0080 0000
+        # Returns CC of 00 (equal); correct CC is 01 (OP1 > OP2)
+        #
+        CEDR:   {
+                    n:'Compare (Long Operands)'
+                    f:['CEDR R1,R2'],
+                    d:'00011xxx11101yyy'
+                    a:ADDR_HALFWORD
+                    e:(t,v) ->
+                        v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
+                        v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
+                        result = subE(v1,v2)
+                        # XXX Handle Exponent overflow
+                        if not result.gFracBits?
+                            console.log("CEDR not result.gFracBits", result, v1, v2)
+                        if result.gFracBits().isZero()
+                            t.psw.setCC(0)
+                        else if result.gSign() > 0
+                            t.psw.setCC(1)
+                        else
+                            t.psw.setCC(3)
+                }
+        CED:    {
+                    n:'Compare (Long Operands)'
+                    f:['CED R1,D2(B2)','CED R1,D2(X2,B2)']
+                    d:'00011xxx11111abb/X'
+                    a:ADDR_HALFWORD
+                    e:(t,v) ->
+                        v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
+                        v2hw1 = t.g_EAF(v)
+                        v2hw2 = t.g_EAF(v, 2)
+                        v2 = FloatIBM.From64(v2hw1, v2hw2)
                         result = subE(v1,v2)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
@@ -3827,9 +3889,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        f2 = v2.toFloat()
-                        if f2 == 0 then return
-                        result = new FloatIBM(v1.toFloat() / f2)
+                        if v2.gFracBits().isZero() then return
+                        result = divE(v1, v2)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -3843,9 +3904,8 @@ class Instruction extends PackedBits
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        f2 = v2.toFloat()
-                        if f2 == 0 then return
-                        result = new FloatIBM(v1.toFloat() / f2)
+                        if v2.gFracBits().isZero() then return
+                        result = divE(v1, v2)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -3934,6 +3994,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         val = t.f(v.y).get32()
                         t.f(v.x).set32(val)
+                        if v.x % 2 == 0 then t.f(v.x + 1).set32(0)
                         if (val & 0x00ffffff) == 0
                             t.psw.setCC(0)
                         else if val & 0x80000000
@@ -3949,6 +4010,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.f(v.x).set32(val)
+                        if v.x % 2 == 0 then t.f(v.x + 1).set32(0)
                         if (val & 0x00ffffff) == 0
                             t.psw.setCC(0)
                         else if val & 0x80000000
@@ -3987,6 +4049,7 @@ class Instruction extends PackedBits
                         v2 = t.f(v.y).get32()
                         result = (v2 ^ 0x80000000) >>> 0
                         t.f(v.x).set32(result)
+                        if v.x % 2 == 0 then t.f(v.x + 1).set32(0)
                         # CC: sign bit determines negative, fraction zero = true zero
                         if result & 0x80000000
                             t.psw.setCC(3)
@@ -4241,7 +4304,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        result = new FloatIBM(v1.toFloat() * v2.toFloat())
+                        result = mulE(v1, v2)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -4254,7 +4317,7 @@ class Instruction extends PackedBits
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        result = new FloatIBM(v1.toFloat() * v2.toFloat())
+                        result = mulE(v1, v2)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -4437,7 +4500,7 @@ class Instruction extends PackedBits
                     n:'Store Long'
                     f:['STED R1,D2(B2)','STED R1,D2(X2,B2)']
                     d:'00111xxx11111abb/X'
-                    a:ADDR_FULLWORD
+                    a:ADDR_DBLEWORD
                     e:(t,v) ->
                         t.s_EAF(v,t.f(v.x  ).get32(),0)
                         t.s_EAF(v,t.f(v.x+1).get32(),2)
