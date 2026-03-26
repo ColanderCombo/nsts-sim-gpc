@@ -1,6 +1,6 @@
 "civet coffeeCompat"
 
-import * as gpc from './../../gpc/run_debug.coffee'
+import * as gpc from './../../gpc/run_gui.coffee'
 
 ipcRenderer := window.ipcRenderer
 reactClient := require 'react-dom/client';

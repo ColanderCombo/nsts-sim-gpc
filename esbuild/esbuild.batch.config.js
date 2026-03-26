@@ -9,7 +9,7 @@ async function main() {
       entryPoints: [path.resolve('gpc/run_batch.coffee')],
       bundle: true,
       format: 'cjs',
-      target: 'node18',
+      target: 'node20',
       outfile: 'dist/gpc-batch.js',
       plugins: [
         coffeeScriptPlugin({}),

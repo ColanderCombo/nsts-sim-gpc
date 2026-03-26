@@ -6,11 +6,11 @@ async function main() {
   try {
     await esbuild.build({
       platform: 'node',
-      entryPoints: [path.resolve('gpc/run_dump.coffee')],
+      entryPoints: [path.resolve('gpc/run_dbg.coffee')],
       bundle: true,
       format: 'cjs',
       target: 'node20',
-      outfile: 'dist/gpc-dump.js',
+      outfile: 'dist/gpc-dbg.js',
       plugins: [
         coffeeScriptPlugin({}),
       ],
