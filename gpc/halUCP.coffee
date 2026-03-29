@@ -91,6 +91,7 @@ export class HalUCP
     @iobufEncoding = 'ebcdic'  # 'ebcdic' or 'ascii' — determined from symTypes
     @channel = 0            # current I/O channel (set by IOINIT)
     @inputBuffer = ''       # buffered comma-separated input text from multi-value entry
+    @formatNumBlanks = 5    # number of blanks between WRITE fields
 
   # Handle an SVC instruction.  Returns true if the SVC was intercepted
   # (caller should skip the standard PSW swap), false otherwise.
@@ -319,7 +320,7 @@ export class HalUCP
       else
         text = "[IOCODE=#{iocode}?]"
 
-    text += ' '
+    text += ' '.repeat(@formatNumBlanks)
     @outputCallback?(text, @channel)
 
   handleControl: () ->

@@ -33,6 +33,7 @@ class BatchRunner
     @halUCP = new HalUCP(@cpu)
     @cpu.halUCP = @halUCP
     @halUCP.trapSvcError = @trapSvcError
+    @halUCP.formatNumBlanks = opts.formatNumBlanks ? 1
     @halUCP.errorCallback = (msg) -> process.stderr.write "\n*** " + msg + "\n\n"
     @lines = []
     @symbols = null
@@ -659,6 +660,7 @@ program
   .option('--ebcdic', 'use EBCDIC encoding for character I/O')
   .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
   .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
+  .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
   .option('--disasm [end]', 'disassemble from start to END (hex)')
   .option('--infile0 <file>', 'read input for channel 0')
   .option('--infile1 <file>', 'read input for channel 1')
@@ -701,6 +703,7 @@ opts = {
   interactive: o.interactive or false
   ebcdic: o.ebcdic or false
   trapSvcError: o.trapSvcError
+  formatNumBlanks: parseInt(o.halucpFormatNumBlanks, 10)
   inFiles
   outFiles
 }

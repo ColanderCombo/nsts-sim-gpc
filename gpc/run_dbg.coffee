@@ -41,6 +41,7 @@ class GPCDebugger
     @halUCP = new HalUCP(@cpu)
     @cpu.halUCP = @halUCP
     @halUCP.trapSvcError = @trapSvcError
+    @halUCP.formatNumBlanks = opts.formatNumBlanks ? 5
     @halUCP.errorCallback = (msg) => @error msg
 
     @sym = new SymbolTable()
@@ -1134,6 +1135,7 @@ program
   .option('--ebcdic', 'use EBCDIC encoding for character I/O')
   .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
   .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
+  .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
   .option('--infile0 <file>', 'read input for channel 0')
   .option('--infile1 <file>', 'read input for channel 1')
   .option('--infile2 <file>', 'read input for channel 2')
@@ -1162,6 +1164,7 @@ opts = {
   traceEnabled: o.trace or false
   ebcdic: o.ebcdic or false
   trapSvcError: o.trapSvcError
+  formatNumBlanks: parseInt(o.halucpFormatNumBlanks, 10)
   inFiles
   outFiles
 }
