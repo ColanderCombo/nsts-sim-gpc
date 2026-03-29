@@ -102,9 +102,9 @@ export class CdeWindow extends LitElement {
 				<div class="cde-menu-item disabled">Occupy Workspace</div>
 				<div class="cde-menu-item disabled">Occupy All Workspaces</div>
 				<div class="cde-menu-separator"></div>
-				<div class="cde-menu-item" @click="${() => this._menuAction('devtools')}">DevTools</div>
+				<div class="cde-menu-item" @click="${() => this._menuAction('devtools')}"><span>DevTools</span><span class="cde-menu-shortcut">F12</span></div>
 				<div class="cde-menu-separator"></div>
-				<div class="cde-menu-item" @click="${() => this._menuAction('close')}">Close</div>
+				<div class="cde-menu-item" @click="${() => this._menuAction('close')}">Quit</div>
 			</div>
 		` : ''}
 		<div id="title"><span id="title-text">${this.title}</span></div>
@@ -290,12 +290,19 @@ export class CdeWindow extends LitElement {
 			  }
 
 			  .cde-menu-item {
+				display: flex;
+				justify-content: space-between;
 				padding: 2px 12px;
 				color: black;
 				cursor: pointer;
 				white-space: nowrap;
 				background-color: var(--box-color) !important;
 				border: none !important;
+			  }
+
+			  .cde-menu-shortcut {
+				margin-left: 24px;
+				color: inherit;
 			  }
 
 			  .cde-menu-item:hover:not(.disabled) {
