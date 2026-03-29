@@ -207,11 +207,15 @@ export class GpcDisasm extends LitElement {
       const mnCol = rpad(fields.mnemonic, ' ', 5);
       const argCol = fields.args;
 
-      // Comment
+      // Comment - prefer EA label, fall back to relocation target
       let commentCol = '';
       if (ea != null && this.sym) {
         const eaLabel = this.sym.getLabelAt(ea);
         if (eaLabel) commentCol = eaLabel;
+      }
+      if (!commentCol && this.sym) {
+        const relocSym = this.sym.getRelocAt(curAddr, len);
+        if (relocSym) commentCol = relocSym;
       }
       if (this.halUCP && this.halUCP.active && this.halUCP.trapAddrs) {
         const t = this.halUCP.trapAddrs;

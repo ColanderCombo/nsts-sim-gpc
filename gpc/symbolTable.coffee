@@ -7,8 +7,9 @@ export class SymbolTable
     @symbolsByAddr = {}   # addr -> [sym, ...]
     @sectionsByAddr = []  # sorted array of { name, address, size }
     @addrToSection = {}   #
-    @sectionColors = {}   # 
+    @sectionColors = {}   #
     @symTypes = {}        # symbol type overrides from .symtypes.json
+    @relocsByAddr = {}    # hwAddr -> symbol name (from linker relocation data)
 
   load: (symPath) ->
     # returns entry point
@@ -38,6 +39,11 @@ export class SymbolTable
       for sect, idx in @sectionsByAddr
         hue = (idx * 137.508) % 360
         @sectionColors[sect.name] = "hsl(#{hue}, 40%, 20%)"
+
+      # Build relocation lookup (hwAddr -> symbol name)
+      @relocsByAddr = {}
+      for reloc in (@symbols.relocations or [])
+        @relocsByAddr[reloc.address] = reloc.symbol
 
       # Load .symtypes.json if present
       @symTypes = {}
@@ -81,6 +87,15 @@ export class SymbolTable
     syms = @getSymbolsAt(addr)
     if syms.length > 0
       return syms[0].name
+    return null
+
+  # Get relocation target symbol for any halfword in an instruction
+  # instrAddr: halfword address of instruction start
+  # instrLen: length in halfwords (1 or 2)
+  getRelocAt: (instrAddr, instrLen = 1) ->
+    for i in [0...instrLen]
+      sym = @relocsByAddr[instrAddr + i]
+      return sym if sym?
     return null
 
   getSymbolSize: (sym, displayType, displaySize) ->

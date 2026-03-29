@@ -70,6 +70,9 @@ class GPCDebugger
     # Stop reason for display
     @stopReason = null
 
+    # True while an async execution loop is running
+    @executing = false
+
   # ---------------------------------------------------------------
   # Output helpers
   # ---------------------------------------------------------------
@@ -281,7 +284,9 @@ class GPCDebugger
     changes = changes.filter (c) -> c.name != 'NIA'
 
     if @traceEnabled
-      @out @formatTraceLine(@stepCount - 1, nia, hw1, hw2, disasm, instrLen, changes)
+      relocSym = @sym.getRelocAt?(nia, instrLen)
+      relocComment = if relocSym then "  #{C.dim}; #{relocSym}#{C.reset}" else ""
+      @out @formatTraceLine(@stepCount - 1, nia, hw1, hw2, disasm, instrLen, changes) + relocComment
 
     if watchBefore?
       @memWatchpoints.forEach (wp, addr) =>
@@ -314,10 +319,6 @@ class GPCDebugger
     return 'ok'
 
   _handleExecResult: (result) ->
-    if result == 'input'
-      @flushOutput()
-      @handleInteractiveInput()
-      return false  # continue running (don't count as step)
     if result == 'error' or result == 'halt' or result == 'svc'
       return true
     if result == 'watchpoint'
@@ -327,10 +328,12 @@ class GPCDebugger
       return true
     return false  # 'ok'
 
-  execSteps: (count) ->
+  # Async-resumable execution loop.
+  # Runs up to maxCount instructions, pausing for readline input when needed.
+  # Calls onDone(ran) when execution stops.
+  _execLoop: (maxCount, onDone) ->
     ran = 0
-    while ran < count
-      # Check breakpoint before execution (except on first step of a 'continue')
+    while ran < maxCount
       if ran > 0
         nextNia = @cpu.psw.getNIA()
         bp = @breakpoints.get(nextNia)
@@ -341,58 +344,33 @@ class GPCDebugger
       result = @execOne()
       if result == 'input'
         @flushOutput()
-        @handleInteractiveInput()
-        continue
+        @_handleInput(maxCount - ran, onDone)
+        return  # resumes asynchronously via _handleInput callback
       ran++
       break if @_handleExecResult(result)
 
     @flushOutput()
-    return ran
+    onDone?(ran)
 
-  execRun: ->
-    ran = 0
-    while ran < @maxSteps
-      # Check breakpoint (skip on first step to allow continuing past a bp)
-      if ran > 0
-        nextNia = @cpu.psw.getNIA()
-        bp = @breakpoints.get(nextNia)
-        if bp?.enabled
-          @stopReason = "breakpoint at #{@formatAddrPlain(nextNia)}"
-          break
-
-      result = @execOne()
-      if result == 'input'
-        @flushOutput()
-        @handleInteractiveInput()
-        continue
-      ran++
-      break if @_handleExecResult(result)
-
-    if ran >= @maxSteps and not @stopReason
-      @stopReason = "max steps reached (#{@maxSteps})"
-
-    @flushOutput()
-    return ran
-
-  handleInteractiveInput: ->
+  _handleInput: (remainingCount, onDone) ->
     ch = '0'
-    iocode = @halUCP.pendingIocode
-    typeName = HalUCP.iocodeTypeName(iocode)
-
     # Try file input first
     if @inStreams[ch]? and @inStreams[ch].length > 0
       line = @inStreams[ch].shift()
       @halUCP.provideInput(line)
+      @_execLoop(remainingCount, onDone)
       return
 
-    buf = Buffer.alloc(1024)
-    process.stdout.write "#{C.green} INPUT(#{typeName}): #{C.reset}"
-    try
-      n = fs.readSync(0, buf, 0, 1024)
-      line = buf.toString('utf8', 0, n).replace(/\n$/, '')
-    catch e
-      line = ''
-    @halUCP.provideInput(line)
+    iocode = @halUCP.pendingIocode
+    typeName = HalUCP.iocodeTypeName(iocode)
+    @rl.question "#{C.green} INPUT(#{typeName}): #{C.reset}", (line) =>
+      @halUCP.provideInput(line)
+      @_execLoop(remainingCount, onDone)
+
+  _execDone: ->
+    @showStatus()
+    @executing = false
+    @rl.prompt()
 
   # ---------------------------------------------------------------
   # Display commands
@@ -491,7 +469,9 @@ class GPCDebugger
         hw1Str = hw1.asHex(4)
         hw2Str = if instrLen > 1 then hw2.asHex(4) else "    "
         sect = @formatSectionOffset(addr)
-        @out "#{marker}#{bpMark}#{addr.asHex(5)}: #{hw1Str} #{hw2Str}  #{disasmStr}"
+        relocSym = @sym.getRelocAt?(addr, instrLen)
+        comment = if relocSym then "  #{C.dim}; #{relocSym}#{C.reset}" else ""
+        @out "#{marker}#{bpMark}#{addr.asHex(5)}: #{hw1Str} #{hw2Str}  #{disasmStr}#{comment}"
       else
         @out "#{marker}#{bpMark}#{addr.asHex(5)}: #{hw1.asHex(4)}       DC    X'#{hw1.asHex(4)}'"
         instrLen = 1
@@ -624,8 +604,8 @@ class GPCDebugger
         if isNaN(count) or count < 1
           @error "Usage: step [N]"
           return
-        @execSteps(count)
-        @showStatus()
+        @executing = true
+        @_execLoop count, => @_execDone()
 
     @repl.command('next')
       .alias('n')
@@ -640,17 +620,21 @@ class GPCDebugger
         hadBp = @breakpoints.has(nextAddr)
         unless hadBp
           @breakpoints.set(nextAddr, { enabled: true, name: '__next__' })
-        @execRun()
-        unless hadBp
-          @breakpoints.delete(nextAddr)
-        @showStatus()
+        @executing = true
+        @_execLoop @maxSteps, =>
+          unless hadBp
+            @breakpoints.delete(nextAddr)
+          @_execDone()
 
     @repl.command('run')
       .aliases(['r', 'c', 'continue', 'g', 'go'])
       .description('Run until breakpoint/halt/watchpoint')
       .action =>
-        @execRun()
-        @showStatus()
+        @executing = true
+        @_execLoop @maxSteps, (ran) =>
+          if ran >= @maxSteps and not @stopReason
+            @stopReason = "max steps reached (#{@maxSteps})"
+          @_execDone()
 
     @repl.command('reset')
       .description('Reset CPU and reload program')
@@ -897,6 +881,29 @@ class GPCDebugger
           return
         @showMemoryFullword(addr)
 
+    @repl.command('deposit')
+      .aliases(['dep', 'dw'])
+      .argument('<addr>', 'address or symbol')
+      .argument('<values...>', 'hex values to write (halfwords by default)')
+      .option('-w, --fullword', 'write as 32-bit fullwords')
+      .description('Deposit values into memory')
+      .action (addrStr, values, opts) =>
+        addr = @resolveAddr(addrStr)
+        unless addr?
+          @error "Cannot resolve: #{addrStr}"
+          return
+        for valStr, idx in values
+          val = parseInt(valStr.replace(/^0x/i, ''), 16)
+          if isNaN(val)
+            @error "Invalid hex value: #{valStr}"
+            return
+          if opts.fullword
+            @cpu.mainStorage.set32(addr + (idx * 2), val, false)
+            @info "  #{(addr + idx * 2).asHex(5)}: #{(val >>> 0).asHex(8)}"
+          else
+            @cpu.mainStorage.set16(addr + idx, val & 0xFFFF, false)
+            @info "  #{(addr + idx).asHex(5)}: #{(val & 0xFFFF).asHex(4)}"
+
     # -- Symbols & sections --
 
     @repl.command('sym')
@@ -1096,7 +1103,7 @@ class GPCDebugger
           if @traceEnabled
             @error e.stack
 
-      @rl.prompt()
+      @rl.prompt() unless @executing
 
     @rl.on 'close', =>
       try

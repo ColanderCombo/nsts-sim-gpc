@@ -35,6 +35,7 @@ class FCMDumper
     @sortedSymbols = []       # sorted alphabetically
     @symbolByName = {}        # name -> symbol
     @addrToSection = {}       # addr -> section object
+    @relocsByAddr = {}        # hwAddr -> symbol name (relocation targets)
     @imageSize = 0
 
   write: (s) ->
@@ -102,9 +103,14 @@ class FCMDumper
       
       # Build alphabetically sorted symbol list
       @sortedSymbols = (@symbols.symbols or []).slice()
-      @sortedSymbols.sort (a, b) -> 
+      @sortedSymbols.sort (a, b) ->
         a.name.toUpperCase().localeCompare(b.name.toUpperCase())
-      
+
+      # Build relocation lookup (hwAddr -> symbol name)
+      @relocsByAddr = {}
+      for reloc in (@symbols.relocations or [])
+        @relocsByAddr[reloc.address] = reloc.symbol
+
       return true
     catch e
       if @requireSymbols
@@ -121,6 +127,13 @@ class FCMDumper
   # Get the section containing an address
   getSectionAt: (addr) ->
     return @addrToSection[addr] or null
+
+  # Get relocation target symbol for any halfword in an instruction
+  getRelocAt: (instrAddr, instrLen = 1) ->
+    for i in [0...instrLen]
+      sym = @relocsByAddr[instrAddr + i]
+      return sym if sym?
+    return null
 
   # Format symbol table as grid
   printSymbolTable: ->
@@ -419,6 +432,9 @@ class FCMDumper
         opcode = "DC"
         operands = "X'#{hw1.asHex(4).toUpperCase()}'"
       
+      # Look up relocation target for comment
+      relocSym = @getRelocAt(addr, instrLen)
+
       # Build the main instruction line
       instrLine = @makeLineData({
         startAddr: addr
@@ -431,6 +447,7 @@ class FCMDumper
         label: labelName
         opcode: opcode
         operands: operands
+        comment: relocSym
       })
       @write @formatLine(instrLine)
       
