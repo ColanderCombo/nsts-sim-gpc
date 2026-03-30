@@ -90,6 +90,7 @@ export class HalUCP
     @skipTrap = false       # set after provideInput so the trap instruction (BR R4) can execute
     @iobufEncoding = 'ebcdic'  # 'ebcdic' or 'ascii' — determined from symTypes
     @channel = 0            # current I/O channel (set by IOINIT)
+    @channelMode = {}       # channel -> 'paged'|'unpaged' (set by IOINIT iocode)
     @inputBuffer = ''       # buffered comma-separated input text from multi-value entry
     @formatNumBlanks = 5    # number of blanks between WRITE fields
 
@@ -241,44 +242,49 @@ export class HalUCP
     else
       return 'continue'
 
-  # Format integer for WRITE output: right-justified in a 6-character field,
-  # no leading zeros, '-' for negative, space for positive sign position.
+  # Return the mode of the current channel: 'paged' or 'unpaged'.
+  #   output-only channels default to PAGED,
+  #   input channels default to UNPAGED.
+  # Set with the code passed to IOINIT
+  getChannelMode: (ch) ->
+    return @channelMode[ch ? @channel] ? 'paged'
+
+  setChannelMode: (ch, mode) ->
+    @channelMode[ch] = mode
+
+  isPaged: (ch) ->
+    return @getChannelMode(ch) == 'paged'
+
+  # Format integer for WRITE output: right-justified in 11-character field,
+  # leading zeros suppressed, minus sign if negative.
+  #
   formatInteger: (val) ->
-    s = Math.abs(val).toString()
-    sign = if val < 0 then '-' else ' '
-    str = sign + s
-    if str.length < 6
-      str = ' '.repeat(6 - str.length) + str
+    str = val.toString()
+    if str.length < 11
+      str = ' '.repeat(11 - str.length) + str
     return str
 
   # Format scalar for WRITE output matching ETOC/DTOC format:
-  #   SP: [sign]d.ddddddE[+-]dd   (14 chars, 7 significant digits)
-  #   DP: [sign]d.dddddddddddddddE[+-]dd  (23 chars, 16 significant digits)
-  formatScalar: (ibmFloat, sigDigits, totalWidth) ->
+  #   SP: sd.dddddddE±dd   (14 chars: sign + d.7digits + E±dd)
+  #   DP: sd.ddddddddddddddddE±dd  (23 chars: sign + d.16digits + E±dd)
+  #
+  formatScalar: (ibmFloat, fracDigits, totalWidth) ->
     v = ibmFloat.toFloat()
     if v == 0
-      # Zero: ' 0.0' padded to totalWidth
-      return (' 0.0' + ' '.repeat(Math.max(0, totalWidth - 5)))
+      return (' 0.0').padEnd(totalWidth, ' ')
     sign = if v < 0 then '-' else ' '
     av = Math.abs(v)
-    # Compute decimal exponent: floor(log10(|v|))
     exp = Math.floor(Math.log10(av))
-    # Mantissa normalized to d.ddd...
     mantissa = av / Math.pow(10, exp)
-    # Guard against floating-point edge cases
     if mantissa >= 10
       mantissa /= 10
       exp += 1
     else if mantissa < 1 and mantissa > 0
       mantissa *= 10
       exp -= 1
-    # Format mantissa digits: first digit, '.', then remaining digits
-    fracDigits = sigDigits - 1
     mantissaStr = mantissa.toFixed(fracDigits)
-    # Ensure exactly one digit before decimal point
     if mantissaStr.indexOf('.') != 1
       mantissaStr = mantissa.toFixed(fracDigits)
-    # Format exponent: E[+-]dd
     expSign = if exp >= 0 then '+' else '-'
     expStr = 'E' + expSign + Math.abs(exp).toString().padStart(2, '0')
     return sign + mantissaStr + expStr
@@ -292,8 +298,18 @@ export class HalUCP
         len = @cpu.mainStorage.get16(@iobufAddr)
         bits = @get32(@iobufAddr + 2)
         # Format as binary string of specified length
-        bitStr = (bits >>> 0).toString(2).padStart(32, '0')
-        text = bitStr.substring(32 - len)
+        bitStr = (bits >>> 0).toString(2).padStart(32, '0').substring(32 - len)
+        # Insert blank after every 4th digit
+        groups = []
+        for j in [0...bitStr.length] by 4
+          groups.push bitStr.substring(j, j + 4)
+        spaced = groups.join(' ')
+        if @isPaged()
+          # PAGED: binary digits with blanks between groups
+          text = spaced
+        else
+          # UNPAGED: enclosed in apostrophes
+          text = "'" + spaced + "'"
       when 9  # IOUT - int32
         val = @get32(@iobufAddr)
         # Sign-extend from 32-bit
@@ -306,17 +322,20 @@ export class HalUCP
         if val & 0x8000
           val = val - 0x10000
         text = @formatInteger(val)
-      when 11 # EOUT - float SP (IBM hex)
+      when 11 # EOUT - float SP
         w = @get32(@iobufAddr)
         f = FloatIBM.From32(w)
         text = @formatScalar(f, 7, 14)
-      when 12 # DOUT - float DP (IBM hex)
+      when 12 # DOUT - float DP
         w1 = @get32(@iobufAddr)
         w2 = @get32(@iobufAddr + 2)
         f = FloatIBM.From64(w1, w2)
         text = @formatScalar(f, 16, 23)
       when 13 # COUT - character string
         text = @readCharString()
+        unless @isPaged()
+          # UNPAGED: enclose in apostrophes, double internal apostrophes
+          text = "'" + text.replace(/'/g, "''") + "'"
       else
         text = "[IOCODE=#{iocode}?]"
 
@@ -328,7 +347,7 @@ export class HalUCP
     param = @cpu.mainStorage.get16(@iobufAddr)
 
     switch iocode
-      when 0, 1, 2, 3 # IOINIT - channel init (iocode=mode, param=device number)
+      when 0, 1, 2, 3 # IOINIT - channel init (iocode=param, param=device number)
         @channel = param
         if @controlCallback?
           @controlCallback(iocode, param, @channel)
@@ -367,6 +386,10 @@ export class HalUCP
 
   handleInput: () ->
     iocode = @cpu.mainStorage.get16(@iocodeAddr)
+
+    # channels used for input default to UNPAGED
+    unless @channelMode[@channel]?
+      @channelMode[@channel] = 'unpaged'
 
     # If we have buffered text from a previous comma-separated entry, consume from it
     if @inputBuffer.length > 0
