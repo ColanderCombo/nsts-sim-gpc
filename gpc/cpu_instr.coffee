@@ -3384,6 +3384,7 @@ class Instruction extends PackedBits
                     n:'Add Long'
                     f:['AED R1,D2(B2)','AED R1,D2(X2,B2)']
                     d:'01010xxx11111abb/X'
+                    a:ADDR_DBLEWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.g_EAF(v), t.g_EAF(v,2))
@@ -3491,7 +3492,7 @@ class Instruction extends PackedBits
                     n:'Compare Short'
                     f:['CE R1,D2(B2)','x R1,D2(X2,B2)']
                     d:'01001xxx11111abb/X'
-                    a:ADDR_HALFWORD
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
@@ -3585,7 +3586,7 @@ class Instruction extends PackedBits
                     n:'Compare (Long Operands)'
                     f:['CED R1,D2(B2)','CED R1,D2(X2,B2)']
                     d:'00011xxx11111abb/X'
-                    a:ADDR_HALFWORD
+                    a:ADDR_DBLEWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
@@ -3898,7 +3899,7 @@ class Instruction extends PackedBits
                     n:'Divide Long'
                     f:['DED R1,D2(B2)','DED R1,D2(X2,B2)']
                     d:'00010xxx11111abb/X'
-                    a:ADDR_HALFWORD
+                    a:ADDR_DBLEWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
@@ -4312,6 +4313,7 @@ class Instruction extends PackedBits
                     n:'Multiply Long'
                     f:['MED R1,D2(B2)','MED R1,D2(X2,B2)']
                     d:'00110xxx11111abb/X'
+                    a:ADDR_DBLEWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
@@ -4397,6 +4399,7 @@ class Instruction extends PackedBits
                     n:'Subtract Long'
                     f:['SED R1,D2(B2)','SED R1,D2(X2,B2)']
                     d:'01011xxx11111abb/X'
+                    a:ADDR_DBLEWORD
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.g_EAF(v), t.g_EAF(v,2))

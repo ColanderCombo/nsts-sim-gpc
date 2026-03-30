@@ -498,10 +498,10 @@ export class CPU
                   if v.ia==0 and v.ii==1
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       modifier = @r(v.i).get32() & 0xffff
-                      ea = pea + regx
-                      ea = @g_EXPAND(ea,v.opType)
-                      ea = ea + modifier
-                      @r(v.i).set32((ea<<16) + modifier)
+                      ea16 = (pea + regx) & 0xffff
+                      ea = @g_EXPAND(ea16,v.opType)
+                      modifiedAddr = (ea16 + modifier) & 0xffff
+                      @r(v.i).set32((modifiedAddr << 16) + modifier)
 
 
                   # 9) If the X field is not all zeros, IA (bit 19) is a one 
@@ -748,8 +748,8 @@ export class CPU
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       modifier = @r(v.i).get32() & 0xffff
                       ea = (pea + regx) & 0xffff
-                      ea = (ea + modifier) & 0xffff
-                      @r(v.i).set32((ea << 16) + modifier)
+                      modifiedAddr = (ea + modifier) & 0xffff
+                      @r(v.i).set32((modifiedAddr << 16) + modifier)
 
                   # Step 9: Indirect with post-indexing (expand for memory lookup)
                   if v.ia==1 and v.ii==0
