@@ -611,8 +611,8 @@ export class CPU
                       c = (indirectFW >>> 10) & 1     # bit 21
                       cb = (indirectFW >>> 9) & 1     # bit 22
                       cd = (indirectFW >>> 8) & 1     # bit 23
-                      ptrBSR = (indirectFW >>> 4) & 0x7  # bits 24-27 (bit 24 always 0)
-                      ptrDSR = indirectFW & 0x7          # bits 28-31 (bit 28 always 0)
+                      ptrBSR = (indirectFW >>> 4) & 0xF  # bits 24-27
+                      ptrDSR = indirectFW & 0xF          # bits 28-31
                       
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)  # aligned index register value
 
