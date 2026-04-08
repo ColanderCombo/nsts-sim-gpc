@@ -9,3 +9,5 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+package-lock.json
+.nvmrc
