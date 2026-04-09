@@ -1,10 +1,7 @@
 import {LitElement, html, css} from 'lit';
 import {customElement} from 'lit/decorators.js';
 import 'cde/toolbar';
-
-// Ensure String prototype extensions are available
-require('com/util');
-
+import 'com/util';
 import {interpretHalfwords} from 'gpc/gui/memformat';
 
 @customElement('gpc-memory')

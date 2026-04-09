@@ -21,10 +21,18 @@ import {customElement, property} from 'lit/decorators.js';
 @customElement('bit-field')
 export class BitField extends LitElement {
 
-  @property({ type: Number }) value: number = 0;
-  @property() pattern: string = '';
-  @property() label: string = '';
-  @property({ type: Number }) bits: number = 16;
+  @property({ type: Number }) declare value: number;
+  @property() declare pattern: string;
+  @property() declare label: string;
+  @property({ type: Number }) declare bits: number;
+
+  constructor() {
+    super();
+    this.value = 0;
+    this.pattern = '';
+    this.label = '';
+    this.bits = 16;
+  }
 
   private _parseFields(): Array<{ name: string; bits: number[] }> {
     const fields: Array<{ name: string; bits: number[] }> = [];

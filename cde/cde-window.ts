@@ -1,24 +1,22 @@
 
 import {LitElement, html, css} from 'lit';
-import {property, customElement} from 'lit/decorators.js';
+import {property, state, customElement} from 'lit/decorators.js';
 
 @customElement('cde-window')
 export class CdeWindow extends LitElement {
 
-	@property() title: string = "CDE Window";
-	@property() resizable: boolean = true;
-	@property() hasFrame: boolean = true;
-	@property() theme: string = "nblue";
-
-	static override properties = {
-		...LitElement.properties,
-		_menuOpen: { state: true },
-	};
-
-	_menuOpen: boolean = false;
+	@property() declare title: string;
+	@property() declare resizable: boolean;
+	@property() declare hasFrame: boolean;
+	@property() declare theme: string;
+	@state() declare private _menuOpen: boolean;
 
   constructor() {
-    super()
+    super();
+    this.title = "CDE Window";
+    this.resizable = true;
+    this.hasFrame = true;
+    this.theme = "nblue";
     this._menuOpen = false;
   }
 
@@ -37,8 +35,6 @@ export class CdeWindow extends LitElement {
 	_menu(e: Event): void {
 		e.stopPropagation();
 		this._menuOpen = !this._menuOpen;
-		console.log("CDE _menu clicked, _menuOpen =", this._menuOpen);
-		this.requestUpdate();
 	}
 
 	_menuAction(action: string): void {
@@ -64,7 +60,6 @@ export class CdeWindow extends LitElement {
 
 	connectedCallback() {
 		super.connectedCallback();
-		this._closeMenuOnClick = this._closeMenuOnClick.bind(this);
 		document.addEventListener('mousedown', this._closeMenuOnClick);
 	}
 
@@ -73,23 +68,20 @@ export class CdeWindow extends LitElement {
 		document.removeEventListener('mousedown', this._closeMenuOnClick);
 	}
 
-	private _closeMenuOnClick(e: Event) {
+	private _closeMenuOnClick = (e: Event) => {
 		if (!this._menuOpen) return;
-		// Check if the mousedown is inside our menu or menu button
+		// Ignore clicks on the menu itself or the menu button (which toggles).
 		const path = e.composedPath();
 		const menu = this.shadowRoot?.getElementById('cde-menu');
 		const menuBut = this.shadowRoot?.getElementById('menubut');
 		if (menu && path.includes(menu)) return;
 		if (menuBut && path.includes(menuBut)) return;
-		console.log("CDE closing menu from outside mousedown");
 		this._menuOpen = false;
-	}
+	};
 
 	render() {
-		console.log("CDE render(), _menuOpen =", this._menuOpen);
 		return html`
 		<div id="cde-deco" class="cde-theme-nblue cde-compute">
-		${this.theme}
 		<div id="menubut" class="cde-active-button" @click="${this._menu}"><div id="menubut-icon"></div></div>
 		${this._menuOpen ? html`
 			<div id="cde-menu" @click="${(e: Event) => e.stopPropagation()}">
@@ -138,9 +130,7 @@ export class CdeWindow extends LitElement {
 		`;
 	}
 
-	static get styles() {
-		return [
-			css`
+	static styles = css`
 			.cde-theme-gray {
 				--titlebar-color:white;
 				--box-color: rgb(140,139,140);
@@ -561,9 +551,7 @@ export class CdeWindow extends LitElement {
 				-webkit-app-region:no-drag;
 			  }
 
-			`
-		  ]
-	}
+			`;
 }
 
 declare global {

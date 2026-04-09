@@ -22,8 +22,14 @@ import {customElement, property} from 'lit/decorators.js';
 @customElement('sim-toolbar')
 export class SimToolbar extends LitElement {
 
-  @property() label: string = '';
-  @property({ attribute: 'label-color' }) labelColor: string = '#888';
+  @property() declare label: string;
+  @property({ attribute: 'label-color' }) declare labelColor: string;
+
+  constructor() {
+    super();
+    this.label = '';
+    this.labelColor = '#888';
+  }
 
   render() {
     return html`

@@ -23,15 +23,23 @@ import {customElement, property} from 'lit/decorators.js';
 @customElement('split-pane')
 export class SplitPane extends LitElement {
 
-  @property({ attribute: 'direction' }) direction: string = 'horizontal';
-  @property({ type: Number, attribute: 'initial-size' }) initialSize: number = 200;
-  @property({ type: Number, attribute: 'min-size' }) minSize: number = 60;
-  @property({ attribute: 'save-key' }) saveKey: string = '';
+  @property({ attribute: 'direction' }) declare direction: string;
+  @property({ type: Number, attribute: 'initial-size' }) declare initialSize: number;
+  @property({ type: Number, attribute: 'min-size' }) declare minSize: number;
+  @property({ attribute: 'save-key' }) declare saveKey: string;
 
   private _size: number = 0;
   private _dragging: boolean = false;
   private _dragStart: number = 0;
   private _dragStartSize: number = 0;
+
+  constructor() {
+    super();
+    this.direction = 'horizontal';
+    this.initialSize = 200;
+    this.minSize = 60;
+    this.saveKey = '';
+  }
 
   connectedCallback() {
     super.connectedCallback();
@@ -46,8 +54,6 @@ export class SplitPane extends LitElement {
     } else {
       this._size = this.initialSize;
     }
-    this._onMouseMove = this._onMouseMove.bind(this);
-    this._onMouseUp = this._onMouseUp.bind(this);
   }
 
   get size(): number {
@@ -90,7 +96,7 @@ export class SplitPane extends LitElement {
     document.addEventListener('mouseup', this._onMouseUp);
   }
 
-  private _onMouseMove(e: MouseEvent): void {
+  private _onMouseMove = (e: MouseEvent): void => {
     if (!this._dragging) return;
     const pos = this._isVertical() ? e.clientY : e.clientX;
     // Dragging splitter down/right = making second pane smaller (negative delta)
@@ -103,9 +109,9 @@ export class SplitPane extends LitElement {
       bubbles: true,
       composed: true,
     }));
-  }
+  };
 
-  private _onMouseUp(e: MouseEvent): void {
+  private _onMouseUp = (_e: MouseEvent): void => {
     if (!this._dragging) return;
     this._dragging = false;
     document.body.style.cursor = '';
@@ -120,7 +126,7 @@ export class SplitPane extends LitElement {
       bubbles: true,
       composed: true,
     }));
-  }
+  };
 
   render() {
     const isV = this._isVertical();

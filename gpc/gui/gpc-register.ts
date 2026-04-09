@@ -1,5 +1,5 @@
 import {LitElement, html, css} from 'lit';
-import {property, customElement} from 'lit/decorators.js';
+import {property, state, customElement} from 'lit/decorators.js';
 import {FloatIBM} from 'gpc/floatIBM';
 
 /**
@@ -18,14 +18,24 @@ import {FloatIBM} from 'gpc/floatIBM';
 @customElement('gpc-register')
 export class GpcRegister extends LitElement {
 
-  @property({ type: String }) name: string = '';
-  @property({ type: Number }) value: number = 0;
-  @property({ type: Number }) bits: number = 32;
-  @property({ type: String }) type: string = 'int';
-  @property({ type: Boolean }) changed: boolean = false;
-  @property({ type: Boolean }) dim: boolean = false;
+  @property({ type: String })  declare name: string;
+  @property({ type: Number })  declare value: number;
+  @property({ type: Number })  declare bits: number;
+  @property({ type: String })  declare type: string;
+  @property({ type: Boolean }) declare changed: boolean;
+  @property({ type: Boolean }) declare dim: boolean;
+  @state()                     declare private _displayMode: number; // 0=hex, 1=float
 
-  private _displayMode: number = 0; // 0=hex, 1=float
+  constructor() {
+    super();
+    this.name = '';
+    this.value = 0;
+    this.bits = 32;
+    this.type = 'int';
+    this.changed = false;
+    this.dim = false;
+    this._displayMode = 0;
+  }
 
   private _fmtHex(): string {
     const h = (this.value >>> 0).toString(16).padStart(Math.ceil(this.bits / 4), '0');
@@ -49,7 +59,6 @@ export class GpcRegister extends LitElement {
   private _onClick(): void {
     if (this.type !== 'float') return;
     this._displayMode = (this._displayMode + 1) % 2;
-    this.requestUpdate();
   }
 
   private _getColor(): string {

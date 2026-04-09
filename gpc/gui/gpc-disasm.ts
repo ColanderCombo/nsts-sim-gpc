@@ -1,10 +1,7 @@
 import {LitElement, html, css} from 'lit';
 import {customElement} from 'lit/decorators.js';
 import 'cde/toolbar';
-
-// Ensure String.rpad prototype is available (Instruction.toStr depends on it)
-require('com/util');
-
+import 'com/util';
 import Instruction from 'gpc/cpu_instr';
 
 function rpad(s: string, ch: string, len: number): string {

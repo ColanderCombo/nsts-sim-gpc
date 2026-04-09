@@ -1,8 +1,6 @@
 import {LitElement, html, css} from 'lit';
 import {customElement} from 'lit/decorators.js';
-
-// Ensure String.rpad prototype is available
-require('com/util');
+import 'com/util';
 import Instruction from 'gpc/cpu_instr';
 
 /**
