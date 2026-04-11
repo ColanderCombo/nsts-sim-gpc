@@ -3995,7 +3995,6 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         val = t.f(v.y).get32()
                         t.f(v.x).set32(val)
-                        if v.x % 2 == 0 then t.f(v.x + 1).set32(0)
                         if (val & 0x00ffffff) == 0
                             t.psw.setCC(0)
                         else if val & 0x80000000
@@ -4011,7 +4010,6 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.f(v.x).set32(val)
-                        if v.x % 2 == 0 then t.f(v.x + 1).set32(0)
                         if (val & 0x00ffffff) == 0
                             t.psw.setCC(0)
                         else if val & 0x80000000
@@ -4050,7 +4048,6 @@ class Instruction extends PackedBits
                         v2 = t.f(v.y).get32()
                         result = (v2 ^ 0x80000000) >>> 0
                         t.f(v.x).set32(result)
-                        if v.x % 2 == 0 then t.f(v.x + 1).set32(0)
                         # CC: sign bit determines negative, fraction zero = true zero
                         if result & 0x80000000
                             t.psw.setCC(3)
