@@ -12,10 +12,10 @@ that provides a number of useful tools for single stepping, breakpoints
 and data display (GPC-DEBUG.sh)
 
 While this tree includes a simple assembler and (very) simple linker, 
-the nsts-sdl-dps repository provides wrappers to create a AP-101 toolchain
+the [nsts-sdl-dps](https://github.com/ColanderCombo/nsts-sdl-dps) repository provides wrappers to create a AP-101 toolchain
 and a cmake based build system that is the preferred way to use the gpc-sim.
 
-nsts-sdl-dps provides:
+[nsts-sdl-dps](https://github.com/ColanderCombo/nsts-sdl-dps)  provides:
     - gpc-batch and gpc-debug wrappers
     - asm101s, A macro assembler from the virtualagc project
     - lnk101s, a relocating linker
@@ -48,46 +48,56 @@ Usage
 We provide commands to generate an execution trace in batch mode, dump an image disassembly
 similar to the IBM 'DASS' utility, and an interactive debugger.  All the commands take a '.fcm' file as input
 
-  - GPC-BATCH.sh <fcm>
-    - ```
+  ## GPC-BATCH.sh <fcm> 
+```
 Usage: gpc-batch [options] <fcm-file>
 
 GPC Batch Simulator — run AP-101 programs
 
 Arguments:
-  fcm-file             FCM memory image to load
+  fcm-file                        FCM memory image to load
 
 Options:
-  --start <addr>       start address in hex
-  --max-steps <n>      max instructions to execute (default: "100000")
-  --break <addr>       stop at halfword address (hex)
-  --output <file>      write trace to file instead of stdout
-  --dump-interval <n>  register dump every N steps (default: 100) (default: "100")
-  --symbols <file>     load symbol table JSON from linker
-  --trace              enable instruction trace (default) (default: true)
-  --no-trace           disable instruction trace
-  --interactive        interactive terminal I/O
-  --ebcdic             use EBCDIC encoding for character I/O
-  --trap-svc-error     intercept HAL/S SEND ERROR SVCs (default) (default: true)
-  --no-trap-svc-error  pass SEND ERROR SVCs to SVC handler
-  --disasm [end]       disassemble from start to END (hex)
-  --infile0 <file>     read input for channel 0
-  --infile1 <file>     read input for channel 1
-  --infile2 <file>     read input for channel 2
-  --infile3 <file>     read input for channel 3
-  --outfile0 <file>    write output for channel 0
-  --outfile1 <file>    write output for channel 1
-  --outfile2 <file>    write output for channel 2
-  --outfile3 <file>    write output for channel 3
-  --outfile4 <file>    write output for channel 4
-  --outfile5 <file>    write output for channel 5
-  --outfile6 <file>    write output for channel 6
-  --outfile7 <file>    write output for channel 7
-  -h, --help           display help for command
+  --start <addr>                  start address in hex
+  --max-steps <n>                 max instructions to execute (default: "100000")
+  --break <addr>                  stop at halfword address (hex)
+  --watch <spec>                  memory watchpoint: addr[:count] in hex (break on write)
+  --output <file>                 write trace/verbose output to file instead of stdout
+  --dump-interval <n>             register dump every N steps (default: 100) (default: "100")
+  --symbols <file>                load symbol table JSON from linker
+  --trace                         enable instruction trace (default: false)
+  --no-trace                      disable instruction trace (default)
+  --verbose                       print informational messages (banners, section maps, final state) (default: false)
+  --no-verbose                    suppress informational messages (default)
+  --interactive                   interactive terminal I/O
+  --ebcdic                        use EBCDIC encoding for character I/O
+  --trap-svc-error                intercept HAL/S SEND ERROR SVCs (default) (default: true)
+  --no-trap-svc-error             pass SEND ERROR SVCs to SVC handler
+  --halucp-format-num-blanks <n>  blanks between WRITE output fields (default: 5) (default: "5")
+  --line-width <n>                WRITE line width for wrap (default: 132) (default: "132")
+  --disasm [end]                  disassemble from start to END (hex)
+  --infile0 <file>                read input for channel 0
+  --infile1 <file>                read input for channel 1
+  --infile2 <file>                read input for channel 2
+  --infile3 <file>                read input for channel 3
+  --infile4 <file>                read input for channel 4
+  --infile5 <file>                read input for channel 5
+  --infile6 <file>                read input for channel 6
+  --infile7 <file>                read input for channel 7
+  --outfile0 <file>               write output for channel 0
+  --outfile1 <file>               write output for channel 1
+  --outfile2 <file>               write output for channel 2
+  --outfile3 <file>               write output for channel 3
+  --outfile4 <file>               write output for channel 4
+  --outfile5 <file>               write output for channel 5
+  --outfile6 <file>               write output for channel 6
+  --outfile7 <file>               write output for channel 7
+  --watch-log                     log every watchpoint change instead of breaking (default: false)
+  -h, --help                      display help for command
   ```
 
-  - GPC-DUMP.sh <fcm>
-    - ```
+  ## GPC-DUMP.sh <fcm>
+```
 Usage: gpc-dump [options] <fcm-file>
 
 FCM Dumper — disassemble and inspect FCM memory images
@@ -104,19 +114,20 @@ Options:
   -h, --help        display help for command
 ```
 
-  - GPC-DEBUG.sh
-    - ![GPC debugger window screenshot](doc/gpcDebuggerWindow.png)
+## GPC-DEBUG.sh
+
+![GPC debugger window screenshot](doc/gpcDebuggerWindow.png)
 
 Repository Contents
 -------------------
 
-The gpc simulator was originally part of a larger system that also simulates other avionics.  The gpc has been extracted, but things are a bit more complicated than they could be;
+The gpc simulator was originally part of a larger system that also simulates other avionics.  The gpc has been extracted, but things are a bit more complicated than they should be;
 
   - `simRunner/` contains the electron main & render process implementation. It uses files from `config/` to load and initialize simulated line replacable units (LRU's).  We're only using electron for the interactive debugger and have hijacked the simRunner to directly load the GPC lru+debugger
 
   - `com/` contains common utilies, including a simple 'Bus' that lets LRUs communicate via multicast UDP packets.  In the gpc it's used to emulate the physical Shuttle busses connected to the IOP.
 
-  - `cde/` contains definitions of Lit gui elements ([https://lit.dev/]), including the toplevel `<cde-window>` that styles the window to the CDE look and feel.  There's no
+  - `cde/` contains definitions of [Lit gui elements](https://lit.dev/), including the toplevel `<cde-window>` that styles the window to the CDE look and feel.  There's no
   compelling reason to have this, other than CDE shows up quite a bit in Shuttle documentation from the 1990's and 2000's--and I think it looks neat.
 
   - `esbuild/` contains build system files.
