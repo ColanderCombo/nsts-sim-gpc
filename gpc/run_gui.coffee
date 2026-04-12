@@ -20,6 +20,9 @@ import 'gpc/gui/gpc-terminal'
 export class DebugGUI extends AP101
   constructor: (CONFIG) ->
     super(CONFIG)
+    @ipcRenderer = require('electron').ipcRenderer
+    if not @ipcRenderer
+      throw new Error("DebugGUI: require('electron').ipcRenderer failed!")
 
 
   _terminal: () -> document.querySelector('gpc-terminal')
@@ -170,11 +173,7 @@ export class DebugGUI extends AP101
           @reset()
         when 123 # F12
           e.preventDefault()
-          # Open DevTools
-          try
-            require('electron').ipcRenderer.send('toggle-devtools')
-          catch
-            console.log("DevTools toggle not available - use Cmd+Option+I (Mac) or Ctrl+Shift+I")
+          @ipcRenderer.send('toggle-devtools')
       switch String.fromCharCode(e.which).toLowerCase()
         when 's'
           if not e.ctrlKey and not e.altKey and not e.metaKey
@@ -210,6 +209,9 @@ export class DebugGUI extends AP101
       term.resetInput()
 
     @updateDisplay()
+
+  quit: () ->
+    @ipcRenderer.send('window-close')
 
   showBreakpointMenu: (e, addr) ->
     # Remove any existing context menu
@@ -330,6 +332,7 @@ export class DebugGUI extends AP101
           <span id="gpc-status-display" slot="status">STOPPED</span>
           <span id="gpc-steps-display" slot="status">Steps: 0</span>
           <span id="gpc-nia-display" slot="status">NIA: 000e</span>
+          <button slot="status" style={{marginLeft: '20px'}} onClick={() => this.quit()}>Quit</button>
         </sim-toolbar>
         <split-pane direction="vertical" initial-size={150} min-size={60} save-key="terminal" style={{flex: '1', overflow: 'hidden'}}>
           <split-pane slot="first" direction="vertical" initial-size={400} min-size={100} save-key="memory">
