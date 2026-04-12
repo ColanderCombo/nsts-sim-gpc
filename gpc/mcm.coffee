@@ -8,7 +8,7 @@
 # Performance/Modular Core Memories (EP/MCM). One of these memories,
 # having a storage capacity of 40K words by 36 bits, is located in the
 # CPU LRU.  The other memory with a storage capacity of 24K words by
-# 36 bits is located in the CPU LRU.  Both memories communicate directly
+# 36 bits is located in the IOP LRU.  Both memories communicate directly
 # with the CPU.
 #
 #

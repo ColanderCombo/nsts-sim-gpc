@@ -17,6 +17,8 @@ path = require 'path'
 
 require 'com/util'
 import {CPU} from 'gpc/cpu'
+import {MCM} from 'gpc/mcm'
+import {MemoryBus} from 'gpc/membus'
 import Instruction from 'gpc/cpu_instr'
 
 class FCMDumper
@@ -28,6 +30,8 @@ class FCMDumper
     @asmMode = options.asmMode ? false   # Enhanced disassembly mode
     
     @cpu = new CPU()
+    @iopMCM = new MCM(24*1024)
+    @cpu.ram = new MemoryBus(@cpu.mainStorage, @iopMCM)
     @lines = []
     @symbols = null
     @sectionsByAddr = []      # sorted by address
@@ -55,7 +59,7 @@ class FCMDumper
     for i in [0...image.length]
       buf8[i] = image[i]
     dv = new DataView(buf)
-    @cpu.mainStorage.load16(0, dv)
+    @cpu.ram.load16(0, dv)
     @imageSize = dv.byteLength / 2  # size in halfwords
     return @imageSize
 

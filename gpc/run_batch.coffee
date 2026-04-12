@@ -10,6 +10,8 @@ readline = require 'readline'
 
 require 'com/util'
 import {CPU} from 'gpc/cpu'
+import {MCM} from 'gpc/mcm'
+import {MemoryBus} from 'gpc/membus'
 import Instruction from 'gpc/cpu_instr'
 import {HalUCP} from 'gpc/halUCP'
 
@@ -19,10 +21,13 @@ class BatchRunner
     @entryPoint = opts.entryPoint ? null
     @maxSteps = opts.maxSteps ? 100000
     @breakpoint = opts.breakpoint ? null
+    @memWatchpoints = opts.memWatchpoints ? []  # [{addr, count}]
+    @watchLog = opts.watchLog ? false
     @outputPath = opts.outputPath ? null
     @dumpInterval = opts.dumpInterval ? 100
     @symbolsPath = opts.symbolsPath ? null
-    @traceEnabled = opts.traceEnabled ? true
+    @traceEnabled = opts.traceEnabled ? false
+    @verbose = opts.verbose ? false
     @interactive = opts.interactive ? false
     @ebcdic = opts.ebcdic ? false
     @trapSvcError = opts.trapSvcError ? true
@@ -30,10 +35,14 @@ class BatchRunner
     @outFiles = opts.outFiles ? {}   # channel -> filename
 
     @cpu = new CPU()
+    @iopMCM = new MCM(24*1024)
+    @cpu.ram = new MemoryBus(@cpu.mainStorage, @iopMCM)
     @halUCP = new HalUCP(@cpu)
     @cpu.halUCP = @halUCP
     @halUCP.trapSvcError = @trapSvcError
     @halUCP.formatNumBlanks = opts.formatNumBlanks ? 1
+    @halUCP.lineWidth = opts.lineWidth ? 132
+    @halUCP.verbose = @verbose
     @halUCP.errorCallback = (msg) -> process.stderr.write "\n*** " + msg + "\n\n"
     @lines = []
     @symbols = null
@@ -51,6 +60,13 @@ class BatchRunner
       @lines.push s
     else
       process.stdout.write s + "\n"
+
+  # Informational/state output — only emitted when --verbose is set.
+  # All run-mode banners, section maps, register dumps at exit, etc. go
+  # through this so that the default invocation produces only the program's
+  # own input/output channel traffic.
+  info: (s) ->
+    @write(s) if @verbose
 
   flush: ->
     if @outputPath? and @lines.length > 0
@@ -95,7 +111,7 @@ class BatchRunner
         for offset in [0...sect.size]
           @addrToSection[sect.address + offset] = sect.name
 
-      @write "Symbols: #{@symbolsPath} (#{@symbols.symbols?.length or 0} symbols, #{@symbols.sections?.length or 0} sections)"
+      @info "Symbols: #{@symbolsPath} (#{@symbols.symbols?.length or 0} symbols, #{@symbols.sections?.length or 0} sections)"
 
       # Resolve entry point from symbols if not explicitly set
       unless @entryPoint?
@@ -107,7 +123,7 @@ class BatchRunner
         # Fall back to entryPoint field in symbols JSON
         @entryPoint ?= @symbols.entryPoint
     catch e
-      @write "Warning: Could not load symbols: #{e.message}"
+      process.stderr.write "Warning: Could not load symbols: #{e.message}\n"
 
   getSymbolsAt: (addr) ->
     return @symbolsByAddr[addr] or []
@@ -137,7 +153,7 @@ class BatchRunner
     for i in [0...image.length]
       buf8[i] = image[i]
     dv = new DataView(buf)
-    @cpu.mainStorage.load16(0, dv)
+    @cpu.ram.load16(0, dv)
     unless @entryPoint?
       @fatal "No entry point: use --start=ADDR or provide a symbols file with a START symbol"
     @cpu.psw.setNIA(@entryPoint)
@@ -250,87 +266,51 @@ class BatchRunner
       catch e
         @fatal "Cannot open output file for channel #{ch}: #{filePath} (#{e.message})"
 
-    # Wire callbacks
+    # Wire callbacks. HalUCP handles all WRITE positioning logic itself
+    # (line wrap, IOINIT defaults, SKIP/LINE/PAGE/TAB/COLUMN) and emits the
+    # resulting text — including newlines and column-advance spaces — via
+    # outputCallback. There is no separate control callback path.
     @halUCP.outputCallback = (text, channel) => @handleOutput(text, channel)
-    @halUCP.controlCallback = (iocode, param, channel) => @handleControl(iocode, param, channel)
     # inputCallback is set per-mode (sync for file, async for interactive)
+
+  # In interactive mode, channel 6 (the conventional HAL/S WRITE target) is
+  # treated exactly like the non-interactive path: raw bytes straight to
+  # stdout, no "OUTPUT(ch):" prefix. Other channels keep the prefixed wrapper
+  # so the source channel is still distinguishable.
+  _useRawStdout: (ch) ->
+    (not @interactive) or ch == '6'
 
   # Write output text to the appropriate destination
   handleOutput: (text, channel) ->
     ch = channel.toString()
     if @outStreams[ch]?
       @outStreams[ch].write(text)
-    else if @interactive
-      process.stdout.write "OUTPUT(#{ch}): #{text}\n"
-    else
-      # Non-interactive, no file for this channel — write to stdout
+    else if @_useRawStdout(ch)
       process.stdout.write text
+    else
+      process.stdout.write "OUTPUT(#{ch}): #{text}\n"
 
-  # Handle control codes (IOINIT, LINE, COLUMN, TAB, PAGE, SKIP)
-  handleControl: (iocode, param, channel) ->
-    ch = channel.toString()
-    switch iocode
-      when 0, 1, 2, 3  # IOINIT
-        if @outStreams[ch]?
-          @outStreams[ch].write('\n')
-        else if @interactive
-          # Don't print anything for IOINIT in interactive mode
-        else
-          process.stdout.write '\n'
-      when 4  # LINE
-        count = if param > 0 then param else 1
-        text = '\n'.repeat(count)
-        if @outStreams[ch]?
-          @outStreams[ch].write(text)
-        else if not @interactive
-          process.stdout.write text
-      when 5  # COLUMN
-        text = ' '.repeat(Math.max(0, param))
-        if @outStreams[ch]?
-          @outStreams[ch].write(text)
-        else if not @interactive
-          process.stdout.write text
-      when 6  # TAB
-        count = if param > 0 then param else 1
-        text = ' '.repeat(count * 5)
-        if @outStreams[ch]?
-          @outStreams[ch].write(text)
-        else if not @interactive
-          process.stdout.write text
-      when 7  # PAGE
-        text = '\n--- PAGE ---\n'
-        if @outStreams[ch]?
-          @outStreams[ch].write(text)
-        else if not @interactive
-          process.stdout.write text
-      when 8  # SKIP
-        count = if param > 0 then param else 1
-        text = '\n'.repeat(count)
-        if @outStreams[ch]?
-          @outStreams[ch].write(text)
-        else if not @interactive
-          process.stdout.write text
+  # Format an echoed input line for stdout. Channel 5 (the conventional
+  # HAL/S READ source) is shown bare so its echo blends with the program's
+  # output stream like a real interactive session; other channels keep the
+  # "INPUT(ch):" prefix to remain identifiable.
+  _formatInputEcho: (ch, line) ->
+    if ch == '5' then "#{line}\n" else " INPUT(#{ch}): #{line}\n"
 
   # Read one line from input for the given channel (file mode).
-  # Returns the line, or calls fatal() if exhausted or not provided.
+  # Returns the raw line text, or `null` on EOF — HalUCP will attempt
+  # to dispatch to an ON ERROR$(IO:5) handler and halt if none is
+  # installed. Field parsing and validation are handled by
+  # HalUCP._extractNextField — this just supplies raw lines.
   readInputLine: (channel, iocode) ->
     ch = channel.toString()
     if not @inStreams[ch]?
       @fatal "Program requests input on channel #{ch} (#{HalUCP.iocodeTypeName(iocode)}) but no --infile#{ch} was provided"
     if @inStreams[ch].length == 0
-      # Input exhausted: return "0" to let the program's own quit logic handle it.
-      process.stderr.write "HalUCP: Input exhausted on channel #{ch} — returning '0'\n"
-      return "0"
-    line = @inStreams[ch].shift()
-    # Validate (for comma-separated numeric input, validate only the first value)
-    if iocode != 13 and line.indexOf(',') >= 0
-      firstVal = line.substring(0, line.indexOf(',')).trim()
-      err = HalUCP.validateInput(firstVal, iocode)
-    else
-      err = HalUCP.validateInput(line, iocode)
-    if err
-      @fatal "Invalid input on channel #{ch}: \"#{line}\" — #{err} (expected #{HalUCP.iocodeTypeName(iocode)})"
-    return line
+      if @verbose
+        process.stderr.write "HalUCP: Input exhausted on channel #{ch}\n"
+      return null
+    return @inStreams[ch].shift()
 
   # ---------------------------------------------------------------
   # Disassembly mode
@@ -404,27 +384,37 @@ class BatchRunner
     # Wire synchronous input handler for file mode
     @halUCP.inputCallback = (channel, iocode) =>
       line = @readInputLine(channel, iocode)
-      @halUCP.provideInput(line)
+      if line?
+        @halUCP.provideInput(line)
+      else
+        @halUCP.provideEof()
 
-    @write "=== GPC Batch Simulator ==="
-    @write "FCM: #{@fcmPath} (#{byteCount} bytes)"
-    @write "Entry: 0x#{@entryPoint.asHex(4)}"
-    @write "Max steps: #{@maxSteps}"
-    @write "Trace: #{if @traceEnabled then 'on' else 'off'}"
+    @info "=== GPC Batch Simulator ==="
+    @info "FCM: #{@fcmPath} (#{byteCount} bytes)"
+    @info "Entry: 0x#{@entryPoint.asHex(4)}"
+    @info "Max steps: #{@maxSteps}"
+    @info "Trace: #{if @traceEnabled then 'on' else 'off'}"
     if @breakpoint?
-      @write "Breakpoint: 0x#{@breakpoint.asHex(4)}"
-    @write ""
+      @info "Breakpoint: 0x#{@breakpoint.asHex(4)}"
+    @info ""
 
     if @symbols?
-      @write "=== SECTION MAP ==="
+      @info "=== SECTION MAP ==="
       for sect in @sectionsByAddr
-        @write "  0x#{sect.address.asHex(4)} - 0x#{(sect.address + sect.size - 1).asHex(4)}  #{sect.name.rpad(' ', 12)} (#{sect.module})"
-      @write "  Start: 0x#{@entryPoint.asHex(4)} (#{@formatSectionOffset(@entryPoint)})"
-      @write ""
+        @info "  0x#{sect.address.asHex(4)} - 0x#{(sect.address + sect.size - 1).asHex(4)}  #{sect.name.rpad(' ', 12)} (#{sect.module})"
+      @info "  Start: 0x#{@entryPoint.asHex(4)} (#{@formatSectionOffset(@entryPoint)})"
+      @info ""
 
     step = 0
     stopReason = null
     lastSection = null
+    # Build flat list of watched halfword addresses for fast checking
+    watchAddrs = []
+    for wp in @memWatchpoints
+      for i in [0...wp.count]
+        watchAddrs.push(wp.addr + i)
+    hasWatchpoints = watchAddrs.length > 0
+
     while step < @maxSteps
       before = @snapshotRegs()
       nia = @cpu.psw.getNIA()
@@ -455,6 +445,13 @@ class BatchRunner
         stopReason = "invalid instruction 0x#{hw1.asHex(4)} at 0x#{nia.asHex(4)}"
         break
 
+      # Snapshot watched addresses before execution
+      watchBefore = null
+      if hasWatchpoints
+        watchBefore = new Uint16Array(watchAddrs.length)
+        for addr, idx in watchAddrs
+          watchBefore[idx] = @cpu.mainStorage.get16(addr, false)
+
       # Check I/O trap before execution
       if @halUCP.active and @halUCP.isTrapAddr(nia)
         result = @halUCP.checkTrap(nia)
@@ -476,6 +473,31 @@ class BatchRunner
           @write line
         @write ""
 
+      # Check memory watchpoints
+      if watchBefore?
+        for addr, idx in watchAddrs
+          newVal = @cpu.mainStorage.get16(addr, false)
+          if newVal != watchBefore[idx]
+            section = @getSectionAt(nia)
+            msg = "memory watchpoint: HW 0x#{addr.toString(16).padStart(5,'0')} " +
+              "changed 0x#{watchBefore[idx].toString(16).padStart(4,'0')} -> " +
+              "0x#{newVal.toString(16).padStart(4,'0')} " +
+              "by #{disasm} at NIA=0x#{nia.toString(16).padStart(5,'0')} step=#{step}" +
+              (if section then " (#{section})" else "") +
+              " R0=#{after.R00.toString(16).padStart(8,'0')} " +
+              "R1=#{after.R01.toString(16).padStart(8,'0')} " +
+              "R3=#{after.R03.toString(16).padStart(8,'0')} " +
+              "R5=#{after.R05.toString(16).padStart(8,'0')} " +
+              "R7=#{after.R07.toString(16).padStart(8,'0')}"
+            if @watchLog
+              process.stderr.write msg + "\n"
+              watchBefore[idx] = newVal
+            else
+              stopReason = msg
+              break
+        if stopReason?
+          break
+
       if @cpu.psw.getWaitState()
         stopReason = "wait state"
         break
@@ -483,12 +505,17 @@ class BatchRunner
     if not stopReason?
       stopReason = "max steps reached (#{@maxSteps})"
 
-    @write "--- STOPPED after #{step} steps (reason: #{stopReason}) ---"
-    @write "--- FINAL REGISTERS ---"
+    @info "--- STOPPED after #{step} steps (reason: #{stopReason}) ---"
+    @info "--- FINAL REGISTERS ---"
     for line in @formatRegDump(step)
-      @write line
+      @info line
 
     @flush()
+
+    # Exit with error if the program didn't halt cleanly
+    if stopReason != "wait state"
+      process.stderr.write "ERROR: #{stopReason}\n"
+      process.exit(1)
 
   # ---------------------------------------------------------------
   # Interactive run mode (async — terminal I/O with readline)
@@ -499,19 +526,19 @@ class BatchRunner
     byteCount = @loadFCM()
     @initIO()
 
-    @write "=== GPC Interactive Simulator ==="
-    @write "FCM: #{@fcmPath} (#{byteCount} bytes)"
-    @write "Entry: 0x#{@entryPoint.asHex(4)}"
-    @write "Trace: #{if @traceEnabled then 'on' else 'off'}"
-    @write "(Ctrl-C to halt)"
-    @write ""
+    @info "=== GPC Interactive Simulator ==="
+    @info "FCM: #{@fcmPath} (#{byteCount} bytes)"
+    @info "Entry: 0x#{@entryPoint.asHex(4)}"
+    @info "Trace: #{if @traceEnabled then 'on' else 'off'}"
+    @info "(Ctrl-C to halt)"
+    @info ""
 
     if @symbols?
-      @write "=== SECTION MAP ==="
+      @info "=== SECTION MAP ==="
       for sect in @sectionsByAddr
-        @write "  0x#{sect.address.asHex(4)} - 0x#{(sect.address + sect.size - 1).asHex(4)}  #{sect.name.rpad(' ', 12)} (#{sect.module})"
-      @write "  Start: 0x#{@entryPoint.asHex(4)} (#{@formatSectionOffset(@entryPoint)})"
-      @write ""
+        @info "  0x#{sect.address.asHex(4)} - 0x#{(sect.address + sect.size - 1).asHex(4)}  #{sect.name.rpad(' ', 12)} (#{sect.module})"
+      @info "  Start: 0x#{@entryPoint.asHex(4)} (#{@formatSectionOffset(@entryPoint)})"
+      @info ""
 
     @step = 0
     @stopReason = null
@@ -524,7 +551,10 @@ class BatchRunner
       if @inStreams[ch]?
         # File input for this channel
         line = @readInputLine(channel, iocode)
-        @halUCP.provideInput(line)
+        if line?
+          @halUCP.provideInput(line)
+        else
+          @halUCP.provideEof()
         # Continue executing
         @execLoop()
       else
@@ -534,31 +564,32 @@ class BatchRunner
 
     # Ctrl-C handler
     process.on 'SIGINT', =>
-      @write "\n--- INTERRUPTED after #{@step} steps ---"
-      @write "--- FINAL REGISTERS ---"
+      @info "\n--- INTERRUPTED after #{@step} steps ---"
+      @info "--- FINAL REGISTERS ---"
       for line in @formatRegDump(@step)
-        @write line
+        @info line
       @flush()
       process.exit(0)
 
     @execLoop()
 
   promptInput: (channel, iocode, typeName) ->
-    rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-    prompt = " INPUT(#{channel}): "
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false })
+    ch = channel.toString()
+
+    # If the output cursor isn't at column 1, emit a newline so the
+    # user's input appears on its own line (not jammed after WRITE text).
+    if (@halUCP.column[6] ? 1) > 1
+      process.stdout.write '\n'
+
+    prompt = if ch == '5' then '' else " INPUT(#{ch}): "
     rl.question prompt, (answer) =>
       rl.close()
-      # For comma-separated numeric input, validate only the first value
-      if iocode != 13 and answer.indexOf(',') >= 0
-        firstVal = answer.substring(0, answer.indexOf(',')).trim()
-        err = HalUCP.validateInput(firstVal, iocode)
-      else
-        err = HalUCP.validateInput(answer, iocode)
-      if err
-        process.stdout.write "HALUCP WARNING: expected #{typeName}, got \"#{answer}\" (#{err})\n"
-        @promptInput(channel, iocode, typeName)
-        return
       @halUCP.provideInput(answer)
+      # The prompt newline + user's Enter have moved the terminal to a
+      # fresh line.  Tell HalUCP so the next WRITE(6) skips its default
+      # line advance (avoiding a blank line).
+      @halUCP.notifyInteractiveInput(6)
       @execLoop()
 
   execLoop: ->
@@ -627,12 +658,15 @@ class BatchRunner
         @stopReason = "max steps reached (#{@maxSteps})"
 
     if @stopReason?
-      @write "--- STOPPED after #{@step} steps (reason: #{@stopReason}) ---"
-      @write "--- FINAL REGISTERS ---"
+      @info "--- STOPPED after #{@step} steps (reason: #{@stopReason}) ---"
+      @info "--- FINAL REGISTERS ---"
       for line in @formatRegDump(@step)
-        @write line
+        @info line
       @flush()
-      process.exit(0)
+      exitCode = if @stopReason == "wait state" then 0 else 1
+      if exitCode != 0
+        process.stderr.write "ERROR: #{@stopReason}\n"
+      process.exit(exitCode)
 
 
 # ---------------------------------------------------------------
@@ -651,16 +685,25 @@ program
   .option('--start <addr>', 'start address in hex')
   .option('--max-steps <n>', 'max instructions to execute', '100000')
   .option('--break <addr>', 'stop at halfword address (hex)')
-  .option('--output <file>', 'write trace to file instead of stdout')
+  .option('--watch <spec>', 'memory watchpoint: addr[:count] in hex (break on write)', (v, prev) ->
+    prev ?= []
+    [a, c] = v.split(':')
+    prev.push { addr: parseInt(a.replace(/^0x/i,''),16), count: parseInt(c or '1', 10) }
+    prev
+  )
+  .option('--output <file>', 'write trace/verbose output to file instead of stdout')
   .option('--dump-interval <n>', 'register dump every N steps (default: 100)', '100')
   .option('--symbols <file>', 'load symbol table JSON from linker')
-  .option('--trace', 'enable instruction trace (default)', true)
-  .option('--no-trace', 'disable instruction trace')
+  .option('--trace', 'enable instruction trace', false)
+  .option('--no-trace', 'disable instruction trace (default)')
+  .option('--verbose', 'print informational messages (banners, section maps, final state)', false)
+  .option('--no-verbose', 'suppress informational messages (default)')
   .option('--interactive', 'interactive terminal I/O')
   .option('--ebcdic', 'use EBCDIC encoding for character I/O')
   .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
   .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
   .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
+  .option('--line-width <n>', 'WRITE line width for wrap (default: 132)', '132')
   .option('--disasm [end]', 'disassemble from start to END (hex)')
   .option('--infile0 <file>', 'read input for channel 0')
   .option('--infile1 <file>', 'read input for channel 1')
@@ -678,6 +721,7 @@ program
   .option('--outfile5 <file>', 'write output for channel 5')
   .option('--outfile6 <file>', 'write output for channel 6')
   .option('--outfile7 <file>', 'write output for channel 7')
+  .option('--watch-log', 'log every watchpoint change instead of breaking', false)
   .parse()
 
 fcmPath = program.args[0]
@@ -696,14 +740,18 @@ opts = {
   entryPoint: if o.start then parseHex(o.start) else null
   maxSteps: parseInt(o.maxSteps, 10)
   breakpoint: if o.break then parseHex(o.break) else null
+  memWatchpoints: o.watch or []
+  watchLog: o.watchLog or false
   outputPath: o.output or null
   dumpInterval: parseInt(o.dumpInterval, 10)
   symbolsPath: o.symbols or null
   traceEnabled: o.trace
+  verbose: o.verbose
   interactive: o.interactive or false
   ebcdic: o.ebcdic or false
   trapSvcError: o.trapSvcError
   formatNumBlanks: parseInt(o.halucpFormatNumBlanks, 10)
+  lineWidth: parseInt(o.lineWidth, 10)
   inFiles
   outFiles
 }
@@ -713,7 +761,8 @@ if not opts.symbolsPath?
   autoSymPath = fcmPath.replace(/\.fcm$/i, '.sym.json')
   if autoSymPath != fcmPath and fs.existsSync(autoSymPath)
     opts.symbolsPath = autoSymPath
-    console.error "Auto-detected symbols: #{opts.symbolsPath}"
+    if o.verbose
+      process.stderr.write "Auto-detected symbols: #{opts.symbolsPath}\n"
 
 runner = new BatchRunner(opts)
 if o.disasm?

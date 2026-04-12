@@ -8,6 +8,8 @@ readline = require 'readline'
 
 require 'com/util'
 import {CPU} from 'gpc/cpu'
+import {MCM} from 'gpc/mcm'
+import {MemoryBus} from 'gpc/membus'
 import Instruction from 'gpc/cpu_instr'
 import {HalUCP} from 'gpc/halUCP'
 import {SymbolTable} from 'gpc/symbolTable'
@@ -38,6 +40,8 @@ class GPCDebugger
     @outFiles = opts.outFiles ? {}
 
     @cpu = new CPU()
+    @iopMCM = new MCM(24*1024)
+    @cpu.ram = new MemoryBus(@cpu.mainStorage, @iopMCM)
     @halUCP = new HalUCP(@cpu)
     @cpu.halUCP = @halUCP
     @halUCP.trapSvcError = @trapSvcError
@@ -131,7 +135,7 @@ class GPCDebugger
     for i in [0...image.length]
       buf8[i] = image[i]
     dv = new DataView(buf)
-    @cpu.mainStorage.load16(0, dv)
+    @cpu.ram.load16(0, dv)
     unless @entryPoint?
       @error "No entry point: use --start=ADDR or provide symbols"
       process.exit(1)

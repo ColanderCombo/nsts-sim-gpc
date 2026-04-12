@@ -3,6 +3,7 @@ path = require 'path'
 import {LRU} from 'com/lru'
 import {CPU} from 'gpc/cpu'
 import {IOP} from 'gpc/iop'
+import {MemoryBus} from 'gpc/membus'
 import {HalUCP} from 'gpc/halUCP'
 import {SymbolTable} from 'gpc/symbolTable'
 
@@ -20,7 +21,8 @@ export class AP101 extends LRU
     @running = false
     @stepCount = 0
     @startAddr = 0x000e
-    @iop = new IOP()
+    @iop = new IOP(@cpu)
+    @cpu.ram = new MemoryBus(@cpu.mainStorage, @iop.mainStorage)
 
     # Store initial load parameters for reset
     @initialFcmPath = null
@@ -249,7 +251,7 @@ export class AP101 extends LRU
     entryPoint ?= 0x0060
 
     dv = @file2arrayBuffer(fcmPath)
-    @cpu.mainStorage.load16(0, dv)
+    @cpu.ram.load16(0, dv)
     console.log("AP101: Loaded #{dv.byteLength} bytes into MCM")
 
     # Set initial PSW: NIA to program start, run state active
@@ -271,7 +273,7 @@ export class AP101 extends LRU
     fcmPath = path.join(@CONFIG.NSTS_TOP, 'gpc', 'gen', fcmFileName)
     console.log("AP101: Loading #{fcmPath}")
     dv = @file2arrayBuffer(fcmPath)
-    @cpu.mainStorage.load16(0, dv)
+    @cpu.ram.load16(0, dv)
     console.log("AP101: Loaded #{dv.byteLength} bytes into MCM")
 
     # Set initial PSW: NIA to program start, run state active
