@@ -41,10 +41,7 @@
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     },
     "mac": {
-      "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
-      ],
+      "target": [ "dmg", "zip" ],
       "category": "public.app-category.developer-tools",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     }
