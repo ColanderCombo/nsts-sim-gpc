@@ -9,9 +9,17 @@ on:
         description: "Tag name of a release to attach artifacts to (leave blank for just CI artifacts)"
         required: false
         default: ""
+  # Temporary: run on pushes to the dev-unified-cmd-pkg branch so we can
+  # test the build pipeline before merging this workflow into main.
+  # Remove (or narrow) this before merge if you don't want every commit
+  # on the dev branch to burn CI time.
   push:
     branches:
       - dev-unified-cmd-pkg
+
+# softprops/action-gh-release needs write access to the releases API.
+permissions:
+  contents: write
 
 jobs:
   # ------------------------------------------------------------------
@@ -35,11 +43,14 @@ jobs:
         # rather than `npm ci`.  Dependency set is small and stable.
         run: npm install
 
-      - name: Build AppImage
-        run: npm run dist:linux
-        env:
-          # Don't try to publish; we upload manually below.
-          ELECTRON_BUILDER_PUBLISH: never
+      - name: Build JS bundles
+        run: npm run dist:prep
+
+      - name: Package AppImage
+        # --publish never keeps electron-builder from trying to upload to
+        # a GitHub draft release (which requires GH_TOKEN and fails in CI).
+        # We attach artifacts via softprops/action-gh-release below instead.
+        run: npx electron-builder --linux --publish never
 
       - name: List build output
         run: ls -la release/
@@ -59,7 +70,7 @@ jobs:
           files: release/*.AppImage
 
   # ------------------------------------------------------------------
-  # macOS (arm64 + x64 via electron-builder's universal toolchain)
+  # macOS (arm64 on macos-14, x64 on macos-13)
   # ------------------------------------------------------------------
   build-mac:
     name: macOS (${{ matrix.arch }})
@@ -83,18 +94,16 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        # package-lock.json is gitignored in this repo, so use `npm install`
-        # rather than `npm ci`.  Dependency set is small and stable.
         run: npm install
 
-      - name: Build macOS app
-        # electron-builder defaults to the host arch, so each matrix entry
-        # produces a native-arch artifact.  We pass --${{ matrix.arch }}
-        # explicitly to be unambiguous.
-        run: npx electron-builder --mac --${{ matrix.arch }}
+      - name: Build JS bundles
+        run: npm run dist:prep
+
+      - name: Package macOS app
+        # See Linux note re: --publish never.
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never
         env:
-          ELECTRON_BUILDER_PUBLISH: never
-          # Skip code signing in CI — user can sign locally if needed.
+          # Skip code signing in CI — no cert provisioned.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: List build output
