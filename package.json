@@ -2,14 +2,52 @@
   "name": "nsts-sim-gpc",
   "version": "1.0.0",
   "description": "Space Shuttle AP-101 GPC Simulator",
+  "author": "Donald Schmidt <daschmid@gmail.com>",
+  "license": "MIT",
+  "main": "dist/main/main.js",
   "scripts": {
-    "gui": "electron-esbuild dev",
-    "batch:build": "node esbuild/esbuild.batch.config.js",
-    "batch": "node dist/gpc-batch.js",
-    "fcmdump:build": "node esbuild/esbuild.fcmdump.config.js",
-    "fcmdump": "node dist/gpc-dump.js",
-    "dbg:build": "node esbuild/esbuild.dbg.config.js",
-    "dbg": "node dist/gpc-dbg.js"
+    "gui:dev": "electron-esbuild dev",
+    "gui:build": "electron-esbuild build",
+    "gpc:build": "node esbuild/esbuild.gpc.config.js",
+    "gpc": "node dist/gpc.js",
+    "dist:prep": "electron-esbuild build && node esbuild/esbuild.gpc.config.js",
+    "dist:pkg": "npm run dist:prep && electron-builder",
+    "dist:linux": "npm run dist:prep && electron-builder --linux",
+    "dist:mac": "npm run dist:prep && electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.nsts.gpc",
+    "productName": "GPC",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraMetadata": {
+      "main": "dist/main/main.js"
+    },
+    "asar": true,
+    "linux": {
+      "target": [ "AppImage" ],
+      "category": "Development",
+      "executableName": "gpc",
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+    },
+    "appImage": {
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.developer-tools",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+    }
   },
   "devDependencies": {
     "@babel/preset-react": "7.23.3",

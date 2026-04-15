@@ -1,0 +1,116 @@
+name: Release builds
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      attach-to-release:
+        description: "Tag name of a release to attach artifacts to (leave blank for just CI artifacts)"
+        required: false
+        default: ""
+
+jobs:
+  # ------------------------------------------------------------------
+  # Linux x86_64 AppImage
+  # ------------------------------------------------------------------
+  build-linux:
+    name: Linux AppImage (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        # package-lock.json is gitignored in this repo, so use `npm install`
+        # rather than `npm ci`.  Dependency set is small and stable.
+        run: npm install
+
+      - name: Build AppImage
+        run: npm run dist:linux
+        env:
+          # Don't try to publish; we upload manually below.
+          ELECTRON_BUILDER_PUBLISH: never
+
+      - name: List build output
+        run: ls -la release/
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpc-linux-x86_64-AppImage
+          path: release/*.AppImage
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.event_name == 'release' || github.event.inputs.attach-to-release != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.attach-to-release }}
+          files: release/*.AppImage
+
+  # ------------------------------------------------------------------
+  # macOS (arm64 + x64 via electron-builder's universal toolchain)
+  # ------------------------------------------------------------------
+  build-mac:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # arm64 native runner
+            arch: arm64
+          - runner: macos-13   # x64 native runner
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        # package-lock.json is gitignored in this repo, so use `npm install`
+        # rather than `npm ci`.  Dependency set is small and stable.
+        run: npm install
+
+      - name: Build macOS app
+        # electron-builder defaults to the host arch, so each matrix entry
+        # produces a native-arch artifact.  We pass --${{ matrix.arch }}
+        # explicitly to be unambiguous.
+        run: npx electron-builder --mac --${{ matrix.arch }}
+        env:
+          ELECTRON_BUILDER_PUBLISH: never
+          # Skip code signing in CI — user can sign locally if needed.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: List build output
+        run: ls -la release/
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpc-mac-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.event_name == 'release' || github.event.inputs.attach-to-release != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.attach-to-release }}
+          files: |
+            release/*.dmg
+            release/*.zip

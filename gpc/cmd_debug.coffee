@@ -1,5 +1,6 @@
 
-# GPC Debugger
+# gpc debug cmd
+# terminal based interactive debugger
 #
 fs = require 'fs'
 path = require 'path'
@@ -7,187 +8,104 @@ readline = require 'readline'
 {Command} = require 'commander'
 
 require 'com/util'
-import {CPU} from 'gpc/cpu'
-import {MCM} from 'gpc/mcm'
-import {MemoryBus} from 'gpc/membus'
+import {AGEHarness} from 'gpc/ageharness'
+import {IOHost} from 'gpc/iohost'
 import Instruction from 'gpc/cpu_instr'
 import {HalUCP} from 'gpc/halUCP'
-import {SymbolTable} from 'gpc/symbolTable'
+import {C, P, formatRegVal, formatTraceLine, formatRegDump} from 'gpc/trace'
 
-C =
-  reset:   '\x1b[0m'
-  bold:    '\x1b[1m'
-  dim:     '\x1b[2m'
-  red:     '\x1b[31m'
-  green:   '\x1b[32m'
-  yellow:  '\x1b[33m'
-  blue:    '\x1b[34m'
-  magenta: '\x1b[35m'
-  cyan:    '\x1b[36m'
-  white:   '\x1b[37m'
-  bgRed:   '\x1b[41m'
-
-class GPCDebugger
+export class GPCDebugger
   constructor: (opts) ->
+    @opts = opts
     @fcmPath = opts.fcmPath
-    @entryPoint = opts.entryPoint ? null
     @maxSteps = opts.maxSteps ? 10000000
-    @symbolsPath = opts.symbolsPath ? null
     @traceEnabled = opts.traceEnabled ? false
-    @ebcdic = opts.ebcdic ? false
-    @trapSvcError = opts.trapSvcError ? true
-    @inFiles = opts.inFiles ? {}
-    @outFiles = opts.outFiles ? {}
 
-    @cpu = new CPU()
-    @iopMCM = new MCM(24*1024)
-    @cpu.ram = new MemoryBus(@cpu.mainStorage, @iopMCM)
-    @halUCP = new HalUCP(@cpu)
-    @cpu.halUCP = @halUCP
-    @halUCP.trapSvcError = @trapSvcError
-    @halUCP.formatNumBlanks = opts.formatNumBlanks ? 5
-    @halUCP.errorCallback = (msg) => @error msg
+    @age = new AGEHarness()
+    @age.halUCP.errorCallback = (msg) => @error msg
 
-    @sym = new SymbolTable()
-    @stepCount = 0
+    @iohost = IOHost.fromOpts(@age.halUCP, opts)
+    @breakpoints = new Map()  # <addr, {enabled: bool, name: string|null}>
 
-    # Breakpoints: Map<addr, {enabled: bool, name: string|null}>
-    @breakpoints = new Map()
+    @memWatchpoints = new Map() # <addr, {enabled: bool, name: string|null}>
+    @_memWatchTriggered = null
+    @watches = new Map() # <addr, {name: string, size: int, type: string}>
 
-    # Watchpoints: Map<addr, {enabled: bool, name: string|null}>
-    @memWatchpoints = new Map()
-    @_memWatchTriggered = null  # set when a watchpoint fires
-
-    # Watch expressions: Map<addr, {name: string, size: int, type: string}>
-    @watches = new Map()
-
-    # I/O
-    @inStreams = {}
-    @outStreams = {}
-    @outputBuffer = []   # collects program output between stops
-
+    @outputBuffer = []
     @rl = null
     @_pendingInputResolve = null
-
-    # Last command for repeat with Enter
-    @lastCommand = null
-
-    # Stop reason for display
+    @lastCommand = null # enter -> repeats @lastCommand
     @stopReason = null
-
-    # True while an async execution loop is running
     @executing = false
 
-  # ---------------------------------------------------------------
-  # Output helpers
-  # ---------------------------------------------------------------
   out: (s) -> process.stdout.write s + "\n"
   error: (s) -> @out "#{C.red}*** #{s}#{C.reset}"
   info: (s) -> @out "#{C.cyan}#{s}#{C.reset}"
   dim: (s) -> @out "#{C.dim}#{s}#{C.reset}"
 
-  # ---------------------------------------------------------------
+  #
   # Symbol resolution
-  # ---------------------------------------------------------------
+  #
   resolveAddr: (s) ->
-    # Try hex literal first
+    # returns actual address of hex string or symbol
     s = s.trim()
     if s.match(/^(0x)?[0-9a-fA-F]+$/)
       return parseInt(s.replace(/^0x/i, ''), 16)
-    # Try symbol lookup
-    if @sym.symbols?
-      for sym in (@sym.symbols.symbols or [])
+    if @age.sym.symbols?
+      for sym in (@age.sym.symbols.symbols or [])
         if sym.name == s.toUpperCase()
           return sym.address
     return null
 
   formatAddr: (addr) ->
-    label = @sym.getLabelAt?(addr)
+    label = @age.sym.getLabelAt?(addr)
     if label
       return "#{addr.asHex(5)} <#{C.yellow}#{label}#{C.reset}>"
-    sect = @sym.getSectionAt?(addr)
+    sect = @age.sym.getSectionAt?(addr)
     if sect
-      for s in @sym.sectionsByAddr
+      for s in @age.sym.sectionsByAddr
         if s.name == sect
           offset = addr - s.address
           return "#{addr.asHex(5)} <#{sect}+#{offset.asHex(3)}>"
     return addr.asHex(5)
 
   formatAddrPlain: (addr) ->
-    label = @sym.getLabelAt?(addr)
+    label = @age.sym.getLabelAt?(addr)
     if label then "#{addr.asHex(5)} <#{label}>" else addr.asHex(5)
 
-  # ---------------------------------------------------------------
-  # Loading
-  # ---------------------------------------------------------------
-  loadSymbols: ->
-    return unless @symbolsPath?
-    entryPoint = @sym.load(@symbolsPath)
-    if entryPoint? and not @entryPoint?
-      @entryPoint = entryPoint
-    if @sym.symbols?
-      @halUCP.initFromSymbols(@sym.symbols, @sym.symTypes)
-
-  loadFCM: ->
-    image = fs.readFileSync @fcmPath
-    buf = new ArrayBuffer(image.length)
-    buf8 = new Uint8Array(buf)
-    for i in [0...image.length]
-      buf8[i] = image[i]
-    dv = new DataView(buf)
-    @cpu.ram.load16(0, dv)
+  load: ->
+    { byteCount, entryPoint, symbolsPath } = @age.configureFromOpts(@fcmPath, @opts)
+    @entryPoint = entryPoint
+    @symbolsPath = symbolsPath
     unless @entryPoint?
       @error "No entry point: use --start=ADDR or provide symbols"
       process.exit(1)
-    @cpu.psw.setNIA(@entryPoint)
-    @cpu.psw.setWaitState(false)
-    return dv.byteLength
+    return byteCount
 
-  # ---------------------------------------------------------------
-  # I/O subsystem 
-  # ---------------------------------------------------------------
+  #
+  # I/O
+  #
   initIO: ->
-    unless @ebcdic
-      @halUCP.iobufEncoding = 'ascii'
+    @iohost.init(@age.sym.symbols, @age.sym.symTypes)
 
-    for ch, filePath of @inFiles
-      try
-        content = fs.readFileSync(filePath, 'utf8')
-        @inStreams[ch] = content.split('\n')
-        if @inStreams[ch].length > 0 and @inStreams[ch][@inStreams[ch].length - 1] == ''
-          @inStreams[ch].pop()
-      catch e
-        @error "Cannot open input file for channel #{ch}: #{filePath} (#{e.message})"
-        process.exit(1)
+    # Customize: collect output in buffer for display between stops
+    @iohost.outputCallback = (text, channel) =>
+      @outputBuffer.push text
 
-    for ch, filePath of @outFiles
-      try
-        @outStreams[ch] = fs.createWriteStream(filePath)
-      catch e
-        @error "Cannot open output file for channel #{ch}: #{filePath} (#{e.message})"
-        process.exit(1)
-
-    @halUCP.outputCallback = (text, channel) => @handleOutput(text, channel)
-    @halUCP.controlCallback = (iocode, param, channel) => @handleControl(iocode, param, channel)
-
-  handleOutput: (text, channel) ->
-    ch = channel.toString()
-    if @outStreams[ch]?
-      @outStreams[ch].write(text)
-    @outputBuffer.push text
+    @age.halUCP.controlCallback = (iocode, param, channel) => @handleControl(iocode, param, channel)
 
   handleControl: (iocode, param, channel) ->
     ch = channel.toString()
     text = switch iocode
       when 0, 1, 2, 3 then '\n'
       when 4 then '\n'.repeat(Math.max(1, param))      # LINE
-      when 5 then ' '.repeat(Math.max(0, param))        # COLUMN
-      when 6 then ' '.repeat(Math.max(1, param) * 5)    # TAB
-      when 7 then '\n--- PAGE ---\n'                     # PAGE
-      when 8 then '\n'.repeat(Math.max(1, param))        # SKIP
+      when 5 then ' '.repeat(Math.max(0, param))       # COLUMN
+      when 6 then ' '.repeat(Math.max(1, param) * 5)   # TAB
+      when 7 then '\n--- PAGE ---\n'                   # PAGE
+      when 8 then '\n'.repeat(Math.max(1, param))      # SKIP
       else ''
-    if @outStreams[ch]?
-      @outStreams[ch].write(text)
+    if @iohost.outStreams[ch]?
+      @iohost.outStreams[ch].write(text)
     @outputBuffer.push text
 
   flushOutput: ->
@@ -197,69 +115,25 @@ class GPCDebugger
         @out "#{C.green}#{combined}#{C.reset}"
       @outputBuffer = []
 
-  # ---------------------------------------------------------------
-  # Register formatting
-  # ---------------------------------------------------------------
-  snapshotRegs: ->
-    snap = {}
-    grSet = @cpu.psw.getRegSet()
-    for i in [0..7]
-      snap["R0#{i}"] = @cpu.regFiles[grSet].r(i).get32()
-    for i in [0..7]
-      snap["FP#{i}"] = @cpu.regFiles[2].r(i).get32()
-    snap.NIA = @cpu.psw.getNIA()
-    snap.CC = @cpu.psw.getCC()
-    snap.PSW1 = @cpu.psw.psw1.get32()
-    snap.PSW2 = @cpu.psw.psw2.get32()
-    return snap
-
-  diffRegs: (before, after) ->
-    changes = []
-    for k of before
-      if before[k] != after[k]
-        changes.push { name: k, old: before[k], new: after[k] }
-    return changes
-
-  formatRegVal: (name, val) ->
-    if name == 'CC' or name == 'NIA'
-      return val.toString()
-    return (val >>> 0).asHex(8)
-
   formatSectionOffset: (addr) ->
-    return @sym.formatCSect?(addr) or ""
+    return @age.sym.formatCSect?(addr) or ""
 
-  # ---------------------------------------------------------------
-  # Trace line
-  # ---------------------------------------------------------------
-  formatTraceLine: (step, nia, hw1, hw2, disasm, instrLen, changes) ->
-    stepStr = step.toString().lpad(" ", 6)
-    niaStr = nia.asHex(5)
-    sectStr = @formatSectionOffset(nia)
-    hw1Str = hw1.asHex(4)
-    hw2Str = if instrLen > 1 then hw2.asHex(4) else "    "
-    changesStr = ""
-    if changes.length > 0
-      parts = []
-      for c in changes
-        parts.push "#{c.name}: #{@formatRegVal(c.name, c.old)}->#{@formatRegVal(c.name, c.new)}"
-      changesStr = "  " + parts.join(", ")
-    return "#{C.dim}[#{stepStr}]#{C.reset} #{niaStr} #{sectStr}: #{hw1Str} #{hw2Str}  #{disasm.rpad(' ', 28)}#{C.yellow}#{changesStr}#{C.reset}"
+  _formatTraceLine: (step, nia, hw1, hw2, disasm, instrLen, changes) ->
+    formatTraceLine(step, nia, hw1, hw2, disasm, instrLen, changes, { color: C, sym: @age.sym })
 
-  # ---------------------------------------------------------------
+  #
   #  Exec loop
-  # ---------------------------------------------------------------
+  #
   execOne: ->
     # Sync step counter
-    @cpu.mainStorage.step = @stepCount
-    for rf in @cpu.regFiles
-      rf.step = @stepCount
+    @age._syncStep()
 
-    nia = @cpu.psw.getNIA()
+    nia = @age.cpu.psw.getNIA()
 
     # Check I/O trap
-    if @halUCP.active and @halUCP.isTrapAddr(nia)
-      result = @halUCP.checkTrap(nia)
-      if @halUCP.waitingForInput
+    if @age.halUCP.active and @age.halUCP.isTrapAddr(nia)
+      result = @age.halUCP.checkTrap(nia)
+      if @age.halUCP.waitingForInput
         return 'input'
 
     watchBefore = null
@@ -267,54 +141,54 @@ class GPCDebugger
       watchBefore = new Map()
       @memWatchpoints.forEach (wp, addr) =>
         if wp.enabled
-          watchBefore.set(addr, @cpu.mainStorage.get16(addr, false))
+          watchBefore.set(addr, @age.mainStorage.get16(addr, false))
 
-    before = @snapshotRegs()
-    hw1 = @cpu.mainStorage.get16(nia)
-    hw2 = @cpu.mainStorage.get16(nia + 1)
+    before = @age.snapshotRegs()
+    hw1 = @age.mainStorage.get16(nia)
+    hw2 = @age.mainStorage.get16(nia + 1)
     disasm = Instruction.toStr(hw1, hw2)
     [d, v] = Instruction.decode(hw1, hw2)
     instrLen = if d? then d.origLen else 1
 
     unless d?
-      @out @formatTraceLine(@stepCount, nia, hw1, hw2, "??? (invalid)", 1, [])
+      @out @_formatTraceLine(@age.stepCount, nia, hw1, hw2, "??? (invalid)", 1, [])
       @stopReason = "invalid instruction 0x#{hw1.asHex(4)} at #{@formatAddrPlain(nia)}"
       return 'error'
 
-    @cpu.exec1()
-    @stepCount++
+    @age.gpc.exec1()
+    @age.stepCount++
 
-    after = @snapshotRegs()
-    changes = @diffRegs(before, after)
+    after = @age.snapshotRegs()
+    changes = @age.diffRegs(before, after)
     changes = changes.filter (c) -> c.name != 'NIA'
 
     if @traceEnabled
-      relocSym = @sym.getRelocAt?(nia, instrLen)
+      relocSym = @age.sym.getRelocAt?(nia, instrLen)
       relocComment = if relocSym then "  #{C.dim}; #{relocSym}#{C.reset}" else ""
-      @out @formatTraceLine(@stepCount - 1, nia, hw1, hw2, disasm, instrLen, changes) + relocComment
+      @out @_formatTraceLine(@age.stepCount - 1, nia, hw1, hw2, disasm, instrLen, changes) + relocComment
 
     if watchBefore?
       @memWatchpoints.forEach (wp, addr) =>
         return unless wp.enabled
         oldVal = watchBefore.get(addr)
         return unless oldVal?
-        newVal = @cpu.mainStorage.get16(addr, false)
+        newVal = @age.mainStorage.get16(addr, false)
         if oldVal != newVal
           wpName = if wp.name then " (#{wp.name})" else ""
           @_memWatchTriggered = {
             addr, name: wpName
             old: oldVal, new: newVal
             triggerNia: nia
-            triggerStep: @stepCount - 1
+            triggerStep: @age.stepCount - 1
             triggerDisasm: disasm
           }
 
-    if @halUCP.svcTrapped
-      @halUCP.svcTrapped = false
+    if @age.halUCP.svcTrapped
+      @age.halUCP.svcTrapped = false
       @stopReason = "SVC trapped"
       return 'svc'
 
-    if @cpu.psw.getWaitState()
+    if @age.cpu.psw.getWaitState()
       @stopReason = "wait state (program halted)"
       return 'halt'
 
@@ -334,13 +208,11 @@ class GPCDebugger
     return false  # 'ok'
 
   # Async-resumable execution loop.
-  # Runs up to maxCount instructions, pausing for readline input when needed.
-  # Calls onDone(ran) when execution stops.
   _execLoop: (maxCount, onDone) ->
     ran = 0
     while ran < maxCount
       if ran > 0
-        nextNia = @cpu.psw.getNIA()
+        nextNia = @age.cpu.psw.getNIA()
         bp = @breakpoints.get(nextNia)
         if bp?.enabled
           @stopReason = "breakpoint at #{@formatAddrPlain(nextNia)}"
@@ -360,16 +232,16 @@ class GPCDebugger
   _handleInput: (remainingCount, onDone) ->
     ch = '0'
     # Try file input first
-    if @inStreams[ch]? and @inStreams[ch].length > 0
-      line = @inStreams[ch].shift()
-      @halUCP.provideInput(line)
+    if @iohost.hasFileInput(ch)
+      line = @iohost.readInputLine(ch)
+      @age.halUCP.provideInput(line)
       @_execLoop(remainingCount, onDone)
       return
 
-    iocode = @halUCP.pendingIocode
+    iocode = @age.halUCP.pendingIocode
     typeName = HalUCP.iocodeTypeName(iocode)
     @rl.question "#{C.green} INPUT(#{typeName}): #{C.reset}", (line) =>
-      @halUCP.provideInput(line)
+      @age.halUCP.provideInput(line)
       @_execLoop(remainingCount, onDone)
 
   _execDone: ->
@@ -381,90 +253,58 @@ class GPCDebugger
   # Display commands
   # ---------------------------------------------------------------
   showRegisters: ->
-    grSet = @cpu.psw.getRegSet()
-    @out "#{C.bold}--- Registers (bank #{grSet}) ---#{C.reset}"
-
-    for row in [0, 4]
-      parts = []
-      for i in [row..row+3]
-        val = @cpu.regFiles[grSet].r(i).get32()
-        name = "R#{i.toString().padStart(2, '0')}"
-        parts.push "#{C.cyan}#{name}#{C.reset}=#{(val >>> 0).asHex(8)}"
-      @out "  " + parts.join("  ")
-
-    parts = []
-    for i in [0..3]
-      val = @cpu.regFiles[2].r(i).get32()
-      parts.push "#{C.cyan}FP#{i}#{C.reset}=#{(val >>> 0).asHex(8)}"
-    @out "  " + parts.join("  ")
-    parts = []
-    for i in [4..7]
-      val = @cpu.regFiles[2].r(i).get32()
-      parts.push "#{C.cyan}FP#{i}#{C.reset}=#{(val >>> 0).asHex(8)}"
-    @out "  " + parts.join("  ")
-
-    psw1 = @cpu.psw.psw1.get32()
-    psw2 = @cpu.psw.psw2.get32()
-    nia = @cpu.psw.getNIA()
-    cc = @cpu.psw.getCC()
-    bsr = @cpu.psw.getBSR()
-    dsr = @cpu.psw.getDSR()
-    @out "  #{C.cyan}PSW1#{C.reset}=#{(psw1 >>> 0).asHex(8)}  #{C.cyan}PSW2#{C.reset}=#{(psw2 >>> 0).asHex(8)}  #{C.cyan}NIA#{C.reset}=#{nia.asHex(5)}  #{C.cyan}CC#{C.reset}=#{cc}  #{C.cyan}BSR#{C.reset}=#{bsr}  #{C.cyan}DSR#{C.reset}=#{dsr}"
+    for line in formatRegDump(@age.cpu, @age.stepCount, { color: C })
+      @out line
 
   showRegister: (name) ->
     name = name.toUpperCase()
-    grSet = @cpu.psw.getRegSet()
+    grSet = @age.cpu.psw.getRegSet()
     if name.match(/^R(\d+)$/)
       i = parseInt(RegExp.$1)
       if i >= 0 and i <= 7
-        val = @cpu.regFiles[grSet].r(i).get32()
+        val = @age.cpu.regFiles[grSet].r(i).get32()
         @out "  #{name} = 0x#{(val >>> 0).asHex(8)} (#{val})"
         return
     if name.match(/^FP(\d+)$/)
       i = parseInt(RegExp.$1)
       if i >= 0 and i <= 7
-        val = @cpu.regFiles[2].r(i).get32()
+        val = @age.cpu.regFiles[2].r(i).get32()
         @out "  #{name} = 0x#{(val >>> 0).asHex(8)}"
         return
     if name == 'NIA'
-      @out "  NIA = #{@cpu.psw.getNIA().asHex(5)}"
+      @out "  NIA = #{@age.cpu.psw.getNIA().asHex(5)}"
       return
     if name == 'CC'
-      @out "  CC = #{@cpu.psw.getCC()}"
+      @out "  CC = #{@age.cpu.psw.getCC()}"
       return
     if name == 'PSW1'
-      @out "  PSW1 = 0x#{(@cpu.psw.psw1.get32() >>> 0).asHex(8)}"
+      @out "  PSW1 = 0x#{(@age.cpu.psw.psw1.get32() >>> 0).asHex(8)}"
       return
     if name == 'PSW2'
-      @out "  PSW2 = 0x#{(@cpu.psw.psw2.get32() >>> 0).asHex(8)}"
+      @out "  PSW2 = 0x#{(@age.cpu.psw.psw2.get32() >>> 0).asHex(8)}"
       return
     if name == 'BSR'
-      @out "  BSR = #{@cpu.psw.getBSR()}"
+      @out "  BSR = #{@age.cpu.psw.getBSR()}"
       return
     if name == 'DSR'
-      @out "  DSR = #{@cpu.psw.getDSR()}"
+      @out "  DSR = #{@age.cpu.psw.getDSR()}"
       return
     @error "Unknown register: #{name}"
 
   showDisasm: (startAddr, count=20) ->
-    startAddr ?= @cpu.psw.getNIA()
+    startAddr ?= @age.cpu.psw.getNIA()
     addr = startAddr
-    nia = @cpu.psw.getNIA()
+    nia = @age.cpu.psw.getNIA()
     for i in [0...count]
       break if addr >= 0x80000
-      hw1 = @cpu.mainStorage.get16(addr)
-      hw2 = @cpu.mainStorage.get16(addr + 1)
+      hw1 = @age.mainStorage.get16(addr)
+      hw2 = @age.mainStorage.get16(addr + 1)
       [d, v] = Instruction.decode(hw1, hw2)
 
-      # Marker for current NIA
       marker = if addr == nia then "#{C.bgRed}>>#{C.reset}" else "  "
-
-      # Breakpoint marker
       bp = @breakpoints.get(addr)
       bpMark = if bp?.enabled then "#{C.red}*#{C.reset}" else " "
-
-      # Symbol label
-      label = @sym.getLabelAt?(addr)
+      label = @age.sym.getLabelAt?(addr)
       if label
         @out "#{C.yellow}                          #{label}:#{C.reset}"
 
@@ -473,8 +313,7 @@ class GPCDebugger
         disasmStr = Instruction.toStr(hw1, hw2)
         hw1Str = hw1.asHex(4)
         hw2Str = if instrLen > 1 then hw2.asHex(4) else "    "
-        sect = @formatSectionOffset(addr)
-        relocSym = @sym.getRelocAt?(addr, instrLen)
+        relocSym = @age.sym.getRelocAt?(addr, instrLen)
         comment = if relocSym then "  #{C.dim}; #{relocSym}#{C.reset}" else ""
         @out "#{marker}#{bpMark}#{addr.asHex(5)}: #{hw1Str} #{hw2Str}  #{disasmStr}#{comment}"
       else
@@ -486,14 +325,13 @@ class GPCDebugger
     addr = startAddr & 0x7ffff
     row = 0
     while row < count
-      # 8 halfwords per row
       rowAddr = addr + row
       hexParts = []
       asciiParts = []
       cols = Math.min(8, count - row)
       for col in [0...cols]
         a = rowAddr + col
-        hw = @cpu.mainStorage.get16(a)
+        hw = @age.mainStorage.get16(a)
         hexParts.push hw.asHex(4)
         b1 = (hw >> 8) & 0xff
         b2 = hw & 0xff
@@ -506,7 +344,7 @@ class GPCDebugger
       row += cols
 
   showMemoryFullword: (addr) ->
-    val = @cpu.mainStorage.get32(addr)
+    val = @age.mainStorage.get32(addr)
     @out "  #{addr.asHex(5)}: #{val.asHex(8)} (int32: #{val | 0}, uint32: #{val})"
 
   showWatches: ->
@@ -514,9 +352,9 @@ class GPCDebugger
       @dim "  (no watches)"
       return
     @watches.forEach (w, addr) =>
-      val = @cpu.mainStorage.get16(addr, false)
+      val = @age.mainStorage.get16(addr, false)
       if w.size >= 2
-        fw = @cpu.mainStorage.get32(addr, false)
+        fw = @age.mainStorage.get32(addr, false)
         @out "  #{C.cyan}#{w.name}#{C.reset} @ #{addr.asHex(5)}: HW=#{val.asHex(4)}  FW=#{(fw >>> 0).asHex(8)} (#{fw})"
       else
         @out "  #{C.cyan}#{w.name}#{C.reset} @ #{addr.asHex(5)}: #{val.asHex(4)} (#{val})"
@@ -537,39 +375,39 @@ class GPCDebugger
     @memWatchpoints.forEach (wp, addr) =>
       status = if wp.enabled then "#{C.green}ON #{C.reset}" else "#{C.red}OFF#{C.reset}"
       name = if wp.name then " <#{wp.name}>" else ""
-      val = @cpu.mainStorage.get16(addr, false)
+      val = @age.mainStorage.get16(addr, false)
       @out "  [#{status}] #{@formatAddr(addr)}#{name} = #{val.asHex(4)}"
 
   showSections: ->
-    unless @sym.sectionsByAddr?.length > 0
+    unless @age.sym.sectionsByAddr?.length > 0
       @dim "  (no symbols loaded)"
       return
     @out "#{C.bold}--- Section Map ---#{C.reset}"
-    for sect in @sym.sectionsByAddr
+    for sect in @age.sym.sectionsByAddr
       endAddr = sect.address + sect.size - 1
       @out "  #{sect.address.asHex(5)} - #{endAddr.asHex(5)}  #{sect.name.rpad(' ', 14)} (#{sect.size} HW, #{sect.module})"
     if @entryPoint?
       @out "  Entry: #{@formatAddr(@entryPoint)}"
 
   showSymbol: (name) ->
-    unless @sym.symbols?
+    unless @age.sym.symbols?
       @error "No symbols loaded"
       return
     name = name.toUpperCase()
     found = false
-    for sym in (@sym.symbols.symbols or [])
+    for sym in (@age.sym.symbols.symbols or [])
       if sym.name == name or sym.name.indexOf(name) >= 0
         addr = sym.address
-        sect = @sym.getSectionAt?(addr) or "?"
+        sect = @age.sym.getSectionAt?(addr) or "?"
         @out "  #{C.cyan}#{sym.name}#{C.reset}  addr=#{addr.asHex(5)}  type=#{sym.type}  section=#{sect}"
         found = true
     unless found
       @error "Symbol not found: #{name}"
 
   showCurrentLocation: ->
-    nia = @cpu.psw.getNIA()
-    hw1 = @cpu.mainStorage.get16(nia)
-    hw2 = @cpu.mainStorage.get16(nia + 1)
+    nia = @age.cpu.psw.getNIA()
+    hw1 = @age.mainStorage.get16(nia)
+    hw2 = @age.mainStorage.get16(nia + 1)
     disasm = Instruction.toStr(hw1, hw2)
     [d, v] = Instruction.decode(hw1, hw2)
     instrLen = if d? then d.len else 1
@@ -577,18 +415,17 @@ class GPCDebugger
     sect = @formatSectionOffset(nia)
     @out "#{C.bold}>>#{C.reset} #{nia.asHex(5)} #{sect}: #{hw1.asHex(4)} #{hw2Str}  #{C.bold}#{disasm}#{C.reset}"
 
-  # Status line shown after each stop
   showStatus: ->
     if @stopReason?
-      @out "#{C.yellow}--- stopped: #{@stopReason} (#{@stepCount} steps) ---#{C.reset}"
+      @out "#{C.yellow}--- stopped: #{@stopReason} (#{@age.stepCount} steps) ---#{C.reset}"
       @stopReason = null
     @showCurrentLocation()
     if @watches.size > 0
       @showWatches()
 
-  # ---------------------------------------------------------------
+  #
   # Commands
-  # ---------------------------------------------------------------
+  #
   setupCommands: ->
     @repl = new Command()
     @repl.exitOverride()
@@ -616,9 +453,9 @@ class GPCDebugger
       .alias('n')
       .description('Step over (run until next instruction)')
       .action =>
-        nia = @cpu.psw.getNIA()
-        hw1 = @cpu.mainStorage.get16(nia)
-        hw2 = @cpu.mainStorage.get16(nia + 1)
+        nia = @age.cpu.psw.getNIA()
+        hw1 = @age.mainStorage.get16(nia)
+        hw2 = @age.mainStorage.get16(nia + 1)
         [d, v] = Instruction.decode(hw1, hw2)
         instrLen = if d? then d.origLen else 1
         nextAddr = nia + instrLen
@@ -644,15 +481,14 @@ class GPCDebugger
     @repl.command('reset')
       .description('Reset CPU and reload program')
       .action =>
-        @stepCount = 0
+        @age.stepCount = 0
         @outputBuffer = []
-        @halUCP.waitingForInput = false
-        @halUCP.pendingIocode = null
-        @halUCP.skipTrap = false
-        @halUCP.svcTrapped = false
-        @halUCP.active = false
-        @loadSymbols()
-        @loadFCM()
+        @age.halUCP.waitingForInput = false
+        @age.halUCP.pendingIocode = null
+        @age.halUCP.skipTrap = false
+        @age.halUCP.svcTrapped = false
+        @age.halUCP.active = false
+        @load()
         @initIO()
         @info "Program reset"
         @showStatus()
@@ -665,14 +501,13 @@ class GPCDebugger
         @fcmPath = fcm
         @symbolsPath = symbols or null
         @entryPoint = null
-        @stepCount = 0
+        @age.stepCount = 0
         @outputBuffer = []
         if not @symbolsPath?
           autoSymPath = @fcmPath.replace(/\.fcm$/i, '.sym.json')
           if autoSymPath != @fcmPath and fs.existsSync(autoSymPath)
             @symbolsPath = autoSymPath
-        @loadSymbols()
-        @loadFCM()
+        @load()
         @initIO()
         @info "Loaded: #{@fcmPath}"
         @showStatus()
@@ -688,7 +523,7 @@ class GPCDebugger
         unless addr?
           @error "Cannot resolve: #{addrStr}"
           return
-        label = @sym.getLabelAt?(addr)
+        label = @age.sym.getLabelAt?(addr)
         @breakpoints.set(addr, { enabled: true, name: label or addrStr })
         @info "Breakpoint set at #{@formatAddr(addr)}"
 
@@ -759,7 +594,7 @@ class GPCDebugger
           @error "Cannot resolve: #{addrStr}"
           return
         count = parseInt(countStr, 10)
-        label = @sym.getLabelAt?(addr) or addrStr
+        label = @age.sym.getLabelAt?(addr) or addrStr
         for i in [0...count]
           @memWatchpoints.set(addr + i, { enabled: true, name: if count > 1 then "#{label}+#{i}" else label })
         @info "Memory watchpoint set at #{@formatAddr(addr)}#{if count > 1 then " (#{count} HW)" else ""}"
@@ -800,7 +635,7 @@ class GPCDebugger
         unless addr?
           @error "Cannot resolve: #{addrStr}"
           return
-        label = @sym.getLabelAt?(addr) or addrStr
+        label = @age.sym.getLabelAt?(addr) or addrStr
         size = parseInt(sizeStr, 10)
         @watches.set(addr, { name: label, size: size, type: 'hex' })
         @info "Watch added: #{label} @ #{@formatAddr(addr)}"
@@ -903,10 +738,10 @@ class GPCDebugger
             @error "Invalid hex value: #{valStr}"
             return
           if opts.fullword
-            @cpu.mainStorage.set32(addr + (idx * 2), val, false)
+            @age.mainStorage.set32(addr + (idx * 2), val, false)
             @info "  #{(addr + idx * 2).asHex(5)}: #{(val >>> 0).asHex(8)}"
           else
-            @cpu.mainStorage.set16(addr + idx, val & 0xFFFF, false)
+            @age.mainStorage.set16(addr + idx, val & 0xFFFF, false)
             @info "  #{(addr + idx).asHex(5)}: #{(val & 0xFFFF).asHex(4)}"
 
     # -- Symbols & sections --
@@ -970,7 +805,7 @@ class GPCDebugger
       .description('Show section map')
       .action => @showSections()
 
-    # -- Other --
+    # -- Misc --
 
     @repl.command('where')
       .aliases(['loc', 'here'])
@@ -981,7 +816,7 @@ class GPCDebugger
     @repl.command('steps')
       .description('Show step count')
       .action =>
-        @out "Step count: #{@stepCount}"
+        @out "Step count: #{@age.stepCount}"
 
     @repl.command('help')
       .aliases(['h', '?'])
@@ -1011,31 +846,30 @@ class GPCDebugger
     if isNaN(val)
       @error "Invalid value: #{valStr}"
       return
-    grSet = @cpu.psw.getRegSet()
+    grSet = @age.cpu.psw.getRegSet()
     if name.match(/^R(\d+)$/)
       i = parseInt(RegExp.$1)
       if i >= 0 and i <= 7
-        @cpu.regFiles[grSet].r(i).set32(val)
+        @age.cpu.regFiles[grSet].r(i).set32(val)
         @info "#{name} = 0x#{(val >>> 0).asHex(8)}"
         return
     if name.match(/^FP(\d+)$/)
       i = parseInt(RegExp.$1)
       if i >= 0 and i <= 7
-        @cpu.regFiles[2].r(i).set32(val)
+        @age.cpu.regFiles[2].r(i).set32(val)
         @info "#{name} = 0x#{(val >>> 0).asHex(8)}"
         return
     if name == 'NIA'
-      @cpu.psw.setNIA(val)
+      @age.cpu.psw.setNIA(val)
       @info "NIA = #{val.asHex(5)}"
       return
     @error "Cannot set: #{name}"
 
-  # ---------------------------------------------------------------
+  #
   # entry point
-  # ---------------------------------------------------------------
+  #
   start: ->
-    @loadSymbols()
-    byteCount = @loadFCM()
+    byteCount = @load()
     @initIO()
     @setupCommands()
 
@@ -1044,12 +878,12 @@ class GPCDebugger
     @out "#{C.dim}FCM: #{@fcmPath} (#{byteCount} bytes)#{C.reset}"
     if @entryPoint?
       @out "#{C.dim}Entry: #{@formatAddr(@entryPoint)}#{C.reset}"
-    if @sym.symbols?
-      @out "#{C.dim}Symbols: #{@symbolsPath} (#{@sym.symbols.symbols?.length or 0} symbols, #{@sym.symbols.sections?.length or 0} sections)#{C.reset}"
+    if @age.sym.symbols?
+      @out "#{C.dim}Symbols: #{@symbolsPath} (#{@age.sym.symbols.symbols?.length or 0} symbols, #{@age.sym.symbols.sections?.length or 0} sections)#{C.reset}"
     @out "#{C.dim}Type 'help' for commands#{C.reset}"
     @out ""
 
-    @showSections() if @sym.sectionsByAddr?.length > 0
+    @showSections() if @age.sym.sectionsByAddr?.length > 0
     @out ""
     @showCurrentLocation()
 
@@ -1072,8 +906,8 @@ class GPCDebugger
           return [hits, word]
         else
           word = parts[parts.length - 1] or ''
-          if @sym.symbols? and word.length > 0
-            syms = (@sym.symbols.symbols or [])
+          if @age.sym.symbols? and word.length > 0
+            syms = (@age.sym.symbols.symbols or [])
               .map((s) -> s.name)
               .filter((n) -> n.toLowerCase().startsWith(word.toLowerCase()))
               .slice(0, 20)
@@ -1121,64 +955,25 @@ class GPCDebugger
     @rl.prompt()
 
 
-# ---------------------------------------------------------------
-# CLI parsing
-# ---------------------------------------------------------------
-parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
+#
+# cli command registration
+#
+export addCommand = (program) ->
+  cmd = program.command('debug')
+    .alias('dbg')
+    .description('Interactive AP-101 debugger')
+    .argument('<fcm-file>', 'FCM memory image to load')
 
-program = new Command()
-program
-  .name('gpc-dbg')
-  .description('GPC Debugger — interactive AP-101 debugger')
-  .showHelpAfterError(true)
-  .argument('<fcm-file>', 'FCM memory image to load')
-  .option('--start <addr>', 'start address in hex')
-  .option('--max-steps <n>', 'max instructions before auto-stop', '10000000')
-  .option('--symbols <file>', 'load symbol table JSON from linker')
-  .option('--trace', 'enable instruction trace at startup')
-  .option('--ebcdic', 'use EBCDIC encoding for character I/O')
-  .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
-  .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
-  .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
-  .option('--infile0 <file>', 'read input for channel 0')
-  .option('--infile1 <file>', 'read input for channel 1')
-  .option('--infile2 <file>', 'read input for channel 2')
-  .option('--infile3 <file>', 'read input for channel 3')
-  .option('--outfile0 <file>', 'write output for channel 0')
-  .option('--outfile1 <file>', 'write output for channel 1')
-  .option('--outfile2 <file>', 'write output for channel 2')
-  .option('--outfile3 <file>', 'write output for channel 3')
-  .parse()
+  AGEHarness.addOptions(cmd)
+  IOHost.addOptions(cmd, 3)
 
-fcmPath = program.args[0]
-o = program.opts()
-
-inFiles = {}
-outFiles = {}
-for ch in [0..3]
-  inFiles[ch] = o["infile#{ch}"] if o["infile#{ch}"]
-for ch in [0..7]
-  outFiles[ch] = o["outfile#{ch}"] if o["outfile#{ch}"]
-
-opts = {
-  fcmPath
-  entryPoint: if o.start then parseHex(o.start) else null
-  maxSteps: parseInt(o.maxSteps, 10)
-  symbolsPath: o.symbols or null
-  traceEnabled: o.trace or false
-  ebcdic: o.ebcdic or false
-  trapSvcError: o.trapSvcError
-  formatNumBlanks: parseInt(o.halucpFormatNumBlanks, 10)
-  inFiles
-  outFiles
-}
-
-# Auto-detect symbols file
-if not opts.symbolsPath?
-  autoSymPath = fcmPath.replace(/\.fcm$/i, '.sym.json')
-  if autoSymPath != fcmPath and fs.existsSync(autoSymPath)
-    opts.symbolsPath = autoSymPath
-    process.stderr.write "Auto-detected symbols: #{opts.symbolsPath}\n"
-
-debugger_ = new GPCDebugger(opts)
-debugger_.start()
+  cmd
+    .option('--max-steps <n>', 'max instructions before auto-stop', '10000000')
+    .option('--trace', 'enable instruction trace at startup')
+    .action (fcmPath, o) ->
+      debugger_ = new GPCDebugger(Object.assign({}, o, {
+        fcmPath
+        maxSteps: parseInt(o.maxSteps, 10)
+        traceEnabled: o.trace or false
+      }))
+      debugger_.start()

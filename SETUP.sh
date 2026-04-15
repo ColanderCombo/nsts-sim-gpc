@@ -2,7 +2,5 @@
 # Prerequisites: node >= 20, npm
 npm install
 ./node_modules/.bin/electron-esbuild build
-node esbuild/esbuild.batch.config.js
-node esbuild/esbuild.fcmdump.config.js
-node esbuild/esbuild.dbg.config.js
-echo "Ready. Use: npm run batch, npm run fcmdump, npm run dbg, npm run gui"
+node esbuild/esbuild.gpc.config.js
+echo "Ready. Use: ./GPC.sh {run,debug,gui,dump,disasm} [fcm-file] [options]"
