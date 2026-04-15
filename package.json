@@ -35,7 +35,8 @@
       "target": [ "AppImage" ],
       "category": "Development",
       "executableName": "gpc",
-      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+      "executableArgs": [ "--no-sandbox" ]
     },
     "appImage": {
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"

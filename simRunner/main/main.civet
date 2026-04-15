@@ -157,7 +157,11 @@ main := () : void ->
   //   [GPC, <user args...>]
   // process.defaultApp distinguishes the two.
   userArgStart := if (process as any).defaultApp then 2 else 1
-  userArgs .= process.argv.slice(userArgStart)
+  // Filter Chromium switches we inject ourselves (via linux.executableArgs
+  // in package.json) — Electron may leave them in argv, and commander
+  // would otherwise reject them as unknown options.
+  electronFlags := new Set(['--no-sandbox', '--disable-gpu-sandbox', '--disable-setuid-sandbox'])
+  userArgs .= process.argv.slice(userArgStart).filter((a) => not electronFlags.has(a))
   if userArgs.length == 0
     userArgs = ['--help']
   dispatchCli(userArgs)
