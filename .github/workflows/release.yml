@@ -9,12 +9,11 @@ on:
         description: "Tag name of a release to attach artifacts to (leave blank for just CI artifacts)"
         required: false
         default: ""
-  # Temporary: run on pushes to the dev-unified-cmd-pkg branch so we can
-  # test the build pipeline before merging this workflow into main.
-  # Remove (or narrow) this before merge if you don't want every commit
-  # on the dev branch to burn CI time.
+  # Pushes to `main` build + publish a rolling "latest" release (see the
+  # publish-latest job below).  The dev branch build is just CI, no publish.
   push:
     branches:
+      - main
       - dev-unified-cmd-pkg
 
 # softprops/action-gh-release needs write access to the releases API.
@@ -70,19 +69,18 @@ jobs:
           files: release/*.AppImage
 
   # ------------------------------------------------------------------
-  # macOS (arm64 on macos-14, x64 on macos-13)
+  # macOS (arm64 native on macos-latest; x64 cross-compiled from the
+  # same arm64 runner — electron-builder downloads the matching Electron
+  # binary for each arch.  GitHub retired the last x64-native runner
+  # (macos-13) so we no longer have one to pin to.)
   # ------------------------------------------------------------------
   build-mac:
     name: macOS (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-14   # arm64 native runner
-            arch: arm64
-          - runner: macos-13   # x64 native runner
-            arch: x64
+        arch: [arm64, x64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,3 +124,43 @@ jobs:
           files: |
             release/*.dmg
             release/*.zip
+
+  # ------------------------------------------------------------------
+  # publish-latest: on every push to main, replace the rolling "latest"
+  # release with the freshly built artifacts.  This gives end users a
+  # stable URL (https://github.com/OWNER/REPO/releases/latest) that
+  # always points at the current main build.
+  # ------------------------------------------------------------------
+  publish-latest:
+    name: Publish rolling 'latest' release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-linux, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: find artifacts -type f
+
+      - name: Replace 'latest' release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Delete any existing 'latest' release + tag so we start clean.
+          gh release delete latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --yes --cleanup-tag 2>/dev/null || true
+          # Create a fresh release pointing at the current commit and
+          # attach every artifact we downloaded.
+          mapfile -t files < <(find artifacts -type f)
+          gh release create latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Latest build" \
+            --notes "Automated build from commit $GITHUB_SHA" \
+            "${files[@]}"
