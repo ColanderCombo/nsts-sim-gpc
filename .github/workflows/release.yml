@@ -9,6 +9,9 @@ on:
         description: "Tag name of a release to attach artifacts to (leave blank for just CI artifacts)"
         required: false
         default: ""
+  push:
+    branches:
+      - dev-unified-cmd-pkg
 
 jobs:
   # ------------------------------------------------------------------
