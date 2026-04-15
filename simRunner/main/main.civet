@@ -10,6 +10,14 @@ process.env.ELECTRON_DISABLE_SECURITY_WARNINGS="1"
 process.traceProcessWarnings = true
 process.traceDeprecation = true
 
+// Disable the Chromium SUID sandbox on Linux.  The AppImage mounts
+// read-only at /tmp and can't setuid chrome-sandbox, and modern
+// Ubuntu (22.04+) restricts the unprivileged-userns fallback via
+// AppArmor — so sandboxed startup fails.  The renderer here only
+// loads local trusted JS, so dropping the sandbox is benign.
+if process.platform == 'linux'
+  app.commandLine.appendSwitch('no-sandbox')
+
 // ----------------------------------------------------------------
 // CLI dispatch
 //
