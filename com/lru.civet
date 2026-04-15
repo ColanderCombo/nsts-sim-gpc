@@ -10,7 +10,6 @@ class LRU
     @_setupSimControl()
     @_setupBuses()
     @_scReady()
-    console.log("LRU #{@id}", @)
     
   _setupSimControl()
     config = busConfig['__SIMCONTROL']

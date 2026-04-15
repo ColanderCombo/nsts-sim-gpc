@@ -1,5 +1,5 @@
-dgram = window.dgram
-Buffer = window.Buffer
+dgram .= if typeof window != 'undefined' then window.dgram else require('dgram')
+Buffer .= if typeof window != 'undefined' then window.Buffer else globalThis.Buffer
 // {lookup} from 'lookup-dns-cache'
 
 busConfig := {

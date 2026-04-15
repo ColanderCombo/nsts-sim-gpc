@@ -1,6 +1,6 @@
 fs = require 'fs'
 path = require 'path'
-import {AP101} from 'gpc/ap101'
+import {GUIHarness} from 'gpc/guiharness'
 import React from 'react'
 import 'cde/cde-window'
 import 'cde/toolbar'
@@ -17,13 +17,39 @@ import 'gpc/gui/gpc-sections'
 import 'gpc/gui/gpc-terminal'
 
 
-export class DebugGUI extends AP101
+export class DebugGUI extends GUIHarness
   constructor: (CONFIG) ->
     super(CONFIG)
     @ipcRenderer = require('electron').ipcRenderer
     if not @ipcRenderer
       throw new Error("DebugGUI: require('electron').ipcRenderer failed!")
 
+
+  # Resolve the LRU config down to an opts object for configureFromOpts.
+  # Accepts either the modern `cliOpts` blob (from `gpc gui`) or the legacy
+  # bare `fcmFile`/`symbolsFile`/`entryPoint` keys.  Returns opts with an
+  # absolute fcmPath field, or { fcmPath: null } if nothing is configured.
+  _resolveLoadOpts: (lruConf) ->
+    resolve = (p) =>
+      return null unless p
+      if path.isAbsolute(p) then p else path.join(@CONFIG.NSTS_TOP, p)
+
+    if lruConf.cliOpts?.fcmPath
+      # `gpc gui` passed a full options blob; fcmPath is already absolute.
+      return Object.assign({}, lruConf.cliOpts, {
+        fcmPath: resolve(lruConf.cliOpts.fcmPath)
+        symbols: resolve(lruConf.cliOpts.symbols)
+      })
+
+    if lruConf.fcmFile
+      # Legacy config shape with bare fcmFile/symbolsFile/entryPoint keys.
+      return {
+        fcmPath: resolve(lruConf.fcmFile)
+        symbols: resolve(lruConf.symbolsFile)
+        start: lruConf.entryPoint?.toString(16)
+      }
+
+    return { fcmPath: null }
 
   _terminal: () -> document.querySelector('gpc-terminal')
   _breakpointList: () -> document.querySelector('gpc-breakpoints')
@@ -41,25 +67,11 @@ export class DebugGUI extends AP101
     # Get FCM/symbols from config or use defaults
     # Note: @CONFIG is already the gpc1 LRU config (passed from startup.civet)
     lruConf = @CONFIG.config or {}
-    fcmFile = lruConf.fcmFile
-    symbolsFile = lruConf.symbolsFile
-    entryPoint = lruConf.entryPoint  # optional override
-
-    console.log("DebugGUI fcmFile:", fcmFile)
-    console.log("DebugGUI symbolsFile:", symbolsFile)
-
-    if fcmFile
-      # Resolve path: absolute paths used as-is, relative resolved from NSTS_TOP
-      fcmPath = if path.isAbsolute(fcmFile) then fcmFile else path.join(@CONFIG.NSTS_TOP, fcmFile)
-      # Store initial load parameters for reset
-      @initialFcmPath = fcmPath
-      @initialSymbolsPath = symbolsFile
-      @initialEntryPoint = entryPoint
-      @loadFCMFile(fcmPath, symbolsFile, entryPoint)
-    else
-      # Fallback to hardcoded default
-      @initialFcmPath = null
-      @loadMemFile('SIMPLE.fcm', 0x005f)
+    opts = @_resolveLoadOpts(lruConf)
+    if opts.fcmPath?
+      console.log("DebugGUI load:", opts)
+      { byteCount, entryPoint } = @configureFromOpts(opts.fcmPath, opts)
+      console.log("DebugGUI loaded #{byteCount} bytes, entry=0x#{(entryPoint ? 0).toString(16)}")
 
     # Wire HAL/S I/O trap callbacks to <gpc-terminal> component
     @halUCP.outputCallback = (text) => @_terminal()?.appendText(text)
