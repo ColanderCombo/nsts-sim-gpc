@@ -145,6 +145,19 @@ jobs:
       - name: List downloaded artifacts
         run: find artifacts -type f
 
+      - name: Rename artifacts to use 'latest' instead of version
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            dir=$(dirname "$f")
+            base=$(basename "$f")
+            new=$(printf '%s' "$base" | sed -E 's/-[0-9]+\.[0-9]+\.[0-9]+-/-latest-/')
+            if [ "$base" != "$new" ]; then
+              mv "$f" "$dir/$new"
+            fi
+          done < <(find artifacts -type f)
+          find artifacts -type f
+
       - name: Replace 'latest' release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
