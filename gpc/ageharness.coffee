@@ -62,7 +62,7 @@ export class AGEHarness
 
     # Symbol loading (with auto-detect if not explicit)
     symbolsPath = opts.symbols or @autoDetectSymbols(fcmPath)
-    symEntry = @loadSymbols(symbolsPath)
+    symEntry = @loadSymbols(symbolsPath, !!opts.verbose)
 
     # Entry point priority: explicit --start > symbols > null
     entryPoint = if opts.start then parseHex(opts.start) else symEntry
@@ -144,9 +144,9 @@ export class AGEHarness
   # Load a symbol table from an absolute path.  Returns the entry point
   # address from the symbols JSON (or null if none/failed).  Callers are
   # responsible for resolving relative paths before calling.
-  loadSymbols: (symbolsPath) ->
+  loadSymbols: (symbolsPath, verbose = false) ->
     return null unless symbolsPath?
-    entryPoint = @sym.load(symbolsPath)
+    entryPoint = @sym.load(symbolsPath, verbose)
     if entryPoint?
       @halUCP.initFromSymbols(@sym.symbols, @sym.symTypes)
     return entryPoint

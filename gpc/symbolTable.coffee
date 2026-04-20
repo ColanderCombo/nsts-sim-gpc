@@ -11,7 +11,7 @@ export class SymbolTable
     @symTypes = {}        # symbol type overrides from .symtypes.json
     @relocsByAddr = {}    # hwAddr -> symbol name (from linker relocation data)
 
-  load: (symPath) ->
+  load: (symPath, verbose = false) ->
     # returns entry point
     try
       json = fs.readFileSync(symPath, 'utf8')
@@ -51,13 +51,15 @@ export class SymbolTable
         symTypesPath = symPath.replace(/\.sym\.json$/, '.symtypes.json')
         typesJson = fs.readFileSync(symTypesPath, 'utf8')
         @symTypes = JSON.parse(typesJson)
-        process.stderr.write "SymbolTable: Loaded symtypes from #{symTypesPath} (#{Object.keys(@symTypes).length} entries)\n"
+        if verbose
+          process.stderr.write "SymbolTable: Loaded symtypes from #{symTypesPath} (#{Object.keys(@symTypes).length} entries)\n"
       catch
         # No symtypes file — use defaults
 
       @symTypes['IOBUF'] ?= { type: 'ascii', size: 43 }
 
-      process.stderr.write "SymbolTable: Loaded #{@symbols.symbols?.length or 0} symbols, #{@symbols.sections?.length or 0} sections from #{symPath}\n"
+      if verbose
+        process.stderr.write "SymbolTable: Loaded #{@symbols.symbols?.length or 0} symbols, #{@symbols.sections?.length or 0} sections from #{symPath}\n"
 
       return @symbols.entryPoint
     catch e
