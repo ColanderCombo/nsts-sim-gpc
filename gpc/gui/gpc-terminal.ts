@@ -1,5 +1,5 @@
 import {LitElement, html, css} from 'lit';
-import {customElement, property} from 'lit/decorators.js';
+import {customElement, property, state} from 'lit/decorators.js';
 import 'cde/toolbar';
 
 @customElement('gpc-terminal')
@@ -7,8 +7,11 @@ export class GpcTerminal extends LitElement {
 
   @property({type: Boolean, attribute: 'break-on-input'}) breakOnInput: boolean = false;
 
+  @state() private _copyFlash: boolean = false;
+
   private _outputEl: HTMLDivElement | null = null;
   private _inputEl: HTMLInputElement | null = null;
+  private _copyFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
   // --- Public API (called by host) ---
 
@@ -67,6 +70,24 @@ export class GpcTerminal extends LitElement {
     this.clear();
   }
 
+  private async _onCopy(): Promise<void> {
+    const text = this._outputEl?.textContent ?? '';
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+    }
+    this._copyFlash = true;
+    if (this._copyFlashTimer) clearTimeout(this._copyFlashTimer);
+    this._copyFlashTimer = setTimeout(() => { this._copyFlash = false; }, 900);
+  }
+
   private _onBreakToggle(e: Event): void {
     this.breakOnInput = (e.target as HTMLInputElement).checked;
     this.dispatchEvent(new CustomEvent('break-on-input-changed', {
@@ -89,6 +110,27 @@ export class GpcTerminal extends LitElement {
           <input type="checkbox" .checked="${this.breakOnInput}" @change="${this._onBreakToggle}" />
           <span>BREAK on INPUT</span>
         </label>
+        <button
+          slot="status"
+          class="sm icon ${this._copyFlash ? 'ok' : ''}"
+          @click="${this._onCopy}"
+          title="${this._copyFlash ? 'Copied!' : 'Copy terminal output to clipboard'}"
+          aria-label="Copy terminal output">
+          ${this._copyFlash
+            ? html`<svg viewBox="0 0 24 24" width="12" height="12" fill="none"
+                     stroke="currentColor" stroke-width="2.5"
+                     stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                     <polyline points="20 6 9 17 4 12"></polyline>
+                   </svg>`
+            : html`<svg viewBox="0 0 24 24" width="12" height="12" fill="none"
+                     stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                   </svg>`}
+        </button>
       </sim-toolbar>
       <div id="output"></div>
       <input id="input" type="text"
@@ -121,6 +163,23 @@ export class GpcTerminal extends LitElement {
     #break-label input {
       margin: 0;
       cursor: pointer;
+    }
+
+    button.icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 4px;
+      line-height: 0;
+    }
+
+    button.icon svg {
+      display: block;
+    }
+
+    button.icon.ok {
+      color: #0f0;
+      border-color: #0a0;
     }
 
     #output {
