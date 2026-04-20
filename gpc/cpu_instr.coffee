@@ -850,7 +850,7 @@ class Instruction extends PackedBits
         #
         DR:     {
                     n:'Divide'
-                    f:['R R1,R2'],
+                    f:['DR R1,R2'],
                     d:'01001xxx11100yyy'
                     e:(t,v) ->
                         hi = t.r(v.x).get32()
@@ -3490,7 +3490,7 @@ class Instruction extends PackedBits
                 }
         CE:     {
                     n:'Compare Short'
-                    f:['CE R1,D2(B2)','x R1,D2(X2,B2)']
+                    f:['CE R1,D2(B2)','CE R1,D2(X2,B2)']
                     d:'01001xxx11111abb/X'
                     a:ADDR_FULLWORD
                     e:(t,v) ->
@@ -4527,32 +4527,85 @@ class Instruction extends PackedBits
                         t.s_EAF(v,result)
                 }
 
-        # DETECT
-        #
-        #   The B2 field uniquely selects one of four special microprogram
-        # routines, The selected micro-routine is executed. These routines are
-        # used to perform built-in diagnostic functions to verify the proper
-        # functioning of the CPU hardware.
-        #
-        #   Since the instruction is not intended for normal program usage,
-        # DETECT has no mnemonic. This is a privileged operation and can only
-        # be executed when the CPU is in the Supervisor state.
-        #
-        # PROGRAM INTERRUPTION
-        #
-        #   Privileged operation
-        #
-        _DETECT:{
-                    n:'Diagnostic Detect'
-                    f:[]
-                    d:'11000000111110bb/0',
-                    e:(t,v) ->
-                        if not t.i_SUPER() then return
-                        # Diagnostic built-in test - B2 field selects micro-routine
-                        # Not simulated; no-op in emulator
-                        return
-                }
+        # # DETECT
+        # # (AP-101B sect/9 - replaced with 'DIAG' in AP-101S)
+        # #   The B2 field uniquely selects one of four special microprogram
+        # # routines, The selected micro-routine is executed. These routines are
+        # # used to perform built-in diagnostic functions to verify the proper
+        # # functioning of the CPU hardware.
+        # #
+        # #   Since the instruction is not intended for normal program usage,
+        # # DETECT has no mnemonic. This is a privileged operation and can only
+        # # be executed when the CPU is in the Supervisor state.
+        # #
+        # # PROGRAM INTERRUPTION
+        # #
+        # #   Privileged operation
+        # #
+        # _DETECT:{
+        #             n:'Diagnostic Detect'
+        #             f:[]
+        #             d:'11000000111110bb/0',
+        #             e:(t,v) ->
+        #                 if not t.i_SUPER() then return
+        #                 # Diagnostic built-in test - B2 field selects micro-routine
+        #                 # Not simulated; no-op in emulator
+        #                 return
+        #         }
 
+        # DIAGNOSE (DETECT)
+        # (AP-101S)
+        #
+        # DESCRIPTION
+        #
+        # A 16-bit effective address is developed in the normal manner without expanding to 19
+        # The effective address uniquely selects one of several special microprogram
+        # routines. These routines are used to perform built-in diagnostic functions to
+        # verify the proper functioning  of the CPU hardware and to detect faulty components.
+        # The particular diagnostic operations performed are defined in [AP-101S POO] Section 15. 
+        #
+        # The instruction is not intended for normal program usage. This is a privileged
+        # operation and can only be executed when the CPU is in the Supervisor state.
+        #
+        # RESULTING CONDITION CODE:
+        #
+        #   00 The diagnostic result is "pass"
+        #   11 The diagnostic result is "fail"
+        #   01 --- (impossible)
+        #
+        # INDICATORS:
+        #
+        # The overflow and carry indicators are not changed by this instruction.
+        #
+        # AUTOMATIC INDEX ALIGNMENT:
+        #
+        # This instruction aligns the index value assuming a halfword main storage operand.
+        #
+        # PROGRAM CHECK EXCEPTIONS:
+        #
+        #       Privileged Instruction
+        #
+        #       Address Specification - Address Violation for a fullword indirect
+        #                               address pointer.
+        #
+        #       Address Specification - Nonexistent Address for an indirect address
+        #                               pointer.
+        #
+        # PROGRAMMING NOTES:
+        #
+        # This instruction is not intended for general programming use; it is designed for the
+        # diagnostic programmer. Every programmer desiring Diagnose instruction
+        # should be thoroughly familiar with the contents of the Diagnostic Function Appendix.
+        # Unexpected results can occur if this instruction is improperly used.
+        #
+        DIAG:    {
+                    n:'Diagnose'
+                    f:['DIAG R1,D2(B20)', 'DIAG R1,D2(X2,B2)']
+                    d:'11000xxx11111abb/X'
+                    a:ADDR_HALFWORD
+                    e:(t,v) ->
+                        # XXX UNIMPL
+                }
         # INSERT STORAGE PROTECT BITS
         #
         #   Bits 5 through 7, the M1 field, are decoded to set or reset the
@@ -5303,32 +5356,42 @@ class Instruction extends PackedBits
         #   and the DSE associated with T1 is replaced by bits 28 thrugh 31 of the fullword
         #   address constant.
         #
+        #   The format of the fullword address constant second operand is:
         #
-        #   Load a DSE register and base register from an address constant
-        #   in memory. The address constant contains a DSE value in bits
-        #   24-27 and an address in bits 0-15. The DSE value is loaded into
-        #   DSE[B2] and the address into R1 (upper halfword).
+        #   -----------------------------------------------------------------
+        #   | | Address                     |0 0 0 0|X|C|C|C|  BSR  |  DSR  |
+        #   | | | | | | | | | | | | | | | | | | | | |C| |B|D| | | | | | | | |
+        #    0 1                           1 1     1 2 2 2 2 2     2 2     3
+        #                                  5 6     9 0 1 2 3 4     7 8     1
+        #
+        # INDICATORS:
+        #   The overflow and carry indicators are not changed.
+        #
+        #   Note: If the DSR to be loaded and the current DSE are equal, an early out option is
+        #   executed by microcode to significantly shorted instruction execution time.
         #
         LXAR:   {
-                    n:'Load Index Address Register'
+                    n:'Load Extended Address Register'
                     f:['LXAR R1,R2']
                     d:'01000xxx11101yyy'
                     e:(t,v) ->
-
-
-
+                        addrConst = t.r(v.y).get32()
+                        addr = (addrConst >>> 16) & 0x7fff
+                        dseVal = addrConst & 0xf
+                        t.r(v.x).set32(addr << 16)
+                        t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
                 }
 
         LXA:    {
-                    n:'Load Index Address'
+                    n:'Load Extended Address'
                     f:['LXA R1,D2(B2)','LXA R1,D2(X2,B2)']
-                    d:'01000xxx11101abb/X'
+                    d:'01000xxx11111abb/X'
                     e:(t,v) ->
                         addrConst = t.g_EAF(v)
-                        addr = (addrConst >>> 16) & 0xffff
-                        dseVal = (addrConst >>> 4) & 0xf
+                        addr = (addrConst >>> 16) & 0x7fff
+                        dseVal = addrConst & 0xf
                         t.r(v.x).set32(addr << 16)
-                        t.regFiles[t.psw.getRegSet()].setDSE(v.b, dseVal)
+                        t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
                 }
         #
         # STORE DSE MULTIPLE
