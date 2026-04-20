@@ -162,9 +162,23 @@ main := () : void ->
   // would otherwise reject them as unknown options.
   electronFlags := new Set(['--no-sandbox', '--disable-gpu-sandbox', '--disable-setuid-sandbox'])
   userArgs .= process.argv.slice(userArgStart).filter((a) => not electronFlags.has(a))
-  if userArgs.length == 0
-    userArgs = ['--help']
-  dispatchCli(userArgs)
+  // The outer `gpc gui` wrapper (gpc/cmd_gui.coffee) spawns us with a
+  // pre-resolved `--cli-opts=<base64-json>` blob so absolute paths survive
+  // the exec.  Short-circuit the commander dispatch in that case — the
+  // blob already represents a fully-parsed `gui` invocation.
+  cliOptsArg := userArgs.find (a: string) => a.startsWith('--cli-opts=')
+  if cliOptsArg
+    encoded := cliOptsArg.slice('--cli-opts='.length)
+    try
+      guiCliOpts = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))
+      guiRequested = true
+    catch err
+      console.error "gpc: failed to decode --cli-opts: #{err}"
+      process.exit(2)
+  else
+    if userArgs.length == 0
+      userArgs = ['--help']
+    dispatchCli(userArgs)
   if guiRequested
     startGui()
 
