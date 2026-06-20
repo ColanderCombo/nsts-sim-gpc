@@ -20,7 +20,7 @@ export class BCEInstruction extends PackedBits
             desc.e = v.e
 
             @descByOp[desc.nm] = desc
-            if desc.make not of @opByMask
+            if desc.mask not of @opByMask
                 @orderedMasks.push desc.mask
                 @opByMask[desc.mask] = {}
             @opByMask[desc.mask][desc.maskedVal] = desc
@@ -40,10 +40,11 @@ export class BCEInstruction extends PackedBits
 
     exec: (iop, hw1, hw2) ->
         # Try 32-bit combined match first (for long instructions)
+        # Note: x & mask is SIGNED; '>>> 0' is a js trick to coerce to unsigned
         combined = ((hw1 << 16) | hw2) >>> 0
         for mask in @orderedMasks
             if mask > 0xffff
-                maskedVal = combined & mask
+                maskedVal = (combined & mask) >>> 0
                 if @opByMask[mask]?[maskedVal]?
                     desc = @opByMask[mask][maskedVal]
                     v = @decode(combined, desc)
@@ -53,7 +54,7 @@ export class BCEInstruction extends PackedBits
         # Try 16-bit match (for short instructions)
         for mask in @orderedMasks
             if mask <= 0xffff
-                maskedVal = hw1 & mask
+                maskedVal = (hw1 & mask) >>> 0
                 if @opByMask[mask]?[maskedVal]?
                     desc = @opByMask[mask][maskedVal]
                     v = @decode(hw1, desc)
@@ -527,7 +528,7 @@ export class BCEInstruction extends PackedBits
         #
         '#MOUT':    {
                         f:['#MOUT Displacement,Transfer Count']
-                        d:'11110101ddddddddcccccccccccccccc/'
+                        d:'11110101ddddddddcccccccccccccccc'
                         e:(t,v)->
                             # Message out: transmit command then data
                             # Third halfword contains IUA + command
@@ -610,7 +611,7 @@ export class BCEInstruction extends PackedBits
         #
         '#MIN':     {
                         f:['#MIN DISPLACEMENT,Transfer Count']
-                        d:'11110001ddddddddcccccccccccccccce'
+                        d:'11110001ddddddddcccccccccccccccc'
                         e:(t,v)->
                             # Message in: receive command then data
                             count = v.c + 1
@@ -623,7 +624,7 @@ export class BCEInstruction extends PackedBits
                     }
         '#MINC':    {
                         f:['#MINC IUA,COMMAND']
-                        d:'________uuuuucccccccccccccccccccc'
+                        d:'________uuuuuccccccccccccccccccc'
                         e:(t,v)->
                             # Command portion of MIN extended instruction
                             if t.regXmitEna.getbit32(t.curPE)
@@ -632,7 +633,7 @@ export class BCEInstruction extends PackedBits
                     }
         '#MIN@':    {
                         f:['#MIN@ ADDRESS']
-                        d:'11111001000000aaaaaaaaaaaaaaaaaaa'
+                        d:'11111001000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
                             # Message in indexed: load params from memory at addr + 2*BCE#
                             addr = v.a + 2 * t.curPE
@@ -669,6 +670,9 @@ export class BCEInstruction extends PackedBits
         # while still retaining the capability to delay for different
         # periods. Note that twice the BCE number is a fullword index.
         #
+        # 11000ccccccccccc #DLYI Timeout
+        # 11001aaaaaaaaaaa #DLY# Address
+        #
         '#DLYI':    {
                         f:['#DLYI TIMEOUT']
                         d:'11000iiiiiiiiiii'
@@ -678,7 +682,7 @@ export class BCEInstruction extends PackedBits
                     }
         '#DLY':     {
                         f:['#DLY ADDRESS']
-                        d:'11000aaaaaaaaaaa'
+                        d:'11001ddddddddddd'
                         e:(t,v)->
                             # Delay from memory: count at addr + 2*BCE# (no-op in simulator)
                             t.incrNIA(1)

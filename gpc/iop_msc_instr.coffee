@@ -623,9 +623,9 @@ export class MSCInstruction
         #   0 = STAT1 (GO/NOGO), 1 = BCE Indicators, 2 = Fail Discretes, 3 = STAT4 (Busy/Wait)
         '@LAR':   {
                     f:['@LAR REGISTER']
-                    d:'11100000rrdddddd'
+                    d:'11100000dddddddd'
                     e:(t,v)->
-                        switch v.r
+                        switch v.d & 3
                             when 0 # STAT1 - Program Exception (GO/NOGO)
                                 t.ls.setACC(t.regProgExcept.get32())
                             when 1 # BCE-MSC Indicators
@@ -744,16 +744,12 @@ export class MSCInstruction
                             t.setNIA(ecr + 8)
                 }
         # RESET BCE INDICATOR
-        # OPX=7: Reset indicator bits for BCEs specified in ACC
+        # OPX=7: Reset the indicator bit of the BCE named in bits 8-12.
         '@RBI':   {
                     f:['@RBI BCE']
-                    d:'1110011100000000'
+                    d:'11100111bbbbb000'
                     e:(t,v)->
-                        acc = t.ls.getACC()
-                        ind = t.regIndicator.get32()
-                        # Clear indicator bits where ACC has 1s (BCE bits 1-24)
-                        ind = ind & ~(acc & 0x01fffffe)
-                        t.regIndicator.set32(ind)
+                        t.regIndicator.setbit32(v.b, 0)
                         t.incrNIA(1)
                 }
 
@@ -875,16 +871,18 @@ export class MSCInstruction
         #
         # REPEAT INSTRUCTIONS
         #
-        # Short format 2: OP=1101, I=opx extension, OPX=condition, DATA=count
-        # The I bit and OPX together form the repeat type:
-        #   I=0 OPX=0 (@RAI): Repeat until ALL specified BCE indicators set
-        #   I=0 OPX=1 (@RAW): Repeat until ALL specified BCEs waiting
-        #   I=1 OPX=0 (@RNI): Repeat until ANY specified BCE indicator set
-        #   I=1 OPX=1 (@RNW): Repeat until ANY specified BCE waiting
+        # Short format 2: OP=1101, I bit (bit4), OPX=selector (bits5-7),
+        # DATA=count (bits8-15). 
+        # OPX selector is:
+        #   000 (@RAW): Repeat until ALL specified BCEs are waiting
+        #   001 (@RNW): Repeat until ANY specified BCE is waiting
+        #   100 (@RAI): Repeat until ALL specified BCE indicators set
+        #   101 (@RNI): Repeat until ANY specified BCE indicator set
         #
         # In all cases:
         #   - BCEs to test are specified by ACC (bit i = BCE i)
-        #   - Count field = max iterations before timeout
+        #   - The I bit extends the count (index mode); in this simplified
+        #     simulator the count/timeout loop is not modeled, so I is unused.
         #   - If condition met: skip 1 instruction (NIA+2)
         #   - If timeout: NIA+1 (next sequential instruction)
         #
@@ -892,7 +890,7 @@ export class MSCInstruction
         # REPEAT UNTIL ALL INDICATORS
         '@RAI':   {
                     f:['@RAI COUNT']
-                    d:'11010000dddddddd'
+                    d:'1101i100dddddddd'
                     e:(t,v)->
                         acc = t.ls.getACC()
                         bceMask = acc & 0x01fffffe  # BCE bits 1-24
@@ -914,7 +912,7 @@ export class MSCInstruction
         # REPEAT UNTIL ALL WAITING
         '@RAW':   {
                     f:['@RAW COUNT']
-                    d:'11010001dddddddd'
+                    d:'1101i000dddddddd'
                     e:(t,v)->
                         acc = t.ls.getACC()
                         bceMask = acc & 0x01fffffe
@@ -929,7 +927,7 @@ export class MSCInstruction
         # REPEAT UNTIL ANY INDICATOR
         '@RNI':   {
                     f:['@RNI COUNT']
-                    d:'11011000dddddddd'
+                    d:'1101i101dddddddd'
                     e:(t,v)->
                         acc = t.ls.getACC()
                         bceMask = acc & 0x01fffffe
@@ -942,7 +940,7 @@ export class MSCInstruction
         # REPEAT UNTIL ANY WAITING
         '@RNW':   {
                     f:['@RNW COUNT']
-                    d:'11011001dddddddd'
+                    d:'1101i001dddddddd'
                     e:(t,v)->
                         acc = t.ls.getACC()
                         bceMask = acc & 0x01fffffe
@@ -959,11 +957,11 @@ export class MSCInstruction
         #
 
         # WAIT
-        # OP=1011, I=0: Set MSC Busy/Wait bit to 0 (WAIT state).
+        # OP=00001: Set MSC Busy/Wait bit to 0 (WAIT state).
         # PC is incremented to point to next instruction.
         '@WAT':   {
                     f:['@WAT']
-                    d:'1011000000000000'
+                    d:'0000100000000000'
                     e:(t,v)->
                         # Set MSC busy/wait bit 0 to WAIT (0)
                         bw = t.regBusyWait.get32()
@@ -976,11 +974,11 @@ export class MSCInstruction
                         t.incrNIA(1)
                 }
         # DELAY
-        # OP=1011, I=1: Delay for count * 2us. In simulator, just advance NIA.
-        # Short format 1: displacement is the count
+        # OP=1100: Delay for count * 2us. In simulator, just advance NIA.
+        # Short format 1: displacement is the count.
         '@DLY':   {
                     f:['@DLY COUNT']
-                    d:'1011iddddddddddd'
+                    d:'1100iddddddddddd'
                     e:(t,v)->
                         # In the simulator, delay is a no-op - just advance PC
                         t.incrNIA(1)
