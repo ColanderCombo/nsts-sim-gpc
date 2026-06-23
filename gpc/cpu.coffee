@@ -213,9 +213,22 @@ export class CPU
               @swapPSW(0x0040, 0x0044)
               return
 
-      # Program check: Non-maskable (except FP exceptions which are pre-filtered by signal methods)
+      # Program check: Non-maskable (except FP exceptions which are pre-filtered by signal methods).
+      # If the new-PSW slot at 0x004C is empty, no handler is installed —
+      # log + continue rather than swapping into a zero PSW (which sends
+      # NIA to address 0 and wanders through low memory). 
       if @intPending.programCheck
           @intPending.programCheck = false
+          newPsw1 = @ram.get32(0x004c)
+          newPsw2 = @ram.get32(0x004e)
+          if newPsw1 == 0 and newPsw2 == 0
+              # No handler.  Set int code in current PSW for trace, log
+              # the exception, and resume at the instruction following
+              # the offending one (which is already in NIA).
+              @psw.setIntCode(@intCode)
+              if @halUCP and @halUCP._log
+                  @halUCP._log "GPC: unhandled program check, code=0x#{@intCode.toString(16).toUpperCase().padStart(4, '0')} (no handler at 0x004C); continuing\n"
+              return
           @psw.setIntCode(@intCode)
           @swapPSW(0x0048, 0x004c)
           return
@@ -272,19 +285,71 @@ export class CPU
           @intCode = 0x0002  # Fixed-point overflow
 
   signalExponentOverflow: () ->
-      # Always interrupt (not maskable)
+      # POO 2.5.2 priority 21, non-maskable, code 0x000B.
       @intPending.programCheck = true
-      @intCode = 0x0005
+      @intCode = 0x000B
 
   signalExponentUnderflow: () ->
+      # POO 2.5.2 priority 22, mask bit 22, code 0x0009.
       if @psw.getExponentUnderflow()  # PSW bit 22 = 1 means enabled
           @intPending.programCheck = true
-          @intCode = 0x0006
+          @intCode = 0x0009
 
   signalSignificance: () ->
+      # POO 2.5.2 priority C4, mask bit 23, code 0x0005.
       if @psw.getSignificanceMask()  # PSW bit 23 = 1 means enabled
           @intPending.programCheck = true
-          @intCode = 0x0007
+          @intCode = 0x0005
+
+  signalFPDivide: () ->
+      # POO 2.5.2 priority C3, non-maskable, code 0x000C.
+      # Floating-point divide-by-zero — division is suppressed.
+      @intPending.programCheck = true
+      @intCode = 0x000C
+
+  signalConvertOverflow: () ->
+      # POO 2.5.2 priority C5, non-maskable, code 0x000A.
+      # CVFX value out of int32 range.  R1 unchanged.
+      @intPending.programCheck = true
+      @intCode = 0x000A
+
+  # FP exception dispatch helper.
+  # Takes the exc field from {result, exc} returned by floatIBM ops.
+  # Returns true iff caller should proceed to write result + set CC.
+  # Per POO 8.8: 
+  #   OK            - write back, set CC normally.
+  #   EXP_OVERFLOW  - signal, terminate (no writeback, no CC change).
+  #   EXP_UNDERFLOW - signal; if mask=0 write true zero (CC=0), if mask=1
+  #                   terminate (no writeback).
+  #   SIGNIFICANCE  - signal IFF mask=1; ALWAYS write true zero with CC=00.
+  #   FP_DIVIDE     - signal, suppress division (no writeback, no CC change).
+  fp_dispatch_exc: (exc) ->
+      switch exc
+          when 0          # OK
+              return true
+          when 0x000B     # EXP_OVERFLOW
+              @signalExponentOverflow()
+              return false
+          when 0x0009     # EXP_UNDERFLOW
+              @signalExponentUnderflow()
+              # Caller proceeds (writes true zero + CC=0) only when the
+              # mask bit is OFF.  When mask bit is ON, operands unchanged
+              # — so we suppress writeback.
+              return not @psw.getExponentUnderflow()
+          when 0x0005     # SIGNIFICANCE
+              @signalSignificance()
+              # ALWAYS write true zero (handler does this via the result
+              # value already returned from the primitive).  CC=00 falls
+              # out of the standard "result is zero" branch.
+              return true
+          when 0x000C     # FP_DIVIDE
+              @signalFPDivide()
+              return false
+          when 0x000A     # CONVERT_OVERFLOW
+              @signalConvertOverflow()
+              return false
+          else
+              return true
 
   signalIllegalOp: () ->
       @intPending.programCheck = true

@@ -1,5 +1,5 @@
 import {PackedBits} from 'gpc/util'
-import {FloatIBM,addE,subE,mulE,divE} from 'gpc/floatIBM'
+import {FloatIBM,addE,subE,compE,compE_anomalous,mulE,mulQeE,divE,cvfx,cvfl} from 'gpc/floatIBM'
 import {q31_mul32, q15_mul, q31_div} from 'gpc/q31'
 
 ADDR_HALFWORD = 1
@@ -3218,7 +3218,7 @@ class Instruction extends PackedBits
         #     Result          0010
         #
         ZB:     {
-                    n:'Zero and Add Byte'
+                    n:'Zero Bits'
                     f:['ZB D2(B2),Data']
                     d:'10110001ddddddbb/I'
                     a:ADDR_HALFWORD
@@ -3370,7 +3370,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(),t.f(v.y+1).get32())
-                        result = addE(v1,v2)
+                        {result, exc} = addE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -3385,10 +3386,12 @@ class Instruction extends PackedBits
                     f:['AED R1,D2(B2)','AED R1,D2(X2,B2)']
                     d:'01010xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.g_EAF(v), t.g_EAF(v,2))
-                        result = addE(v1,v2)
+                        {result, exc} = addE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -3409,7 +3412,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
-                        result = addE(v1,v2)
+                        {result, exc} = addE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -3423,10 +3427,12 @@ class Instruction extends PackedBits
                     f:['AE R1,D2(B2)','AE R1,D2(X2,B2)']
                     d:'01010xxxddddddbb'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
-                        result = addE(v1,v2)
+                        {result, exc} = addE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -3469,6 +3475,12 @@ class Instruction extends PackedBits
         # is visually not equal. For example, a comparison of 00100000 and
         # 001FFFFF would yield a condition code of 00 (equal).
         #
+	# Note:
+        # CER/CE: short compare.  Uses compE_anomalous for symmetry with
+        # CEDR/CED.  POO 8.12 doesn't document the 8.11 false-equality
+        # for short compare, and the DP threshold (|a-b|==0x8000000 in
+        # 60-bit form) doesn't naturally fire for SP-shaped operands —
+        # so for SP this is effectively a standard compare.
         CER:    {
                     n:'Compare Short'
                     f:['CER R1,R2'],
@@ -3477,32 +3489,18 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
-                        result = subE(v1,v2)
-                        # XXX Handle Exponent overflow
-                        if not result.gFracBits?
-                            console.log("CER not result.gFracBits", result, v1, v2)
-                        if result.gFracBits().isZero()
-                            t.psw.setCC(0)
-                        else if result.gSign() > 0
-                            t.psw.setCC(1)
-                        else
-                            t.psw.setCC(3)
+                        t.psw.setCC(compE_anomalous(v1, v2))
                 }
         CE:     {
                     n:'Compare Short'
                     f:['CE R1,D2(B2)','CE R1,D2(X2,B2)']
                     d:'01001xxx11111abb/X'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
-                        result = subE(v1,v2)
-                        if result.gFracBits().isZero()
-                            t.psw.setCC(0)
-                        else if result.gSign() > 0
-                            t.psw.setCC(1)
-                        else
-                            t.psw.setCC(3)
+                        t.psw.setCC(compE_anomalous(v1, v2))
                 }
 
         # COMPARE (LONG OPERANDS)
@@ -3563,7 +3561,9 @@ class Instruction extends PackedBits
         # Absolute difference of OP2 and OP1 is .00 0000 0080 0000
         # Returns CC of 00 (equal); correct CC is 01 (OP1 > OP2)
         #
-        CEDR:   {
+        # CEDR/CED: long compare.  See CER comment — compE_anomalous
+        # reproduces the POO 8.11 false-equality.
+        CEDR:   
                     n:'Compare (Long Operands)'
                     f:['CEDR R1,R2'],
                     d:'00011xxx11101yyy'
@@ -3571,34 +3571,20 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        result = subE(v1,v2)
-                        # XXX Handle Exponent overflow
-                        if not result.gFracBits?
-                            console.log("CEDR not result.gFracBits", result, v1, v2)
-                        if result.gFracBits().isZero()
-                            t.psw.setCC(0)
-                        else if result.gSign() > 0
-                            t.psw.setCC(1)
-                        else
-                            t.psw.setCC(3)
+                        t.psw.setCC(compE_anomalous(v1, v2))
                 }
         CED:    {
                     n:'Compare (Long Operands)'
                     f:['CED R1,D2(B2)','CED R1,D2(X2,B2)']
                     d:'00011xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        result = subE(v1,v2)
-                        if result.gFracBits().isZero()
-                            t.psw.setCC(0)
-                        else if result.gSign() > 0
-                            t.psw.setCC(1)
-                        else
-                            t.psw.setCC(3)
+                        t.psw.setCC(compE_anomalous(v1, v2))
                 }
 
         # CONVERT TO FIXED-POINT
@@ -3646,19 +3632,25 @@ class Instruction extends PackedBits
                     f:['CVFX R1,R2'],
                     d:'00111xxx11100yyy'
                     e:(t,v) ->
-                        v2 = FloatIBM.From32(t.f(v.y).get32())
-                        # Unnormalize to characteristic 0x44 (exponent 4)
-                        v2.unNormalizeToExp(4)
-                        frac = v2.gFracBits()
-                        intVal = ((frac.getHighBitsUnsigned() << 8) | ((frac.getLowBitsUnsigned() >>> 24) & 0xff)) >>> 0
-                        if v2.gSign() < 0
-                            intVal = ((~intVal) + 1) & 0xffffffff
-                        t.r(v.x).set32(intVal)
-                        # CC based on bits 0-15 of result
-                        hi16 = intVal >>> 16
+                        rawIn = t.f(v.y).get32() >>> 0
+                        v2 = FloatIBM.From32(rawIn)
+                        {result, exc} = cvfx(v2)
+                        return unless t.fp_dispatch_exc(exc)
+                        t.r(v.x).set32(result >>> 0)
+                        # POO 8.13: a floating-point value of
+                        # 41100000 is converted to 0x00010000 but gives
+                        # CC=00 (instead of CC=01 from the standard
+                        # bits-0-15 rule). 
+			#
+                        if rawIn == 0x41100000
+                            t.psw.setCC(0)
+                            return
+                        # CC based on bits 0-15 (high half) of result
+                        # per POO 8.13.
+                        hi16 = (result >>> 16) & 0xFFFF
                         if hi16 == 0
                             t.psw.setCC(0)
-                        else if intVal & 0x80000000
+                        else if result & 0x80000000
                             t.psw.setCC(3)
                         else
                             t.psw.setCC(1)
@@ -3711,28 +3703,17 @@ class Instruction extends PackedBits
                     f:['CVFL R1,R2'],
                     d:'00111xxx11101yyy'
                     e:(t,v) ->
-                        # Get 32-bit two's complement value from general register R2
-                        fixedVal = t.r(v.y).get32()
-                        result = new FloatIBM()
-                        magnitude = fixedVal
-                        isNeg = fixedVal & 0x80000000
-                        if isNeg
-                            magnitude = ((fixedVal ^ 0xffffffff) + 1) >>> 0
-                            result.sSign(-1)
-                        # Place magnitude into fraction (bits 8-39 of intermediate)
-                        result.data8[1] = (magnitude >>> 24) & 0xff
-                        result.data8[2] = (magnitude >>> 16) & 0xff
-                        result.data8[3] = (magnitude >>>  8) & 0xff
-                        result.data8[4] = (magnitude       ) & 0xff
-                        # Set characteristic to 1000100(2) = 0x44, exponent 4
-                        result.sExp(4)
-                        result.normalize()
-                        # Store in floating-point register R1
+                        # Get 32-bit two's complement value from R2.
+                        u = t.r(v.y).get32() >>> 0
+                        # Sign-extend to JS signed.
+                        s = if u & 0x80000000 then u - 0x100000000 else u
+                        # CVFL never raises per POO 8.14.
+                        result = cvfl(s)
                         t.f(v.x).set32(result.to32())
-                        # CC: 00=zero, 01=positive, 11=negative
-                        if magnitude == 0
+                        # CC: 00=zero, 01=positive, 11=negative.
+                        if s == 0
                             t.psw.setCC(0)
-                        else if isNeg
+                        else if s < 0
                             t.psw.setCC(3)
                         else
                             t.psw.setCC(1)
@@ -3890,8 +3871,9 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        if v2.gFracBits().isZero() then return
-                        result = divE(v1, v2)
+                        {result, exc} = divE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
+                        # DIV leaves CC unchanged per POO 8.7.
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -3900,13 +3882,14 @@ class Instruction extends PackedBits
                     f:['DED R1,D2(B2)','DED R1,D2(X2,B2)']
                     d:'00010xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        if v2.gFracBits().isZero() then return
-                        result = divE(v1, v2)
+                        {result, exc} = divE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -3921,9 +3904,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
-                        f2 = v2.toFloat()
-                        if f2 == 0 then return
-                        result = new FloatIBM(v1.toFloat() / f2)
+                        {result, exc} = divE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to32())
                 }
         DE:     {
@@ -3931,12 +3913,12 @@ class Instruction extends PackedBits
                     f:['DE R1,D2(B2)','DE R1,D2(X2,B2)']
                     d:'01101xxxddddddbb'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
-                        f2 = v2.toFloat()
-                        if f2 == 0 then return
-                        result = new FloatIBM(v1.toFloat() / f2)
+                        {result, exc} = divE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to32())
                 }
 
@@ -3962,6 +3944,7 @@ class Instruction extends PackedBits
                     f:['LED R1,D2(B2)','LED R1,D2(X2,B2)']
                     d:'01111xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.f(v.x  ).set32(val)
@@ -4007,6 +3990,7 @@ class Instruction extends PackedBits
                     f:['LE R1,D2(B2)','LE R1,D2(X2,B2)']
                     d:'01111xxxddddddbb'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.f(v.x).set32(val)
@@ -4210,13 +4194,21 @@ class Instruction extends PackedBits
                         input = FloatIBM.From32(t.f(v.x).get32())
                         upper = FloatIBM.From32(t.f(v.x + 1).get32())
                         lower = FloatIBM.From32(t.g_EAF(v))
-                        fi = input.toFloat()
-                        fu = upper.toFloat()
-                        fl = lower.toFloat()
-                        if fi < fl
+                        # POO 8.16: MVS compares input to limits at full
+                        # precision.  The earlier `toFloat()` path went
+                        # via JS double (53 bits) — for inputs near the
+                        # SP boundary this can give a different
+                        # comparison than IBM hex SP would.  Use the
+                        # IBM-precise compare via subE-based comparison.
+                        cmpDiff = (a, b) ->
+                            {result} = subE(a, b)
+                            return 0 if result.gFracBits().isZero()
+                            return -1 if result.gSign() < 0
+                            return  1
+                        if cmpDiff(input, lower) < 0
                             t.f(v.x).set32(lower.to32())
                             t.psw.setCC(3)
-                        else if fi > fu
+                        else if cmpDiff(input, upper) > 0
                             t.f(v.x).set32(upper.to32())
                             t.psw.setCC(1)
                         else
@@ -4295,6 +4287,10 @@ class Instruction extends PackedBits
         # gating all possible carries.) Note that exponent overflow will be
         # caused by rounding a floating point number like 7FFFFFFFFF000000.
         #
+        # AP-101S 8.17: MEDR/MED is "MULTIPLY (EXTENDED OPERANDS)" —
+        # quasi-extended.  Each operand's 56-bit fraction is truncated
+        # to 31 bits with rounding into bit 31 from bit 32 BEFORE the
+        # multiply.  We use mulQeE (not the full-precision mulE).
         MEDR:   {
                     n:'Multiply Long'
                     f:['MEDR R1,R2'],
@@ -4302,7 +4298,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        result = mulE(v1, v2)
+                        {result, exc} = mulQeE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -4311,12 +4308,14 @@ class Instruction extends PackedBits
                     f:['MED R1,D2(B2)','MED R1,D2(X2,B2)']
                     d:'00110xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        result = mulE(v1, v2)
+                        {result, exc} = mulQeE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
                 }
@@ -4332,7 +4331,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
-                        result = new FloatIBM(v1.toFloat() * v2.toFloat())
+                        {result, exc} = mulE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to32())
                 }
         ME:     {
@@ -4340,10 +4340,12 @@ class Instruction extends PackedBits
                     f:['ME R1,D2(B2)','ME R1,D2(X2,B2)']
                     d:'01100xxxddddddbb'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
-                        result = new FloatIBM(v1.toFloat() * v2.toFloat())
+                        {result, exc} = mulE(v1, v2)
+                        return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to32())
                 }
 
@@ -4382,7 +4384,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(),t.f(v.y+1).get32())
-                        result = subE(v1,v2)
+                        {result, exc} = subE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -4397,10 +4400,12 @@ class Instruction extends PackedBits
                     f:['SED R1,D2(B2)','SED R1,D2(X2,B2)']
                     d:'01011xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.g_EAF(v), t.g_EAF(v,2))
-                        result = subE(v1,v2)
+                        {result, exc} = subE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -4452,7 +4457,8 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
-                        result = subE(v1,v2)
+                        {result, exc} = subE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -4466,10 +4472,12 @@ class Instruction extends PackedBits
                     f:['SE R1,D2(B2)','SE R1,D2(X2,B2)']
                     d:'01011xxxddddddbb'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
-                        result = subE(v1,v2)
+                        {result, exc} = subE(v1,v2)
+                        return unless t.fp_dispatch_exc(exc)
                         if result.gFracBits().isZero()
                             t.psw.setCC(0)
                         else if result.gSign() < 0
@@ -4501,6 +4509,7 @@ class Instruction extends PackedBits
                     f:['STED R1,D2(B2)','STED R1,D2(X2,B2)']
                     d:'00111xxx11111abb/X'
                     a:ADDR_DBLEWORD
+                    fp:'DP'
                     e:(t,v) ->
                         t.s_EAF(v,t.f(v.x  ).get32(),0)
                         t.s_EAF(v,t.f(v.x+1).get32(),2)
@@ -4521,6 +4530,7 @@ class Instruction extends PackedBits
                     f:['STE R1,D2(B2)','STE R1,D2(X2,B2)']
                     d:'00111xxxddddddbb'
                     a:ADDR_FULLWORD
+                    fp:'SP'
                     e:(t,v) ->
                         v1 = t.f(v.x).get32()
                         result = v1
@@ -5393,6 +5403,24 @@ class Instruction extends PackedBits
                         t.r(v.x).set32(addr << 16)
                         t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
                 }
+        #
+        # STORE EXTENDED ADDRESS
+        #
+        STXAR:   {
+                    n: 'Store Extended Address Register'
+                    f:['STXAR R1,R2']
+                    d: '10100xxx11101yyy'
+                    e:(t,v) =>
+                        return
+        }
+        STXA:   {
+                    n: 'Store Extended Address'
+                    f:['STXA R1,D2(B2)','STXA R1,D2(X2,B2)']
+                    d: '10100xxx11111abb/X'
+                    e:(t,v) ->
+                        addrConst = t.g_EAF(v)
+                        addr = (addrConst >>> 16) & 0x7fff
+        }
         #
         # STORE DSE MULTIPLE
         #   (AP-101S sect.9.15)

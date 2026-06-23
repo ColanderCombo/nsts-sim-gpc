@@ -242,168 +242,521 @@ export class FloatIBM
 
 
 
-export addE = (x,y) ->
-  #console.log "x=", x.gExp(), x.gFrac(), x.gFracBits(), x.toFloat()
-  #console.log "y=", y.gExp(), y.gFrac(), y.gFracBits(), y.toFloat()
+# =====================================================================
+# POO 8.11 anomaly:
+#
+# The HARDWARE bug: when two operands' fractions differ by exactly
+# x'80 0000' after prealignment (in 56-bit fraction form), the AP-101S
+# compare instruction reports them as equal even though they are not.
+#
+# Returns CC: 0 = equal, 1 = a > b, 3 = a < b.
+#
+# Used by CER/CE/CEDR/CED in cpu_instr.coffee.
+export compE_anomalous = (x, y) ->
+  # Snapshot fields up-front so we never mutate the caller's operands.
+  aSign = x.gSign() < 0
+  aExp  = x.gExp() + 64
+  aMant = x.gFracBits().toUnsigned()
+  bSign = y.gSign() < 0
+  bExp  = y.gExp() + 64
+  bMant = y.gFracBits().toUnsigned()
 
-  # Align fractions
-  #
-  if x.gExp() != y.gExp()
-    if x.gExp() > y.gExp()
-      z = x
-      x = y
-      y = z
+  # POO: zero-fraction operands compare equal
+  # regardless of sign or characteristic.
+  aZero = aMant.isZero()
+  bZero = bMant.isZero()
+  if aZero and bZero then return 0
+  if aZero then return (if bSign then 1 else 3)
+  if bZero then return (if aSign then 3 else 1)
 
-    shift = y.gExp() - x.gExp()
-    x.sFrac(x.gFracBits().shiftRightUnsigned(shift*4))
-    newExp = x.gExp()+shift
-    if x.gExp() > 63
-      # Exponent overflow during alignment: the smaller operand underflows
-      # to zero, so the result is just the larger operand.
-      return y
-    x.sExp(newExp)
+  # Prealign with guard digit (mirrors _addsubE).
+  if aExp == bExp
+    aMant = aMant.shiftLeft(4)
+    bMant = bMant.shiftLeft(4)
+  else if aExp < bExp
+    shift = bExp - aExp - 1
+    if shift > 0
+      if shift >= 14
+        return (if bSign then 1 else 3)
+      aMant = aMant.shiftRightUnsigned(shift * 4)
+      if aMant.isZero()
+        return (if bSign then 1 else 3)
+    bMant = bMant.shiftLeft(4)
+  else
+    shift = aExp - bExp - 1
+    if shift > 0
+      if shift >= 14
+        return (if aSign then 3 else 1)
+      bMant = bMant.shiftRightUnsigned(shift * 4)
+      if bMant.isZero()
+        return (if aSign then 3 else 1)
+    aMant = aMant.shiftLeft(4)
 
-  #console.log "x SH=", x.gExp(), x.gFrac(), x.gFracBits(), x.toFloat()
-  #console.log "y SH=", y.gExp(), y.gFrac(), y.gFracBits(), y.toFloat()
+  # Signed-fraction subtract for compare.
+  if aSign != bSign
+    rMant = aMant.add(bMant)
+    rSign = aSign
+  else if aMant.greaterThanOrEqual(bMant)
+    rMant = aMant.subtract(bMant)
+    rSign = aSign
+  else
+    rMant = bMant.subtract(aMant)
+    rSign = not aSign
+
+  # POO 8.11 anomaly: false equality when |a-b| in the post-prealign
+  # 60-bit form equals exactly 0x8000000.  Documented for CEDR/CED
+  # (long compare); POO 8.12 does not list this anomaly for short
+  # compare, so SP-shaped operands still see it (they go through the
+  # same compare logic) but we don't add a separate SP threshold.
+  ANOMALY = Long.fromBits(0x08000000, 0, true)
+  if rMant.equals(ANOMALY) then return 0
+
+  if rMant.isZero() then return 0
+  return (if rSign then 3 else 1)
+
+
+# =====================================================================
+# Exception-aware DP arithmetic.  Returns {result: FloatIBM, exc: int}.
+# Exception codes match POO 2.5.2 interrupt codes — same numeric
+# values used by cpu.coffee's signal* methods.
+# =====================================================================
+
+export FP_EXC =
+  OK:               0
+  EXP_OVERFLOW:     0x000B
+  EXP_UNDERFLOW:    0x0009
+  SIGNIFICANCE:     0x0005
+  DIVIDE:           0x000C
+  CONVERT_OVERFLOW: 0x000A
+
+export addE = (x, y) -> _addsubE(x, y, false)
+export subE = (x, y) -> _addsubE(x, y, true)
+# compE never raises per POO §8.11 — discard exc, return result only.
+# (Compare instructions use _addsubE(true) directly to inspect the
+# fraction sign; this wrapper exists for callers that want a plain
+# subtract-as-FloatIBM convenience.)
+export compE = (x, y) -> _addsubE(x, y, true).result
+
+# Internal addsub.  Modeled on tools/floatIBM/ibmFloat.c
+# ibm_dp_addsub_exc and Hercules add_lf.  Returns {result, exc}.
+#
+# Result/exceptions per POO 8.8:
+#   OK           - result valid; caller writes back, sets CC.
+#   EXP_OVERFLOW - result holds the would-be-wrapped value for trace.
+#                  Caller MUST NOT write back ("operation terminated").
+#   EXP_UNDERFLOW- result = true zero.  Caller writes IFF PSW exp-
+#                  underflow mask bit 22 is 0; signals always.
+#   SIGNIFICANCE - result = true zero.  Caller ALWAYS writes back,
+#                  CC=00.  Mask bit 23 only gates the interrupt.
+_addsubE = (xIn, yIn, subtract_b) ->
+  # Snapshot fields up-front so we never mutate the caller's operands.
+  aSign = xIn.gSign() < 0
+  aExp  = xIn.gExp() + 64    # work in biased characteristic 0..127
+  aMant = xIn.gFracBits().toUnsigned()
+  bSign = yIn.gSign() < 0
+  bExp  = yIn.gExp() + 64
+  bMant = yIn.gFracBits().toUnsigned()
+  if subtract_b then bSign = not bSign
+
+  ZERO = Long.fromBits(0, 0, true)
+
+  aZero = aMant.isZero()
+  bZero = bMant.isZero()
+
+  if not bZero and not aZero
+    # Both non-zero — align with guard digit, then signed add.
+    if aExp == bExp
+      aMant = aMant.shiftLeft(4)
+      bMant = bMant.shiftLeft(4)
+    else if aExp < bExp
+      shift = bExp - aExp - 1   # minus guard digit
+      aExp = bExp
+      if shift > 0
+        if shift >= 14
+          aMant = ZERO
+        else
+          aMant = aMant.shiftRightUnsigned(shift * 4)
+        if aMant.isZero()
+          # a effectively zero — result is just b (no guard).
+          aSign = bSign
+          aMant = bMant
+          return _packAddsubResult(aSign, aExp, aMant, false)
+      bMant = bMant.shiftLeft(4)   # guard digit on b
+    else
+      shift = aExp - bExp - 1
+      if shift > 0
+        if shift >= 14
+          bMant = ZERO
+        else
+          bMant = bMant.shiftRightUnsigned(shift * 4)
+        if bMant.isZero()
+          # b effectively zero — keep a (no guard).
+          return _packAddsubResult(aSign, aExp, aMant, false)
+      aMant = aMant.shiftLeft(4)
+
+    # Compute with guard digit (60-bit mantissas).
+    if aSign == bSign
+      rSign = aSign
+      rMant = aMant.add(bMant)
+    else if aMant.equals(bMant)
+      # True cancellation — SIGNIFICANCE, true zero.
+      return {result: new FloatIBM(), exc: FP_EXC.SIGNIFICANCE}
+    else if aMant.greaterThan(bMant)
+      rSign = aSign
+      rMant = aMant.subtract(bMant)
+    else
+      rSign = bSign
+      rMant = bMant.subtract(aMant)
+
+    # Post-add: handle overflow / drop guard / renormalize.
+    if rMant.getHighBitsUnsigned() & 0xF0000000
+      # Overflow into bit 60+: shift right 1 hex (cancels guard +
+      # absorbs overflow), bump expo.
+      rMant = rMant.shiftRightUnsigned(8)
+      aExp += 1
+    else if rMant.getHighBitsUnsigned() & 0x0F000000
+      # Top guard-hex set: drop guard, already normalized.
+      rMant = rMant.shiftRightUnsigned(4)
+    else
+      # Leading zero hex in 60-bit form: re-interpret as 56-bit form
+      # (the implicit <<4 from the format change is absorbed by the
+      # exp decrement) and normalize within 56-bit.
+      aExp -= 1
+      if rMant.isZero()
+        return {result: new FloatIBM(), exc: FP_EXC.SIGNIFICANCE}
+      while not (rMant.getHighBitsUnsigned() & 0x00F00000)
+        rMant = rMant.shiftLeft(4)
+        aExp -= 1
+
+    return _packAddsubResult(rSign, aExp, rMant, false)
+
+  if bZero and aZero
+    # POO 8.9: zero+zero -> SIGNIFICANCE with true-zero result.
+    return {result: new FloatIBM(), exc: FP_EXC.SIGNIFICANCE}
+  if aZero
+    aSign = bSign
+    aExp  = bExp
+    aMant = bMant
+  # (else: a not zero, b zero — keep a unchanged.)
+  return _packAddsubResult(aSign, aExp, aMant, true)
+
+# Pack addsub helper.  Returns {result, exc}.  needsRenorm=true means
+# we may have an unnormalized mantissa (the "one operand zero" path).
+_packAddsubResult = (sign, biasedExp, mant, needsRenorm) ->
+  if needsRenorm
+    if mant.isZero()
+      # FIXER pattern: mant=0 with exp!=0 canonicalizes to true zero
+      # via SIGNIFICANCE (matches Hyperion add_lf:1442-1452).
+      return {result: new FloatIBM(), exc: FP_EXC.SIGNIFICANCE}
+    while not (mant.getHighBitsUnsigned() & 0x00F00000)
+      mant = mant.shiftLeft(4)
+      biasedExp -= 1
 
   result = new FloatIBM()
+  if biasedExp > 127
+    # EXP_OVERFLOW: per POO, operation is terminated, operands unchanged.
+    # We still pack a wrapped value for caller's trace use (caller is
+    # contractually obliged not to write back).
+    if sign then result.sSign(-1)
+    result.sExp((biasedExp & 0x7F) - 64)
+    result.sFrac(mant)
+    return {result, exc: FP_EXC.EXP_OVERFLOW}
+  if biasedExp < 0
+    # EXP_UNDERFLOW: result is true zero (the masked-off-write value).
+    return {result, exc: FP_EXC.EXP_UNDERFLOW}
+  if sign then result.sSign(-1)
+  result.sExp(biasedExp - 64)   # sExp adds bias back
+  result.sFrac(mant)
+  return {result, exc: FP_EXC.OK}
 
-  xFrac = x.gFracBits()
-  yFrac = y.gFracBits()
-  if x.gSign() < 0
-    xFrac = xFrac.negate()
-  if y.gSign() < 0
-    yFrac = yFrac.negate()
-
-  #console.log "FRACS", xFrac, yFrac
-  intFrac = xFrac.add(yFrac)
-  intExp = x.gExp()
-  if intFrac.isNegative()
-    intFrac = intFrac.negate()
-    result.sSign(-1)
-  if intFrac.getHighBitsUnsigned() & 0x1000000
-    intFrac = intFrac.shiftRightUnsigned(4)
-    intExp += 1
-    if intExp > 63
-      # Exponent overflow: return max-magnitude value (IBM hex FP saturates)
-      result.sExp(63)
-      result.sFrac(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
-      return result
-
-  #console.log "AE RESULT=", intExp.toString(16), intFrac.toString(16)
-  result.sExp(intExp)
-  result.sFrac(intFrac)
-  result.normalize()
-
-  #console.log "result=", result.gExp(), result.gFrac(), result.gFracBits().toString(16), result.to32().toString(16)
-
-  return result
-
-
-export subE = (x,y) ->
-  # Clone y to avoid mutating the caller's operand — addE may swap x/y
-  # and the sign flip would leak into subsequent operations.
-  yNeg = new FloatIBM()
-  yNeg.setFrom64(y.to64x(), y.to64y())
-  yNeg.sSign(y.gSign()*-1)
-  return addE(x,yNeg)
-
-export compE = (x,y) ->
-  r = subE(x,y)
-  return r
 
 export mulE = (x, y) ->
-  # use Long.js integer arithmetic.
-  #
-  # The 56-bit mantissa is split: M = Mh*2^28 + Ml
-  # Product = (xH*yH)*2^56 + (xH*yL + xL*yH)*2^28 + xL*yL
-  # We keep the top 56 bits of this 112-bit result.
+  # 56x56 -> 112 multiply, keeping top 56 bits.  Returns {result, exc}.
+  # Per POO 8.17 a zero operand forces true-zero result, no exception.
+  xFrac = x.gFracBits().toUnsigned()
+  yFrac = y.gFracBits().toUnsigned()
 
-  xFrac = x.gFracBits()
-  yFrac = y.gFracBits()
-
-  # Zero handling
   if xFrac.isZero() or yFrac.isZero()
-    return new FloatIBM()
+    return {result: new FloatIBM(), exc: FP_EXC.OK}
 
-  # Result sign and exponent
   resultSign = x.gSign() * y.gSign()
-  resultExp = x.gExp() + y.gExp()
 
-  # Split each 56-bit mantissa into high 28 and low 28 bits
-  MASK28 = Long.fromInt(0x0FFFFFFF, true)
-  xL = xFrac.and(MASK28).toUnsigned()
-  xH = xFrac.shiftRightUnsigned(28).toUnsigned()
-  yL = yFrac.and(MASK28).toUnsigned()
-  yH = yFrac.shiftRightUnsigned(28).toUnsigned()
+  # Renormalize both operands so each has top hex set — matches the C
+  # reference's IBM_DP_RENORMALIZE_56.  Operating on biased characteristic.
+  xBiasedExp = x.gExp() + 64
+  yBiasedExp = y.gExp() + 64
+  while not (xFrac.getHighBitsUnsigned() & 0x00F00000)
+    xFrac = xFrac.shiftLeft(4)
+    xBiasedExp -= 1
+  while not (yFrac.getHighBitsUnsigned() & 0x00F00000)
+    yFrac = yFrac.shiftLeft(4)
+    yBiasedExp -= 1
 
-  # Partial products (each ≤ 56 bits, fits in unsigned Long)
-  hh = xH.multiply(yH)         # bits 112:56 of full product
-  hl = xH.multiply(yL)         # bits 84:28
-  lh = xL.multiply(yH)         # bits 84:28
-  # xL*yL only contributes to bits 56:0, we need its carry into bit 56
-  ll = xL.multiply(yL)         # bits 56:0
+  # 32-bit splits to match the C reference exactly: a_lo = low 32, a_hi
+  # = high 24 (since the 56-bit fraction sits in the low 56 of a Long).
+  toUL  = (n) -> Long.fromBits(n | 0, 0, true)
+  aLo32 = xFrac.getLowBitsUnsigned() >>> 0
+  aHi32 = xFrac.getHighBitsUnsigned() >>> 0
+  bLo32 = yFrac.getLowBitsUnsigned() >>> 0
+  bHi32 = yFrac.getHighBitsUnsigned() >>> 0
+  aLo = toUL(aLo32); aHi = toUL(aHi32)
+  bLo = toUL(bLo32); bHi = toUL(bHi32)
 
-  # Combine: top 56 bits = hh + (hl + lh + (ll >> 28)) >> 28
-  mid = hl.add(lh).add(ll.shiftRightUnsigned(28))
-  resultFrac = hh.add(mid.shiftRightUnsigned(28))
+  # Per ibm_dp_mul_exc:
+  #   wk = (a_lo*b_lo) >> 32; wk += a_lo*b_hi; wk += a_hi*b_lo;
+  #   v  = wk & 0xFFFFFFFF;
+  #   hi = (wk >> 32) + (a_hi*b_hi);
+  ll = aLo.multiply(bLo)
+  wk = ll.shiftRightUnsigned(32).add(aLo.multiply(bHi)).add(aHi.multiply(bLo))
+  v  = wk.getLowBitsUnsigned() >>> 0
+  hi = wk.shiftRightUnsigned(32).add(aHi.multiply(bHi))
+
+  if hi.getHighBitsUnsigned() & 0x0000F000
+    # Top hex of product at bits 60..63 of `hi`'s view — pack with <<8.
+    rMant = hi.shiftLeft(8).or(Long.fromBits(v >>> 24, 0, true))
+    rBiasedExp = xBiasedExp + yBiasedExp - 64
+  else
+    # One hex below — pack with <<12 and decrement biased exp by 1.
+    rMant = hi.shiftLeft(12).or(Long.fromBits(v >>> 20, 0, true))
+    rBiasedExp = xBiasedExp + yBiasedExp - 65
+
+  # Truncate to 56-bit form (drop high byte where sign would go).
+  rMant = rMant.and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
 
   result = new FloatIBM()
-  if resultSign < 0
-    result.sSign(-1)
-  result.sExp(resultExp)
-  result.sFrac(resultFrac)
-  result.normalize()
-  return result
+  if rBiasedExp > 127
+    if resultSign < 0 then result.sSign(-1)
+    result.sExp((rBiasedExp & 0x7F) - 64)
+    result.sFrac(rMant)
+    return {result, exc: FP_EXC.EXP_OVERFLOW}
+  if rBiasedExp < 0
+    return {result, exc: FP_EXC.EXP_UNDERFLOW}
+  if resultSign < 0 then result.sSign(-1)
+  result.sExp(rBiasedExp - 64)
+  result.sFrac(rMant)
+  return {result, exc: FP_EXC.OK}
+
+
+# AP-101S 8.17 quasi-extended multiply (MEDR/MED).  Pre-truncate each
+# operand's 56-bit mantissa to 31 bits with round-into-bit-31 from
+# bit 32.  Then multiply at the truncated precision.  Returns
+# {result, exc} like mulE.  Mirrors tools/floatIBM/ibmFloat.c
+# ibm_dp_mul_qe_exc.
+#
+# POO programming note: rounding can cause exponent overflow (e.g.
+# 7FFFFFFFFF000000 rounds up to 8000000000000000 → char bumps).
+mulQeE = (x, y) ->
+  xFrac = x.gFracBits().toUnsigned()
+  yFrac = y.gFracBits().toUnsigned()
+  if xFrac.isZero() or yFrac.isZero()
+    return {result: new FloatIBM(), exc: FP_EXC.OK}
+
+  resultSign = x.gSign() * y.gSign()
+  xBiasedExp = x.gExp() + 64
+  yBiasedExp = y.gExp() + 64
+  while not (xFrac.getHighBitsUnsigned() & 0x00F00000)
+    xFrac = xFrac.shiftLeft(4)
+    xBiasedExp -= 1
+  while not (yFrac.getHighBitsUnsigned() & 0x00F00000)
+    yFrac = yFrac.shiftLeft(4)
+    yBiasedExp -= 1
+
+  # Round to 31 bits: add 1<<24, then if carry into bit 56 shift right 4
+  # and bump exp.  Then clear bottom 25 bits.
+  ROUND_BIT = Long.fromBits(0x01000000, 0, true)        # 1 << 24
+  CLEAR_BOT = Long.fromBits(0xFE000000, 0xFFFFFFFF, true) # ~((1<<25)-1)
+  CARRY_OUT = Long.fromBits(0, 0x01000000, true)        # 1 << 56
+
+  roundOnce = (mant, biasedExp) ->
+    rounded = mant.add(ROUND_BIT)
+    if not rounded.and(CARRY_OUT).isZero()
+      rounded = rounded.shiftRightUnsigned(4)
+      biasedExp += 1
+    [rounded.and(CLEAR_BOT), biasedExp]
+
+  [xFrac, xBiasedExp] = roundOnce(xFrac, xBiasedExp)
+  [yFrac, yBiasedExp] = roundOnce(yFrac, yBiasedExp)
+
+  if xBiasedExp > 127 or yBiasedExp > 127
+    result = new FloatIBM()
+    if resultSign < 0 then result.sSign(-1)
+    result.sExp((127 & 0x7F) - 64)
+    return {result, exc: FP_EXC.EXP_OVERFLOW}
+
+  # Both mantissas now have at most 31 significant bits in the upper
+  # half.  Shift each down by 25 to get a 31-bit Number (fits 32-bit).
+  a31 = xFrac.shiftRightUnsigned(25).toUnsigned()
+  b31 = yFrac.shiftRightUnsigned(25).toUnsigned()
+  prod = a31.multiply(b31)        # up to 62 bits, fits in unsigned Long
+
+  # target_mant = prod >> 6  (algebra: prod = frac×frac × 2^62, want ×2^56)
+  target = prod.shiftRightUnsigned(6)
+
+  result = new FloatIBM()
+  if target.isZero()
+    return {result, exc: FP_EXC.OK}
+
+  rMant = null
+  rBiasedExp = 0
+  if not target.and(Long.fromBits(0, 0x00F00000, true)).isZero()
+    # Top hex (bits 52..55) of target is set — already normalized.
+    rMant = target.and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
+    rBiasedExp = xBiasedExp + yBiasedExp - 64
+  else
+    # Shift up one hex digit; equivalent to target<<4 = prod>>2.
+    rMant = prod.shiftRightUnsigned(2).and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
+    rBiasedExp = xBiasedExp + yBiasedExp - 65
+
+  if rBiasedExp > 127
+    if resultSign < 0 then result.sSign(-1)
+    result.sExp((rBiasedExp & 0x7F) - 64)
+    result.sFrac(rMant)
+    return {result, exc: FP_EXC.EXP_OVERFLOW}
+  if rBiasedExp < 0
+    return {result, exc: FP_EXC.EXP_UNDERFLOW}
+  if resultSign < 0 then result.sSign(-1)
+  result.sExp(rBiasedExp - 64)
+  result.sFrac(rMant)
+  return {result, exc: FP_EXC.OK}
+
+export {mulQeE}
 
 
 export divE = (x, y) ->
-  # using Long.js integer arithmetic:
-  # Full 56-bit precision: dividend / divisor.
-  #
-  # dividend_mantissa / divisor_mantissa * 2^56 gives the result mantissa.
-  # shift dividend left by 56 bits relative to divisor before dividing.
+  # 56-bit hex-FP divide via iterative hex-digit long-division.
+  # Returns {result, exc}.  Modeled on tools/floatIBM/ibmFloat.c
+  # ibm_dp_div_exc.  Per POO 8.8 divide-by-zero is reported as
+  # FP_DIVIDE — the CPU layer must suppress the writeback.
+  xFrac = x.gFracBits().toUnsigned()
+  yFrac = y.gFracBits().toUnsigned()
 
-  xFrac = x.gFracBits()
-  yFrac = y.gFracBits()
-
-  # Zero handling
   if yFrac.isZero()
-    return new FloatIBM()  # divide by zero -> return 0 XXX trap
+    # FP_DIVIDE: caller MUST NOT write back.  Result is a sentinel
+    # (DEADBEEFDEADBEEF) so any accidental use crashes loud — matches
+    # the C ref's IBM_FP_DIVIDE_SENTINEL_DP.  Note: we set ALL 8 bytes
+    # including the high byte so to64x()/to64y() reproduce the sentinel
+    # exactly in the runner output.
+    sentinel = new FloatIBM()
+    sentinel.data8[0] = 0xDE
+    sentinel.data8[1] = 0xAD
+    sentinel.data8[2] = 0xBE
+    sentinel.data8[3] = 0xEF
+    sentinel.data8[4] = 0xDE
+    sentinel.data8[5] = 0xAD
+    sentinel.data8[6] = 0xBE
+    sentinel.data8[7] = 0xEF
+    return {result: sentinel, exc: FP_EXC.DIVIDE}
   if xFrac.isZero()
-    return new FloatIBM()
+    # POO 8.15: dividend zero -> true zero result, no exception.
+    return {result: new FloatIBM(), exc: FP_EXC.OK}
 
-  # Result sign and exponent
   resultSign = x.gSign() * y.gSign()
-  resultExp = x.gExp() - y.gExp()
 
-  shifted = xFrac.shiftLeft(28).toUnsigned()
-  yU = yFrac.toUnsigned()
-  qH = shifted.divide(yU)
-  rem = shifted.subtract(qH.multiply(yU))
-  remShifted = rem.shiftLeft(28).toUnsigned()
-  qL = remShifted.divide(yU)
+  # Work in biased characteristic; renormalize each operand so top hex
+  # is set (mirrors C ibm_dp_div_exc).
+  xBiasedExp = x.gExp() + 64
+  yBiasedExp = y.gExp() + 64
+  while not (xFrac.getHighBitsUnsigned() & 0x00F00000)
+    xFrac = xFrac.shiftLeft(4)
+    xBiasedExp -= 1
+  while not (yFrac.getHighBitsUnsigned() & 0x00F00000)
+    yFrac = yFrac.shiftLeft(4)
+    yBiasedExp -= 1
 
-  resultFrac = qH.shiftLeft(28).add(qL)
+  # Position dividend / compute quotient biased exp.
+  if xFrac.lessThan(yFrac)
+    rBiasedExp = xBiasedExp - yBiasedExp + 64
+  else
+    rBiasedExp = xBiasedExp - yBiasedExp + 65
+    yFrac = yFrac.shiftLeft(4)
+
+  # Long division — 14 hex digits of quotient.
+  wk2 = xFrac.divide(yFrac)
+  wk  = xFrac.subtract(wk2.multiply(yFrac)).shiftLeft(4)
+  i = 13
+  while i > 0
+    wk2 = wk2.shiftLeft(4).or(wk.divide(yFrac))
+    wk  = wk.subtract(wk.divide(yFrac).multiply(yFrac)).shiftLeft(4)
+    i -= 1
+  resultFrac = wk2.shiftLeft(4).or(wk.divide(yFrac))
 
   result = new FloatIBM()
-  if resultSign < 0
-    result.sSign(-1)
-  result.sExp(resultExp)
+  if rBiasedExp > 127
+    if resultSign < 0 then result.sSign(-1)
+    result.sExp((rBiasedExp & 0x7F) - 64)
+    result.sFrac(resultFrac)
+    return {result, exc: FP_EXC.EXP_OVERFLOW}
+  if rBiasedExp < 0
+    return {result, exc: FP_EXC.EXP_UNDERFLOW}
+  if resultSign < 0 then result.sSign(-1)
+  result.sExp(rBiasedExp - 64)
   result.sFrac(resultFrac)
-  result.normalize()
-  return result
+  return {result, exc: FP_EXC.OK}
 
 
 export cvfx = (x) ->
-  x.unNormalizeToExp(4)
-  frac = x.gFracBits()
-  intVal = ((frac.getHighBitsUnsigned() << 8) | ((frac.getLowBitsUnsigned() >>> 24) & 0xff)) >>> 0
-  if x.gSign() < 0
-    intVal = ((~intVal) + 1) & 0xffffffff
-  return intVal
+  # Convert short FP to two's-complement int32, binary point between
+  # bits 15 and 16 (POO 8.13).  Returns {result: int32, exc}.  Caller
+  # must NOT update R1 on CONVERT_OVERFLOW per spec.
+  #
+  # Mirrors tools/floatIBM/ibmFloat.c ibm_cvfx — work out the shift
+  # algebraically from the biased characteristic, then range-check.
+  if x.gFracBits().isZero()
+    return {result: 0, exc: FP_EXC.OK}
+
+  # Take a working copy so we don't mutate the caller (gFracBits is a
+  # snapshot — but unNormalizeToExp / sExp / sFrac would mutate `x`).
+  work = new FloatIBM()
+  work.setFrom64(x.to64x(), x.to64y())
+  # Renormalize to ensure top hex of fraction is set.
+  work.normalize()
+  sign = work.gSign() < 0
+  chr  = (work.data8[0] & 0x7F)        # biased characteristic
+  mant = work.gFracBits().toUnsigned() # 56-bit fraction in low 56
+
+  # FloatIBM stores SP as a DP-shaped 56-bit fraction (low 32 bits
+  # zero).  fp_value = (mant_56 / 2^56) × 16^(chr - 64).  Integer-form
+  # = fp_value × 2^16 = mant_56 × 2^(4*chr - 296).
+  shift = 4 * chr - 296
+  if shift > 8
+    # mant occupies bits 0..55 of the Long; left-shift by >8 pushes its
+    # top bit past bit 63 and Long.js wraps mod 64.  Any value that
+    # large is unambiguously beyond INT32 range — declare overflow
+    # before the shift loses data.
+    return {result: 0, exc: FP_EXC.CONVERT_OVERFLOW}
+
+  if shift >= 0
+    mag64 = mant.shiftLeft(shift)
+  else
+    rs = -shift
+    if rs >= 64
+      mag64 = Long.fromInt(0, true)
+    else
+      mag64 = mant.shiftRightUnsigned(rs)
+  magHi = mag64.getHighBitsUnsigned()
+  magLo = mag64.getLowBitsUnsigned() >>> 0
+
+  # Range check via 64-bit Long: positive max = 0x7FFFFFFF; negative max
+  # = 0x80000000 (latter encodes INT32_MIN).
+  if magHi != 0
+    return {result: 0, exc: FP_EXC.CONVERT_OVERFLOW}
+  if sign
+    if magLo > 0x80000000
+      return {result: ((-(magLo & 0x7FFFFFFF)) | 0), exc: FP_EXC.CONVERT_OVERFLOW}
+    if magLo == 0
+      return {result: 0, exc: FP_EXC.OK}
+    return {result: ((-magLo) | 0), exc: FP_EXC.OK}
+  else
+    if magLo > 0x7FFFFFFF
+      return {result: ((magLo & 0x7FFFFFFF) | 0), exc: FP_EXC.CONVERT_OVERFLOW}
+    return {result: magLo | 0, exc: FP_EXC.OK}
 
 export cvfl = (x) ->
+  # POO 8.14: fixed-point zero produces floating-point true zero.
+  # The previous implementation packed char 0x44 with mant=0 (= 0x44000000),
+  # which is numerically zero but not the true-zero canonical form.
+  return new FloatIBM() if x == 0
+
   res = new FloatIBM()
   if x < 0
     x = ((x ^ 0xffffffff) + 1) >>> 0
