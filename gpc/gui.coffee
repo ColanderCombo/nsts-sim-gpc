@@ -14,6 +14,7 @@ import 'gpc/gui/gpc-regview'
 import 'gpc/gui/gpc-watch'
 import 'gpc/gui/gpc-memory'
 import 'gpc/gui/gpc-sections'
+import 'gpc/gui/gpc-labels'
 import 'gpc/gui/gpc-terminal'
 
 
@@ -59,6 +60,7 @@ export class DebugGUI extends GUIHarness
   _watch: () -> document.querySelector('gpc-watch')
   _memory: () -> document.querySelector('gpc-memory')
   _sections: () -> document.querySelector('gpc-sections')
+  _labels: () -> document.querySelector('gpc-labels')
 
   start: () ->
     console.log("DebugGUI Start")
@@ -109,6 +111,12 @@ export class DebugGUI extends GUIHarness
       @_memory()?.selectedSection = @selectedSection
       @updateDisplay()
 
+    # Listen for label selection from <gpc-labels>: jump the disasm view there
+    document.addEventListener 'label-selected', (e) =>
+      addr = e.detail.address
+      if addr?
+        @_disasm()?.gotoAddr(addr)
+
     # Listen for watch selection
     document.addEventListener 'watch-selected', (e) =>
       @selectedWatch = e.detail.name
@@ -136,6 +144,11 @@ export class DebugGUI extends GUIHarness
         # Wire sections
         sectEl.sym = @sym
         sectEl.selectedSection = @selectedSection
+        # Wire labels 
+        labelsEl = @_labels()
+        if labelsEl
+          labelsEl.sym = @sym
+          labelsEl.refresh()
         # Wire watch
         watchEl = @_watch()
         if watchEl
@@ -366,7 +379,10 @@ export class DebugGUI extends GUIHarness
             </split-pane>
             <split-pane slot="second" direction="horizontal" initial-size={100} min-size={60} save-key="sections">
               <gpc-memory slot="first"></gpc-memory>
-              <gpc-sections slot="second"></gpc-sections>
+              <split-pane slot="second" direction="horizontal" initial-size={120} min-size={60} save-key="labels">
+                <gpc-sections slot="first"></gpc-sections>
+                <gpc-labels slot="second"></gpc-labels>
+              </split-pane>
             </split-pane>
           </split-pane>
           <gpc-terminal slot="second" id="gpc-terminal"></gpc-terminal>

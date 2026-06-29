@@ -92,6 +92,15 @@ export class GpcDisasm extends LitElement {
     this.refresh();
   }
 
+  // Jump the view to a halfword address (e.g. from the labels pane) and stop
+  // auto-following NIA, so the chosen label stays in view.
+  gotoAddr(addr: number): void {
+    if (!Number.isFinite(addr)) return;
+    this._viewAddr = this._alignAddr(Math.max(0, Math.min(0x7FFFF, addr)));
+    this._followNIA = false;
+    this.refresh();
+  }
+
   // --- Disassembly logic (ported from ap101.coffee) ---
 
   private _disasmFields(hw1: number, hw2: number): DisasmFields {
