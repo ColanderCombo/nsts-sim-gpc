@@ -1,5 +1,6 @@
-import {LitElement, html, css} from 'lit';
+import {LitElement, html, css, render} from 'lit';
 import {customElement} from 'lit/decorators.js';
+import 'cde/toolbar';
 
 interface LabelSym {
   name: string;
@@ -25,17 +26,17 @@ export class GpcLabels extends LitElement {
 
   private _filter = '';
   private _contentEl: HTMLDivElement | null = null;
+  // Filter is hoisted into the dock tab strip (see getToolbar()).
+  private _toolbarEl: HTMLElement | null = null;
 
 
   firstUpdated(): void {
     this._contentEl = this.shadowRoot!.getElementById('content') as HTMLDivElement;
-    const input = this.shadowRoot!.getElementById('filter') as HTMLInputElement;
-    if (input) {
-      input.oninput = () => {
-        this._filter = input.value.trim().toLowerCase();
-        this.refresh();
-      };
-    }
+    this.refresh();
+  }
+
+  private _onFilter(e: Event): void {
+    this._filter = (e.target as HTMLInputElement).value.trim().toLowerCase();
     this.refresh();
   }
 
@@ -124,11 +125,23 @@ export class GpcLabels extends LitElement {
   // --- Template ---
 
   render() {
-    return html`
-      <div id="header">LABELS</div>
-      <input id="filter" type="text" placeholder="filter…" spellcheck="false" />
-      <div id="content"></div>
-    `;
+    return html`<div id="content"></div>`;
+  }
+
+  // Filter box hoisted into the dock tab strip.
+  getToolbar(): HTMLElement {
+    if (!this._toolbarEl) {
+      this._toolbarEl = document.createElement('div');
+      this._toolbarEl.style.display = 'contents';
+    }
+    render(html`
+      <sim-toolbar>
+        <input type="text" placeholder="filter…" spellcheck="false"
+          style="background:#1e1e1e; border:1px solid #333; color:#ddd; font:10px 'Consolas for Powerline',Consolas,monospace; padding:1px 3px;"
+          @input="${this._onFilter}" />
+      </sim-toolbar>
+    `, this._toolbarEl, { host: this });
+    return this._toolbarEl;
   }
 
   // --- Styles ---
@@ -143,26 +156,6 @@ export class GpcLabels extends LitElement {
       min-height: 0;
       min-width: 0;
       flex: 1;
-    }
-
-    #header {
-      color: #888;
-      font-size: 9px;
-      margin-bottom: 2px;
-      padding-bottom: 2px;
-      border-bottom: 1px solid #333;
-      flex: 0 0 auto;
-    }
-
-    #filter {
-      flex: 0 0 auto;
-      margin-bottom: 2px;
-      background: #1e1e1e;
-      border: 1px solid #333;
-      color: #ddd;
-      font-family: inherit;
-      font-size: 10px;
-      padding: 1px 3px;
     }
 
     #content {

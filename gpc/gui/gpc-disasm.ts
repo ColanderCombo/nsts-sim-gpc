@@ -1,4 +1,4 @@
-import {LitElement, html, css} from 'lit';
+import {LitElement, html, css, render} from 'lit';
 import {customElement} from 'lit/decorators.js';
 import 'cde/toolbar';
 import 'com/util';
@@ -47,20 +47,26 @@ export class GpcDisasm extends LitElement {
   private _viewAddr: number | null = null;
   private _followNIA: boolean = true;
   private _contentEl: HTMLDivElement | null = null;
-  private _addrInput: HTMLInputElement | null = null;
+  // Toolbar is hoisted into the dock tab strip (see getToolbar()).
+  private _toolbarEl: HTMLElement | null = null;
+  private _rangeText: string = '';
 
   // --- Lit lifecycle ---
 
   private _resizeObserver: ResizeObserver | null = null;
 
+  // Re-observe on every (re)connection: the dock recreates panes when the
+  // layout restructures, which disconnects/reconnects this element.
+  connectedCallback(): void {
+    super.connectedCallback();
+    if (!this._resizeObserver) {
+      this._resizeObserver = new ResizeObserver(() => { if (this.cpu) this.refresh(); });
+    }
+    this._resizeObserver.observe(this);
+  }
+
   firstUpdated(): void {
     this._contentEl = this.shadowRoot!.getElementById('content') as HTMLDivElement;
-    this._addrInput = this.shadowRoot!.getElementById('addr-input') as HTMLInputElement;
-    // Re-render when container is resized (split-pane drag, window resize)
-    this._resizeObserver = new ResizeObserver(() => {
-      if (this.cpu) this.refresh();
-    });
-    this._resizeObserver.observe(this);
   }
 
   disconnectedCallback(): void {
@@ -76,13 +82,11 @@ export class GpcDisasm extends LitElement {
     const count = this._getLineCount();
     const lines = this._disassembleAt(startAddr, count);
     this._renderLines(this._contentEl, lines);
-    // Update range display
+    // Update the range display in the hoisted toolbar
     const lastLine = lines.filter(l => !l.isHeader);
     const endAddr = lastLine.length > 0 ? lastLine[lastLine.length - 1].addr : startAddr;
-    const rangeEl = this.shadowRoot?.getElementById('disasm-range');
-    if (rangeEl) {
-      rangeEl.textContent = `${startAddr.toString(16).padStart(5, '0')}-${endAddr.toString(16).padStart(5, '0')}`;
-    }
+    this._rangeText = `${startAddr.toString(16).padStart(5, '0')}-${(endAddr ?? startAddr).toString(16).padStart(5, '0')}`;
+    if (this._toolbarEl) render(this._toolbarTemplate(), this._toolbarEl, { host: this });
   }
 
   frameNIA(): void {
@@ -391,10 +395,9 @@ export class GpcDisasm extends LitElement {
     // Use host element height minus toolbar to compute available space
     const hostHeight = this.clientHeight;
     if (hostHeight <= 0) return 20;
-    const toolbar = this.shadowRoot?.getElementById('toolbar');
-    const toolbarHeight = toolbar?.offsetHeight || 20;
+    // Toolbar now lives in the dock tab strip, so the content fills the host.
     const lineHeight = 17; // matches #content line-height: 16.8px
-    const availHeight = hostHeight - toolbarHeight - 8; // 8px padding
+    const availHeight = hostHeight - 8; // 8px padding
     const count = Math.floor(availHeight / lineHeight);
     return Math.max(5, count - 1); // -1 for header line
   }
@@ -465,8 +468,23 @@ export class GpcDisasm extends LitElement {
   // --- Template ---
 
   render() {
+    return html`<div id="content" @wheel="${this._onWheel}"></div>`;
+  }
+
+  // Toolbar hoisted into the dock tab strip.  Owned by this element and
+  // re-rendered in place (preserves the addr-input focus) on refresh().
+  getToolbar(): HTMLElement {
+    if (!this._toolbarEl) {
+      this._toolbarEl = document.createElement('div');
+      this._toolbarEl.style.display = 'contents';
+    }
+    render(this._toolbarTemplate(), this._toolbarEl, { host: this });
+    return this._toolbarEl;
+  }
+
+  private _toolbarTemplate() {
     return html`
-      <sim-toolbar label="DISASSEMBLY">
+      <sim-toolbar>
         <button class="sm" @click="${this._pageUp}" title="Page Up">⬆⬆</button>
         <button class="sm" @click="${() => this._scrollUp(1)}" title="Scroll Up">⬆</button>
         <button class="sm" @click="${() => this._scrollDown(1)}" title="Scroll Down">⬇</button>
@@ -475,9 +493,8 @@ export class GpcDisasm extends LitElement {
         <input id="addr-input" type="text" placeholder="hex addr"
           @keydown="${this._onAddrKeyDown}" />
         <button class="sm" style="color: #f80; font-size: 12px;" @click="${this._onFrameNIA}" title="Frame NIA">◎</button>
-        <span id="disasm-range" class="toolbar-label" slot="status"></span>
+        <span class="toolbar-label" style="margin-left: 8px;">${this._rangeText}</span>
       </sim-toolbar>
-      <div id="content" @wheel="${this._onWheel}"></div>
     `;
   }
 

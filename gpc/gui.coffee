@@ -6,6 +6,7 @@ import 'cde/cde-window'
 import 'cde/toolbar'
 import 'cde/bit-field'
 import 'cde/split-pane'
+import 'cde/dock'
 import 'gpc/gui/gpc-register'
 import 'gpc/gui/gpc-breakpoints'
 import 'gpc/gui/gpc-disasm'
@@ -52,15 +53,80 @@ export class DebugGUI extends GUIHarness
 
     return { fcmPath: null }
 
-  _terminal: () -> document.querySelector('gpc-terminal')
-  _breakpointList: () -> document.querySelector('gpc-breakpoints')
-  _disasm: () -> document.querySelector('gpc-disasm')
-  _instruction: () -> document.querySelector('gpc-instr')
-  _registers: () -> document.querySelector('gpc-regview')
-  _watch: () -> document.querySelector('gpc-watch')
-  _memory: () -> document.querySelector('gpc-memory')
-  _sections: () -> document.querySelector('gpc-sections')
-  _labels: () -> document.querySelector('gpc-labels')
+  # --- Editor lookups via the dock-root (editors live in shadow DOM, so a
+  # plain document.querySelector no longer finds them) ---
+  _dock: () -> @dockRoot
+  _editorsOf: (id) -> @dockRoot?.editorsOf(id) ? []
+  _firstOf: (id) -> @_editorsOf(id)[0]
+
+  _terminal: () -> @_firstOf('terminal')
+  _breakpointLists: () -> @_editorsOf('breakpoints')
+  _disasms: () -> @_editorsOf('disasm')
+  _registersAll: () -> @_editorsOf('registers')
+
+  # The editor registry handed to <dock-root>.  Each entry knows how to
+  # create its custom element; the dock instantiates/destroys them as panes
+  # and tabs are added/removed, and calls back into wireEditor() on mount.
+  _editorRegistry: () ->
+    mk = (tag) -> () -> document.createElement(tag)
+    [
+      { id: 'disasm',      title: 'Disassembly', create: mk('gpc-disasm') }
+      { id: 'memory',      title: 'Memory',      create: mk('gpc-memory') }
+      { id: 'registers',   title: 'Registers',   create: mk('gpc-regview') }
+      { id: 'instr',       title: 'Instruction', create: mk('gpc-instr') }
+      { id: 'watch',       title: 'Watch',       create: mk('gpc-watch') }
+      { id: 'breakpoints', title: 'Breakpoints', create: mk('gpc-breakpoints') }
+      { id: 'sections',    title: 'Sections',    create: mk('gpc-sections') }
+      { id: 'labels',      title: 'Labels',      create: mk('gpc-labels') }
+      { id: 'terminal',    title: 'Terminal', singleton: true, create: mk('gpc-terminal') }
+    ]
+
+  # Default layout used when nothing is persisted.  A binary tree of split
+  # nodes (h = left|right, v = top|bottom; `size` = px of the SECOND child)
+  # and leaf nodes (tabbed panes).
+  _defaultLayout: () ->
+    n = 0
+    leaf = (editorIds...) ->
+      n += 1
+      { type: 'leaf', id: "L#{n}", active: 0,
+        tabs: ({ iid: "DE#{n}_#{i}", editorId: e } for e, i in editorIds) }
+    split = (dir, size, a, b) ->
+      n += 1
+      { type: 'split', id: "S#{n}", dir, size, a, b }
+
+    rightCol = split('h', 230, leaf('registers', 'instr'), leaf('watch', 'breakpoints'))
+    topRow   = split('h', 470, leaf('disasm'), rightCol)
+    bottomRow = split('h', 320, leaf('memory'), leaf('sections', 'labels'))
+    mainArea = split('v', 230, topRow, bottomRow)
+    root = split('v', 150, mainArea, leaf('terminal'))
+    { root, floats: [] }
+
+  # Wire a freshly-created editor element to the live simulator objects.
+  # Called by <dock-root> for every instance (startup restore, add-editor,
+  # float) — never assume a single instance of any editor type.
+  wireEditor: (el) ->
+    return unless el
+    switch el.tagName?.toLowerCase()
+      when 'gpc-disasm'
+        el.cpu = @cpu; el.sym = @sym; el.halUCP = @halUCP; el.breakpoints = @breakpoints
+      when 'gpc-memory'
+        el.cpu = @cpu; el.sym = @sym
+        el.selectedSection = @selectedSection
+        el.watchAddresses = @watchAddresses
+      when 'gpc-sections'
+        el.sym = @sym; el.selectedSection = @selectedSection
+      when 'gpc-labels'
+        el.sym = @sym; el.refresh?()
+      when 'gpc-watch'
+        el.cpu = @cpu; el.sym = @sym
+      when 'gpc-breakpoints'
+        el.cpu = @cpu; el.breakpoints = @breakpoints
+      when 'gpc-instr'
+        el.cpu = @cpu
+      when 'gpc-regview'
+        el.cpu = @cpu
+        el.editable = true
+    el.refresh?()
 
   start: () ->
     console.log("DebugGUI Start")
@@ -108,14 +174,19 @@ export class DebugGUI extends GUIHarness
     # Listen for section selection from <gpc-sections>
     document.addEventListener 'section-selected', (e) =>
       @selectedSection = e.detail.name
-      @_memory()?.selectedSection = @selectedSection
+      mem.selectedSection = @selectedSection for mem in @_editorsOf('memory')
       @updateDisplay()
 
-    # Listen for label selection from <gpc-labels>: jump the disasm view there
+    # Listen for label selection from <gpc-labels>: jump every disasm view there
     document.addEventListener 'label-selected', (e) =>
       addr = e.detail.address
       if addr?
-        @_disasm()?.gotoAddr(addr)
+        d.gotoAddr(addr) for d in @_disasms()
+
+    # A register/PSW/NIA value was edited in a registers pane: re-sync all
+    # panes (e.g. editing NIA should move the disassembly view).
+    document.addEventListener 'register-edited', (e) =>
+      @updateDisplay()
 
     # Listen for watch selection
     document.addEventListener 'watch-selected', (e) =>
@@ -124,57 +195,29 @@ export class DebugGUI extends GUIHarness
       @updateDisplay()
 
     @setupKeyboard()
-    # Poll until React has committed the DOM, then wire components
+    # Poll until React has committed the <dock-root> element, then hand it the
+    # editor registry + layout.  Setting `.host` makes the dock instantiate
+    # every persisted editor and call wireEditor() on each.
     waitForDom = () =>
-      disasmEl = @_disasm()
-      memEl = @_memory()
-      sectEl = @_sections()
-      process.stderr.write "waitForDom: disasm=#{!!disasmEl}, mem=#{!!memEl}, sect=#{!!sectEl}\n"
-      if disasmEl and memEl and sectEl
-        # Wire disasm
-        disasmEl.cpu = @cpu
-        disasmEl.sym = @sym
-        disasmEl.halUCP = @halUCP
-        disasmEl.breakpoints = @breakpoints
-        # Wire memory
-        memEl.cpu = @cpu
-        memEl.sym = @sym
-        memEl.selectedSection = @selectedSection
-        memEl.watchAddresses = @watchAddresses
-        # Wire sections
-        sectEl.sym = @sym
-        sectEl.selectedSection = @selectedSection
-        # Wire labels 
-        labelsEl = @_labels()
-        if labelsEl
-          labelsEl.sym = @sym
-          labelsEl.refresh()
-        # Wire watch
-        watchEl = @_watch()
-        if watchEl
-          watchEl.cpu = @cpu
-          watchEl.sym = @sym
-        # Wire breakpoint list
-        bpListEl = @_breakpointList()
-        if bpListEl
-          bpListEl.cpu = @cpu
-          bpListEl.breakpoints = @breakpoints
-        # Wire instruction decode
-        instrEl = @_instruction()
-        if instrEl
-          instrEl.cpu = @cpu
-        # Wire registers
-        regsEl = @_registers()
-        if regsEl
-          regsEl.cpu = @cpu
-        # Initial display
+      dockEl = document.querySelector('dock-root')
+      if dockEl
+        @dockRoot = dockEl
+        dockEl.host = {
+          editors: @_editorRegistry()
+          onMount: (el) => @wireEditor(el)
+          defaultLayout: () => @_defaultLayout()
+          storageKey: 'gpc-dock-layout'
+        }
+        # Initial display (twice — once now, once after layout settles)
         @updateDisplay()
         setTimeout(() =>
           @updateDisplay()
         , 100)
         window.addEventListener('resize', () => @updateDisplay())
       else
-        requestAnimationFrame(waitForDom)
+        # setTimeout (not requestAnimationFrame): rAF is paused entirely when
+        # the window is occluded/backgrounded, which would stall startup.
+        setTimeout(waitForDom, 16)
     requestAnimationFrame(waitForDom)
 
   setupKeyboard: () ->
@@ -219,13 +262,13 @@ export class DebugGUI extends GUIHarness
           if not e.ctrlKey and not e.altKey and not e.metaKey
             if e.target == document.body
               e.preventDefault()
-              @_disasm()?.frameNIA()
+              d.frameNIA() for d in @_disasms()
 
   reset: () ->
     super()
 
-    # Clear register change tracking
-    @_registers()?.resetTracking()
+    # Clear register change tracking on every registers view
+    r.resetTracking?() for r in @_registersAll()
 
     # Clear terminal UI
     term = @_terminal()
@@ -279,22 +322,16 @@ export class DebugGUI extends GUIHarness
     setTimeout(( -> document.addEventListener('mousedown', closeHandler, true)), 0)
 
   updateDisplay: () ->
-    @_disasm()?.refresh()
-    @_registers()?.refresh()
-    @_instruction()?.refresh()
-    @_watch()?.refresh()
-    @_breakpointList()?.refresh()
-
-    # Memory and sections components
-    mem = @_memory()
-    if mem
-      mem.watchAddresses = @watchAddresses
-      mem.selectedSection = @selectedSection
-      mem.refresh()
-    sect = @_sections()
-    if sect
-      sect.selectedSection = @selectedSection
-      sect.refresh()
+    # Refresh every live editor instance.  Memory/sections need their
+    # selection props refreshed first.
+    for el in (@dockRoot?.allEditors() ? [])
+      switch el.tagName?.toLowerCase()
+        when 'gpc-memory'
+          el.watchAddresses = @watchAddresses
+          el.selectedSection = @selectedSection
+        when 'gpc-sections'
+          el.selectedSection = @selectedSection
+      el.refresh?()
 
     @updateToolbar()
 
@@ -323,7 +360,9 @@ export class DebugGUI extends GUIHarness
 
 
   initWindow: () ->
-    # All registers (int, float, PSW) are rendered via updateRegisterDisplay()
+    # The editor panes are managed entirely by <dock-root> (see start(),
+    # which hands it the editor registry + saved/default layout once React
+    # has committed this tree).
 
     mainStyle = {
       display: 'flex'
@@ -332,19 +371,6 @@ export class DebugGUI extends GUIHarness
       backgroundColor: '#111'
       color: '#ddd'
       fontFamily: "'Consolas for Powerline', 'Consolas', monospace"
-    }
-
-    paneStyle = {
-      overflow: 'auto'
-      padding: '4px 8px'
-    }
-
-    labelStyle = {
-      color: '#888'
-      fontSize: '10px'
-      marginBottom: '2px'
-      borderBottom: '1px solid #333'
-      paddingBottom: '2px'
     }
 
     <cde-window title={"GPC Debugger"}>
@@ -359,34 +385,7 @@ export class DebugGUI extends GUIHarness
           <span id="gpc-nia-display" slot="status">NIA: 000e</span>
           <button slot="status" style={{marginLeft: '20px'}} onClick={() => this.quit()}>Quit</button>
         </sim-toolbar>
-        <split-pane direction="vertical" initial-size={150} min-size={60} save-key="terminal" style={{flex: '1', overflow: 'hidden'}}>
-          <split-pane slot="first" direction="vertical" initial-size={400} min-size={100} save-key="memory">
-            <split-pane slot="first" direction="horizontal" initial-size={380} min-size={100} save-key="registers">
-              <split-pane slot="first" direction="horizontal" initial-size={220} min-size={80} save-key="watch">
-                <gpc-disasm slot="first"></gpc-disasm>
-                <div slot="second" style={paneStyle}>
-                  <div style={labelStyle}>WATCH</div>
-                  <gpc-watch style={{flex: '1'}}></gpc-watch>
-                  <div style={Object.assign({}, labelStyle, {marginTop: '4px'})}>BREAKPOINTS</div>
-                  <gpc-breakpoints style={{maxHeight: '200px'}}></gpc-breakpoints>
-                </div>
-              </split-pane>
-              <div slot="second" style={paneStyle}>
-                <gpc-regview></gpc-regview>
-                <div style={Object.assign({}, labelStyle, {marginTop: '4px'})}>INSTRUCTION</div>
-                <gpc-instr></gpc-instr>
-              </div>
-            </split-pane>
-            <split-pane slot="second" direction="horizontal" initial-size={100} min-size={60} save-key="sections">
-              <gpc-memory slot="first"></gpc-memory>
-              <split-pane slot="second" direction="horizontal" initial-size={120} min-size={60} save-key="labels">
-                <gpc-sections slot="first"></gpc-sections>
-                <gpc-labels slot="second"></gpc-labels>
-              </split-pane>
-            </split-pane>
-          </split-pane>
-          <gpc-terminal slot="second" id="gpc-terminal"></gpc-terminal>
-        </split-pane>
+        <dock-root id="gpc-dock-root" style={{flex: '1', overflow: 'hidden'}}></dock-root>
       </div>
     </cde-window>
 

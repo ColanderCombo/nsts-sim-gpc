@@ -1,4 +1,4 @@
-import {LitElement, html, css} from 'lit';
+import {LitElement, html, css, render} from 'lit';
 import {customElement, property, state} from 'lit/decorators.js';
 import 'cde/toolbar';
 
@@ -12,6 +12,8 @@ export class GpcTerminal extends LitElement {
   private _outputEl: HTMLDivElement | null = null;
   private _inputEl: HTMLInputElement | null = null;
   private _copyFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  // Toolbar is hoisted into the dock tab strip (see getToolbar()).
+  private _toolbarEl: HTMLElement | null = null;
 
   // --- Public API (called by host) ---
 
@@ -102,17 +104,47 @@ export class GpcTerminal extends LitElement {
     this._inputEl = this.shadowRoot!.getElementById('input') as HTMLInputElement;
   }
 
+  // Keep the hoisted toolbar in sync with reactive state (break toggle,
+  // copy-flash) since it no longer lives in this element's render().
+  updated(): void {
+    if (this._toolbarEl) render(this._toolbarTemplate(), this._toolbarEl, { host: this });
+  }
+
   render() {
     return html`
-      <sim-toolbar label="TERMINAL" label-color="#aa0">
+      <div id="output"></div>
+      <input id="input" type="text"
+        placeholder="(waiting for program input...)"
+        disabled
+        @keydown="${this._onKeyDown}" />
+    `;
+  }
+
+  // Toolbar hoisted into the dock tab strip.  Styles that were shadow-scoped
+  // (#break-label, button.icon) are inlined here so they survive the move.
+  getToolbar(): HTMLElement {
+    if (!this._toolbarEl) {
+      this._toolbarEl = document.createElement('div');
+      this._toolbarEl.style.display = 'contents';
+    }
+    render(this._toolbarTemplate(), this._toolbarEl, { host: this });
+    return this._toolbarEl;
+  }
+
+  private _toolbarTemplate() {
+    return html`
+      <sim-toolbar label-color="#aa0">
         <button class="sm" @click="${this._onClear}" title="Clear terminal output">CLR</button>
-        <label id="break-label" slot="status" title="When checked, stop after input instead of auto-resuming run">
-          <input type="checkbox" .checked="${this.breakOnInput}" @change="${this._onBreakToggle}" />
+        <label slot="status" title="When checked, stop after input instead of auto-resuming run"
+          style="font-size:9px; color:#888; cursor:pointer; user-select:none; display:flex; align-items:center; gap:3px;">
+          <input type="checkbox" style="margin:0; cursor:pointer;"
+            .checked="${this.breakOnInput}" @change="${this._onBreakToggle}" />
           <span>BREAK on INPUT</span>
         </label>
         <button
           slot="status"
-          class="sm icon ${this._copyFlash ? 'ok' : ''}"
+          class="sm ${this._copyFlash ? 'ok' : ''}"
+          style="display:inline-flex; align-items:center; justify-content:center; padding:2px 4px; line-height:0; ${this._copyFlash ? 'color:#0f0; border-color:#0a0;' : ''}"
           @click="${this._onCopy}"
           title="${this._copyFlash ? 'Copied!' : 'Copy terminal output to clipboard'}"
           aria-label="Copy terminal output">
@@ -132,11 +164,6 @@ export class GpcTerminal extends LitElement {
                    </svg>`}
         </button>
       </sim-toolbar>
-      <div id="output"></div>
-      <input id="input" type="text"
-        placeholder="(waiting for program input...)"
-        disabled
-        @keydown="${this._onKeyDown}" />
     `;
   }
 

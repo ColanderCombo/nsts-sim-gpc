@@ -25,6 +25,8 @@ export class MCM
     totalHW = @wordCount * 2
     @lastRead = new Uint32Array(totalHW)
     @lastWritten = new Uint32Array(totalHW)
+    # Step number of the last protection-bit change per halfword (0 = never).
+    @protLastWritten = new Uint32Array(totalHW)
     @step = 0
     @trackAccess = true
 
@@ -64,9 +66,36 @@ export class MCM
     @clearAccessTracking()
 
   setStoreProtect: (addr, v) ->
+    # Track the step at which a protection bit actually changes, so views can
+    # highlight recently-modified bits (parallels @lastWritten for data).
+    if @protData[addr] != v and @trackAccess
+      @protLastWritten[addr] = @step
     @protData[addr] = v
 
   getStoreProtect: (addr) -> return @protData[addr]
+
+  # Step number when addr's protection bit last changed (0 = never).
+  getProtLastWritten: (addr) -> return @protLastWritten[addr & 0x7ffff]
+
+  # CSS color for a protection bit, fading from a bright highlight back to the
+  # steady colour (orange when set, dim grey when reset) over `fadeCycles`
+  # steps after the last change.  Mirrors getAccessColor().
+  getProtColor: (addr, isSet, fadeCycles = 4) ->
+    addr = addr & 0x7ffff
+    st = if isSet then [0xff, 0xaa, 0x00] else [0x55, 0x55, 0x55]
+    steady = "##{st[0].toString(16).padStart(2,'0')}#{st[1].toString(16).padStart(2,'0')}#{st[2].toString(16).padStart(2,'0')}"
+    lw = @protLastWritten[addr]
+    return steady if lw == 0
+    age = @step - lw
+    return steady if age >= fadeCycles
+    # 1.0 at age 0 -> 0 at fadeCycles.  Clamp so a non-monotonic step (lw in
+    # the future) can't push channel values past 0xff.
+    fade = Math.max(0, Math.min(1, 1.0 - (age / Math.max(1, fadeCycles))))
+    # Blend from white (the change highlight) toward the steady colour.
+    r = Math.round(0xff*fade + st[0]*(1-fade))
+    g = Math.round(0xff*fade + st[1]*(1-fade))
+    b = Math.round(0xff*fade + st[2]*(1-fade))
+    return "##{r.toString(16).padStart(2,'0')}#{g.toString(16).padStart(2,'0')}#{b.toString(16).padStart(2,'0')}"
 
   setView: (@_view) ->
 
@@ -121,3 +150,4 @@ export class MCM
   clearAccessTracking: () ->
     @lastRead.fill(0)
     @lastWritten.fill(0)
+    @protLastWritten.fill(0)

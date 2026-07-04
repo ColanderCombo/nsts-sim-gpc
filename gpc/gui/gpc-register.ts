@@ -24,7 +24,11 @@ export class GpcRegister extends LitElement {
   @property({ type: String })  declare type: string;
   @property({ type: Boolean }) declare changed: boolean;
   @property({ type: Boolean }) declare dim: boolean;
+  // When true, double-clicking the value opens an inline hex editor; committing
+  // with Enter updates `value` and fires a `register-edit` {value} event.
+  @property({ type: Boolean }) declare editable: boolean;
   @state()                     declare private _displayMode: number; // 0=hex, 1=float
+  @state()                     declare private _editing: boolean;
 
   constructor() {
     super();
@@ -34,7 +38,9 @@ export class GpcRegister extends LitElement {
     this.type = 'int';
     this.changed = false;
     this.dim = false;
+    this.editable = false;
     this._displayMode = 0;
+    this._editing = false;
   }
 
   private _fmtHex(): string {
@@ -57,8 +63,46 @@ export class GpcRegister extends LitElement {
   }
 
   private _onClick(): void {
+    if (this._editing) return;
     if (this.type !== 'float') return;
     this._displayMode = (this._displayMode + 1) % 2;
+  }
+
+  // --- inline editing ---
+
+  private _editInitial(): string {
+    return (this.value >>> 0).toString(16).padStart(Math.ceil(this.bits / 4), '0');
+  }
+
+  private _onValueDblClick(e: Event): void {
+    if (!this.editable) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this._editing = true;
+  }
+
+  private _onEditKey(e: KeyboardEvent): void {
+    // Keep keystrokes from reaching the global debugger shortcuts (s/r/p/f…).
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      const v = parseInt((e.target as HTMLInputElement).value.replace(/[^0-9a-fA-F]/g, ''), 16);
+      if (Number.isFinite(v)) {
+        this.value = v >>> 0;
+        this.dispatchEvent(new CustomEvent('register-edit', {
+          detail: { value: this.value }, bubbles: true, composed: true,
+        }));
+      }
+      this._editing = false;
+    } else if (e.key === 'Escape') {
+      this._editing = false;
+    }
+  }
+
+  updated(): void {
+    if (this._editing) {
+      const inp = this.shadowRoot?.querySelector('input') as HTMLInputElement | null;
+      if (inp && this.shadowRoot!.activeElement !== inp) { inp.focus(); inp.select(); }
+    }
   }
 
   private _getColor(): string {
@@ -72,10 +116,16 @@ export class GpcRegister extends LitElement {
     const isClickable = this.type === 'float';
     return html`
       ${this.name ? html`<span class="label">${this.name}</span>` : ''}
-      <span class="value ${isClickable ? 'clickable' : ''}"
-        style="color: ${this._getColor()}; ${this.type === 'float' && this._displayMode === 1 ? 'min-width: 95px; display: inline-block;' : ''}"
-        title="${title}"
-        @click="${this._onClick}">${text}</span>
+      ${this._editing
+        ? html`<input class="edit" type="text" .value="${this._editInitial()}"
+            spellcheck="false"
+            @keydown="${this._onEditKey}"
+            @blur="${() => { this._editing = false; }}" />`
+        : html`<span class="value ${isClickable ? 'clickable' : ''} ${this.editable ? 'editable' : ''}"
+            style="color: ${this._getColor()}; ${this.type === 'float' && this._displayMode === 1 ? 'min-width: 95px; display: inline-block;' : ''}"
+            title="${this.editable ? 'double-click to edit' : title}"
+            @click="${this._onClick}"
+            @dblclick="${this._onValueDblClick}">${text}</span>`}
     `;
   }
 
@@ -99,6 +149,29 @@ export class GpcRegister extends LitElement {
 
     .clickable {
       cursor: pointer;
+    }
+
+    .editable {
+      cursor: text;
+    }
+
+    .editable:hover {
+      outline: 1px solid #fa0;
+      outline-offset: -1px;
+    }
+
+    .edit {
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      width: 72px;
+      background: #000;
+      color: #ff0;
+      border: 1px solid #fa0;
+      padding: 0 1px;
+      margin: 0;
+      outline: none;
+      box-sizing: border-box;
     }
   `;
 }

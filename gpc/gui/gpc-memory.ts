@@ -1,4 +1,4 @@
-import {LitElement, html, css} from 'lit';
+import {LitElement, html, css, render} from 'lit';
 import {customElement} from 'lit/decorators.js';
 import 'cde/toolbar';
 import 'com/util';
@@ -20,18 +20,29 @@ export class GpcMemory extends LitElement {
   private _selStart: number | null = null;
   private _selEnd: number | null = null;
   private _tooltipEl: HTMLDivElement | null = null;
+  // When true, show main-store protection bits and underline protected words.
+  private _showProt: boolean = false;
 
   private _contentEl: HTMLDivElement | null = null;
   private _resizeObserver: ResizeObserver | null = null;
+  // Toolbar is hoisted into the dock tab strip (see getToolbar()).
+  private _toolbarEl: HTMLElement | null = null;
+  private _rangeText: string = '';
 
   // --- Lit lifecycle ---
 
+  // Re-observe on every (re)connection: the dock recreates panes when the
+  // layout restructures, which disconnects/reconnects this element.
+  connectedCallback(): void {
+    super.connectedCallback();
+    if (!this._resizeObserver) {
+      this._resizeObserver = new ResizeObserver(() => { if (this.cpu) this.refresh(); });
+    }
+    this._resizeObserver.observe(this);
+  }
+
   firstUpdated(): void {
     this._contentEl = this.shadowRoot!.getElementById('content') as HTMLDivElement;
-    this._resizeObserver = new ResizeObserver(() => {
-      if (this.cpu) this.refresh();
-    });
-    this._resizeObserver.observe(this);
   }
 
   disconnectedCallback(): void {
@@ -57,10 +68,9 @@ export class GpcMemory extends LitElement {
     this._wordsPerRow = numChunks * 16;
 
     const hostHeight = this.clientHeight;
-    const toolbar = this.shadowRoot?.getElementById('toolbar');
-    const toolbarHeight = toolbar?.offsetHeight || 30;
+    // Toolbar now lives in the dock tab strip, so the content fills the host.
     const lineHeight = 16;
-    const availHeight = hostHeight - toolbarHeight - 8;
+    const availHeight = hostHeight - 8;
     this._rowCount = Math.max(2, Math.floor(availHeight / lineHeight));
 
     // --- Build row data ---
@@ -161,6 +171,12 @@ export class GpcMemory extends LitElement {
           wordSpan.style.outline = '1px solid #ff0';
           wordSpan.style.outlineOffset = '-1px';
         }
+        // Underline protected halfwords when PROT BITS is on; the underline
+        // colour fades from white when the protection bit was just changed.
+        if (this._showProt && word.prot) {
+          wordSpan.style.textDecoration = 'underline';
+          wordSpan.style.textDecorationColor = this.cpu.mainStorage.getProtColor(word.addr, true);
+        }
         wordSpan.textContent = word.value;
         wordSpan.title = ''; // suppress inherited title from parent
 
@@ -185,15 +201,36 @@ export class GpcMemory extends LitElement {
       }
 
       flushGroup();
+
+      // Protection-bits block, to the right of the data (gap of 4 spaces, then
+      // one 0/1 per halfword, with a double space after every 16 bits).
+      if (this._showProt) {
+        const gap = document.createElement('span');
+        gap.style.whiteSpace = 'pre'; // preserve the 4-space gap (row is nowrap)
+        gap.textContent = '    ';
+        rowDiv.appendChild(gap);
+
+        const protBlock = document.createElement('span');
+        protBlock.style.whiteSpace = 'pre'; // preserve the double-space group gaps
+        for (let k = 0; k < row.words.length; k++) {
+          const bit = document.createElement('span');
+          bit.textContent = row.words[k].prot ? '1' : '0';
+          bit.style.color = this.cpu.mainStorage.getProtColor(row.words[k].addr, row.words[k].prot);
+          protBlock.appendChild(bit);
+          if ((k + 1) % 16 === 0 && k < row.words.length - 1) {
+            protBlock.appendChild(document.createTextNode('  '));
+          }
+        }
+        rowDiv.appendChild(protBlock);
+      }
+
       contentEl.appendChild(rowDiv);
     }
 
-    // Update range display
+    // Update the range display in the hoisted toolbar
     const endAddr = this._viewStart + (this._wordsPerRow * this._rowCount) - 1;
-    const rangeEl = this.shadowRoot?.getElementById('mem-range');
-    if (rangeEl) {
-      rangeEl.textContent = `${this._viewStart.toString(16).padStart(5, '0')}-${endAddr.toString(16).padStart(5, '0')}`;
-    }
+    this._rangeText = `${this._viewStart.toString(16).padStart(5, '0')}-${endAddr.toString(16).padStart(5, '0')}`;
+    if (this._toolbarEl) render(this._toolbarTemplate(), this._toolbarEl, { host: this });
   }
 
   // --- Memory data formatting (ported from ap101.coffee formatMemory) ---
@@ -222,9 +259,10 @@ export class GpcMemory extends LitElement {
             bgColor: bgColor,
             section: section,
             isNIA: isNIA,
+            prot: !!this.cpu.mainStorage.getStoreProtect(wordAddr),
           });
         } else {
-          row.words.push({ addr: wordAddr, value: '    ', color: '#444', bgColor: null, section: null, isNIA: false });
+          row.words.push({ addr: wordAddr, value: '    ', color: '#444', bgColor: null, section: null, isNIA: false, prot: false });
         }
       }
       rows.push(row);
@@ -347,21 +385,42 @@ export class GpcMemory extends LitElement {
     }
   }
 
+  private _toggleProt(): void {
+    this._showProt = !this._showProt;
+    this.refresh(); // re-renders data (underlines + bits block) and the toolbar
+  }
+
   // --- Template ---
 
   render() {
+    return html`<div id="content" @wheel="${this._onWheel}"></div>`;
+  }
+
+  // Toolbar hoisted into the dock tab strip; re-rendered in place on refresh.
+  getToolbar(): HTMLElement {
+    if (!this._toolbarEl) {
+      this._toolbarEl = document.createElement('div');
+      this._toolbarEl.style.display = 'contents';
+    }
+    render(this._toolbarTemplate(), this._toolbarEl, { host: this });
+    return this._toolbarEl;
+  }
+
+  private _toolbarTemplate() {
     return html`
-      <sim-toolbar label="MEMORY">
+      <sim-toolbar>
         <button class="sm" @click="${this._pageUp}" title="Page Up">⬆⬆</button>
         <button class="sm" @click="${this._scrollUp}" title="Scroll Up">⬆</button>
         <button class="sm" @click="${this._scrollDown}" title="Scroll Down">⬇</button>
         <button class="sm" @click="${this._pageDown}" title="Page Down">⬇⬇</button>
         <span class="toolbar-label">Go to:</span>
-        <input type="text" placeholder="hex addr" value="00000"
+        <input type="text" placeholder="hex addr"
           @keydown="${this._onAddrKeyDown}" title="Enter hex address and press Enter" />
-        <span id="mem-range" class="toolbar-label" slot="status"></span>
+        <button class="sm" style="margin-left: 6px; ${this._showProt ? 'background:#3a5; color:#fff; border-color:#5c7;' : ''}"
+          @click="${this._toggleProt}"
+          title="Toggle main-store protection bits">PROT BITS</button>
+        <span class="toolbar-label" style="margin-left: 8px;">${this._rangeText}</span>
       </sim-toolbar>
-      <div id="content" @wheel="${this._onWheel}"></div>
     `;
   }
 

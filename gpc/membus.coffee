@@ -56,6 +56,14 @@ export class MemoryBus
     r = @_route(addr)
     r.mcm.getStoreProtect(r.addr)
 
+  getProtLastWritten: (addr) ->
+    r = @_route(addr)
+    r.mcm.getProtLastWritten(r.addr)
+
+  getProtColor: (addr, isSet, fadeCycles = 4) ->
+    r = @_route(addr)
+    r.mcm.getProtColor(r.addr, isSet, fadeCycles)
+
   setView: (view) -> @cpuMCM.setView(view)
 
   tick: () ->
