@@ -108,6 +108,7 @@ export class BCEInstruction extends PackedBits
         '#LTO':     {
                         f:['#LTO ADDR']
                         d:'10111ddddddddddd'
+                        pr:true  # 'd' is a PC-relative displacement
                         e:(t,v)->
                             addr = t.ls.PC().get32() + v.d + 2*t.curPE
                             v1 = t.g_EAF(addr)
@@ -180,6 +181,7 @@ export class BCEInstruction extends PackedBits
         '#SSC':     {
                         f:['#SSC ADDRESS']
                         d:'0100mddddddddddd'
+                        pr:true
                         e:(t,v)->
                             disp = v.d + 2*v.m*t.curPE
                             t.s_EAF(disp, t.ls.getBST())
@@ -207,6 +209,7 @@ export class BCEInstruction extends PackedBits
         '#SST':     {
                         f:['#SST ADDRESS']
                         d:'0101mddddddddddd'
+                        pr:true
                         e:(t,v)->
                             disp = v.d + 2*v.m*t.curPE
                             t.s_EAF(disp, t.ls.getBST())
@@ -354,6 +357,7 @@ export class BCEInstruction extends PackedBits
         '#WIX':     {
                         f:['#WIX DISP']
                         d:'00100ddddddddddd'
+                        pr:true
                         e:(t,v)->
                             if t.ls.ls(0,0).get32() == 0
                                 table = t.ls.PC().get32() + 1 + v.d
@@ -683,6 +687,7 @@ export class BCEInstruction extends PackedBits
         '#DLY':     {
                         f:['#DLY ADDRESS']
                         d:'11001ddddddddddd'
+                        pr:true
                         e:(t,v)->
                             # Delay from memory: count at addr + 2*BCE# (no-op in simulator)
                             t.incrNIA(1)

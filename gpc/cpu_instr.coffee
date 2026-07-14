@@ -625,6 +625,7 @@ class Instruction extends PackedBits
                     n:'Compare'
                     f:['C R1,D2(B2)','C R1,D2(X2,B2)']
                     d:'00010xxxddddddbb'
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -863,6 +864,7 @@ class Instruction extends PackedBits
                     n:'Divide'
                     f:['D R1,D2(B2)','D R1,D2(X2,B2)']
                     d:'01001xxxddddddbb'
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         hi = t.r(v.x).get32()
                         lo = if v.x % 2 then 0 else t.r(v.x+1).get32()
@@ -1269,6 +1271,7 @@ class Instruction extends PackedBits
                     n:'Multiply'
                     f:['M R1,D2(B2)','M R1,D2(X2,B2)']
                     d:'01000xxxddddddbb'
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         if v.x % 2 == 0
                             {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.g_EAF(v))
@@ -1532,6 +1535,7 @@ class Instruction extends PackedBits
                     n:'Subtract'
                     f:['S R1,D2(B2)','S R1,D2(X2,B2)']
                     d:'00001xxxddddddbb'
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2769,6 +2773,7 @@ class Instruction extends PackedBits
                     n:'Exclusive OR'
                     f:['X R1,D2(B2)','X R1,D2(X2,B2)']
                     d:'01110xxxddddddbb'
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2838,6 +2843,7 @@ class Instruction extends PackedBits
                     n:'OR'
                     f:['O R1,D2(B2)','O R1,D2(X2,B2)']
                     d:'00101xxxddddddbb'
+                    a:ADDR_FULLWORD
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -3563,7 +3569,7 @@ class Instruction extends PackedBits
         #
         # CEDR/CED: long compare.  See CER comment — compE_anomalous
         # reproduces the POO 8.11 false-equality.
-        CEDR:   
+        CEDR:   {
                     n:'Compare (Long Operands)'
                     f:['CEDR R1,R2'],
                     d:'00011xxx11101yyy'
@@ -5412,7 +5418,7 @@ class Instruction extends PackedBits
                     d: '10100xxx11101yyy'
                     e:(t,v) =>
                         return
-        }
+                }
         STXA:   {
                     n: 'Store Extended Address'
                     f:['STXA R1,D2(B2)','STXA R1,D2(X2,B2)']
@@ -5420,7 +5426,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         addrConst = t.g_EAF(v)
                         addr = (addrConst >>> 16) & 0x7fff
-        }
+                }
         #
         # STORE DSE MULTIPLE
         #   (AP-101S sect.9.15)

@@ -8,7 +8,8 @@
 //                        name: <full name>, 
 //                      opType: <DATA|BRCH|SHFT>,
 //                   addrWidth: <HALFWORD|FULLWORD|DBLEWORD>, 
-//		            fp: <SP|DP> 
+//		            fp: <SP|DP>,
+//		         pcrel: true    ('d' is a PC-relative displacement)
 //		   }
 //
 // <descriptor> is a string where each character is a bit:
@@ -52,6 +53,7 @@ function record(op) {
     if (op.t != null) r.opType = OP_TYPE[op.t] ?? op.t;
     if (op.a != null) r.addrWidth = ADDR_WIDTH[op.a] ?? op.a;
     if (op.fp != null) r.fp = op.fp;
+    if (op.pr != null) r.pcrel = !!op.pr;
     return r;
 }
 

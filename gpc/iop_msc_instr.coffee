@@ -136,6 +136,7 @@ export class MSCInstruction
         '@L':   {
                     f:['@L ADDRESS']
                     d:'0100iddddddddddd'
+                    pr:true  # 'd' is a PC-relative displacement
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         v1 = t.g_EAF(ea)
@@ -147,6 +148,7 @@ export class MSCInstruction
         '@A':   {
                     f:['@A ADDRESS']
                     d:'0101iddddddddddd'
+                    pr:true
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         v1 = t.g_EAF(ea)
@@ -159,6 +161,7 @@ export class MSCInstruction
         '@N':   {
                     f:['@N ADDRESS']
                     d:'0110iddddddddddd'
+                    pr:true
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         v1 = t.g_EAF(ea)
@@ -171,6 +174,7 @@ export class MSCInstruction
         '@X':   {
                     f:['@X ADDRESS']
                     d:'0111iddddddddddd'
+                    pr:true
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         v1 = t.g_EAF(ea)
@@ -183,6 +187,7 @@ export class MSCInstruction
         '@ST':  {
                     f:['@ST ADDRESS']
                     d:'1000iddddddddddd'
+                    pr:true
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         v2 = t.ls.getACC()
@@ -239,6 +244,7 @@ export class MSCInstruction
         '@BC':  {
                     f:['@BC CONDITION,ADDRESS']
                     d:'00100cccdddddddd'
+                    pr:true
                     e:(t,v)->
                         doBranch = false
                         v1 = t.ls.getACC()
@@ -261,6 +267,7 @@ export class MSCInstruction
         '@BXC': {
                     f:['@BXC CONDITION,ADDRESS']
                     d:'00101cccdddddddd'
+                    pr:true
                     e:(t,v)->
                         doBranch = false
                         v1 = t.ls.X().get32()
@@ -367,6 +374,7 @@ export class MSCInstruction
         '@REC': {
                     f:['@REC ADDRESS']
                     d:'1010iddddddddddd'
+                    pr:true
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         # ECR value was stored at ea; saved regs follow at ea+2..ea+8
@@ -401,6 +409,7 @@ export class MSCInstruction
         '@TSZ': {
                     f:['@TSZ ADDRESS']
                     d:'1001iddddddddddd'
+                    pr:true
                     e:(t,v)->
                         ea = t.mscEA(v.d, v.i)
                         v2 = t.g_EAF(ea)
