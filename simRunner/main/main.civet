@@ -3,6 +3,10 @@
 * as path from 'path'
 * as fs from 'fs'
 
+// register the main-side IPC handlers for @electron/remote — enable()
+// alone doesn't; renderer require('@electron/remote') needs this
+remote.initialize()
+
 import 'process'
 import 'dgram'
 
@@ -22,9 +26,10 @@ if process.platform == 'linux'
 // CLI dispatch
 //
 // This Electron entry behaves like the standalone `gpc` CLI: it
-// accepts `run`/`debug`/`gui`/`dump`/`disasm` subcommands.  With no
-// args it shows help and exits.  Only `gui` returns to us; the
-// others call process.exit from their own action handlers.
+// accepts `run`/`debug`/`gui`/`dump`/`disasm` subcommands, plus
+// `meds` to launch MEDS display LRUs.  With no args it shows help
+// and exits.  Only `gui` and `meds` return to us; the others call
+// process.exit from their own action handlers.
 // ----------------------------------------------------------------
 import {Command} from 'commander'
 {AGEHarness} from '../../gpc/ageharness.coffee'
@@ -35,6 +40,9 @@ import {Command} from 'commander'
 
 guiRequested .= false
 guiCliOpts   .= null
+
+medsRequested .= false
+medsCliOpts   .= null
 
 addLocalGuiCmd := (program: any) : void =>
   cmd := program.command('gui')
@@ -48,6 +56,26 @@ addLocalGuiCmd := (program: any) : void =>
     })
     guiRequested = true
 
+addLocalMedsCmd := (program: any) : void =>
+  program.command('meds')
+    .description('MEDS glass cockpit — launch MDU display / IDP LRUs')
+    .argument('[lrus...]', 'LRU names from config/meds.json (e.g. crt1 idp1 cdr1); default: the config "start" list')
+    .option('--config <file>', 'alternate LRU config JSON (default: config/meds.json)')
+    .option('--display <name>', 'initial display for launched MDUs (DPS, AE_PFD, HYD_APU, OMS_MPS, SPI, ...)')
+    .option('--menu <name>', 'initial MDU menu (MAIN, FLT_INST, ...)')
+    .option('--dev', 'developer mode: MDUs run standalone (no IDP heartbeat gating, preloaded DPS test formats)')
+    .option('--list', 'list available LRU names and exit')
+    .action (lrus: string[], o: any) : void =>
+      medsCliOpts = {
+        lrus
+        configFile: if o.config then path.resolve(o.config) else null
+        display: o.display
+        menu: o.menu
+        dev: o.dev ?? false
+        list: o.list ?? false
+      }
+      medsRequested = true
+
 dispatchCli := (userArgs: string[]) : void ->
   program := new Command()
     .name('gpc')
@@ -58,6 +86,7 @@ dispatchCli := (userArgs: string[]) : void ->
   addLocalGuiCmd(program)
   addDumpCmd(program)
   addDisasmCmd(program)
+  addLocalMedsCmd(program)
   // `from: 'user'` tells commander the array is user args only — no
   // [node, script] prefix — which makes it robust across dev vs packaged.
   program.parse(userArgs, {from: 'user'})
@@ -67,6 +96,25 @@ webPreferences := {
   nodeIntegration: true
   contextIsolation: false
 }
+
+// IPC used by the <cde-window> chrome in every renderer, GPC GUI and
+// MEDS alike.  Called once by whichever mode starts.
+registerWindowIpc := () : void =>
+  ipcMain.on 'toggle-devtools', (event) =>
+    win := BrowserWindow.fromWebContents(event.sender)
+    if win
+      if win.webContents.isDevToolsOpened()
+        win.webContents.closeDevTools()
+      else
+        win.webContents.openDevTools({mode: 'detach'})
+  ipcMain.on 'window-minimize', (event) =>
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  ipcMain.on 'window-maximize', (event) =>
+    win := BrowserWindow.fromWebContents(event.sender)
+    if win
+      if win.isMaximized() then win.unmaximize() else win.maximize()
+  ipcMain.on 'window-close', (event) =>
+    BrowserWindow.fromWebContents(event.sender)?.close()
 
 createWindow := async () : Promise<void> =>
   win := new BrowserWindow {
@@ -115,23 +163,7 @@ createWindow := async () : Promise<void> =>
 
 startGui := () : void =>
   Menu.setApplicationMenu(null)
-
-  // IPC: window-chrome controls used by <cde-window> / <cde-menubar>
-  ipcMain.on 'toggle-devtools', (event) =>
-    win := BrowserWindow.fromWebContents(event.sender)
-    if win
-      if win.webContents.isDevToolsOpened()
-        win.webContents.closeDevTools()
-      else
-        win.webContents.openDevTools({mode: 'detach'})
-  ipcMain.on 'window-minimize', (event) =>
-    BrowserWindow.fromWebContents(event.sender)?.minimize()
-  ipcMain.on 'window-maximize', (event) =>
-    win := BrowserWindow.fromWebContents(event.sender)
-    if win
-      if win.isMaximized() then win.unmaximize() else win.maximize()
-  ipcMain.on 'window-close', (event) =>
-    BrowserWindow.fromWebContents(event.sender)?.close()
+  registerWindowIpc()
 
   app.on 'ready', () : void =>
     createWindow()
@@ -144,6 +176,206 @@ startGui := () : void =>
   app.on 'activate', () : void =>
     if BrowserWindow.getAllWindows().length == 0
       createWindow()
+
+// ----------------------------------------------------------------
+// MEDS runner — multi-window LRU launcher (`meds` subcommand)
+//
+// Ported from the nsts sim tree's src/main/main.civet SimRunner.
+// Each windowed LRU (an MDU display) gets its own frameless
+// BrowserWindow running the LRU-mode renderer; headless "shared"
+// LRUs (IDPs) are bundled into the first windowed LRU's renderer —
+// they only need a JS context to join the UDP bus mesh, and MUST
+// NOT render into #root or they'd clobber the MDU's React root.
+// ----------------------------------------------------------------
+
+class MedsRunner
+  windows: { [name: string]: BrowserWindow | null } = {}
+  // per-window left-edge growth tracking (see the 'resize' hook in
+  // startLRU): x/right = last seen bounds, inset = accumulated leftward
+  // growth in px, pushed to the renderer as 'cde-left-inset'
+  insetState: { [id: number]: {x: number, right: number, inset: number} } = {}
+  CONFIG: any = {}
+  opts: any
+
+  @(opts: any)
+    @opts = opts
+
+  // Deep merge helper for config objects
+  deepMerge(target: any, source: any): any
+    for key of Object.keys(source)
+      if source[key] and typeof source[key] == 'object' and !Array.isArray(source[key])
+        target[key] ?= {}
+        @deepMerge(target[key], source[key])
+      else
+        target[key] = source[key]
+    return target
+
+  loadConfig(): any
+    configPath := @opts.configFile ?? path.join(__dirname, '../../config/meds.json')
+    c := JSON.parse fs.readFileSync(configPath, 'utf8')
+
+    // Optional override config via NSTS_SIM_CONFIG env var, deep-merged
+    overridePath := process.env.NSTS_SIM_CONFIG
+    if overridePath
+      try
+        overrideFile := if path.isAbsolute(overridePath) then overridePath else path.join(__dirname, '../../', overridePath)
+        @deepMerge(c, JSON.parse(fs.readFileSync(overrideFile, 'utf8')))
+        console.log `[meds] loaded config override from ${overridePath}`
+      catch e
+        console.error `[meds] failed to load config override: ${overridePath}`, e
+
+    c.NSTS_TOP = path.join(__dirname, '../../')
+
+    // dev mode: LRUs run standalone with test feeds (CLI flag, or a
+    // `"dev": true` in the config file)
+    c.dev = @opts.dev or (c.dev ?? false)
+
+    // CLI LRU list replaces the config's start list; names are
+    // case-insensitive (config keys are lowercase)
+    if @opts.lrus?.length > 0
+      c.start = @opts.lrus.map((n: string) => n.toLowerCase())
+
+    available := Object.keys(c.lrus ?? {}).filter((n: string) => n != 'shared')
+    unknown := (c.start ?? []).filter((n: string) => n not in (c.lrus ?? {}))
+    if unknown.length > 0
+      console.error `meds: unknown LRU name(s): ${unknown.join(', ')}`
+      console.error `available: ${available.join(', ')}`
+      process.exit(2)
+
+    // CLI --display/--menu apply to every launched MDU
+    for name of c.start
+      lruConf := c.lrus[name]
+      if lruConf.module == 'meds/mdu'
+        lruConf.init ?= {}
+        lruConf.init.display = @opts.display if @opts.display
+        lruConf.init.menu = @opts.menu if @opts.menu
+
+    return c
+
+  async startLRU(CONFIG: any, lruName: string, thisStart: string[]): Promise<BrowserWindow | null>
+    lruConf := CONFIG.lrus[lruName]
+    return null unless 'window' in lruConf
+    newWindow := new BrowserWindow {
+      webPreferences
+      width: lruConf.window.width+10,
+      height: lruConf.window.height+30,
+      x: lruConf.window.x,
+      y: lruConf.window.y,
+      frame: false,
+      fullscreen: lruConf.window.fullscreen,
+      backgroundColor: lruConf.window.backgroundColor ?? "#101336"
+    }
+    remote.enable newWindow.webContents
+    // Left-edge growth tracking: ANY resize that moves x while keeping
+    // the right edge fixed — the macOS native frameless edge drag OR the
+    // cde-window grab strip's 'resize-left' setBounds — accumulates
+    // 'inset' (extra work space opened on the left) and pushes the total
+    // to the renderer, which shifts the canvas right so the on-screen
+    // content stays put. Main-process bounds are the single source of
+    // truth, so this works even when the OS swallows the edge's DOM
+    // pointer events.
+    b0 := newWindow.getBounds()
+    st := {x: b0.x, right: b0.x + b0.width, inset: 0}
+    @insetState[newWindow.id] = st
+    newWindow.on 'resize', =>
+      b := newWindow.getBounds()
+      if b.x != st.x and Math.abs((b.x + b.width) - st.right) <= 2
+        st.inset = Math.max(0, st.inset + (st.x - b.x))
+        newWindow.webContents.send 'cde-left-inset', st.inset
+      st.x = b.x
+      st.right = b.x + b.width
+    newWindow.webContents.on 'before-input-event', (event, input) =>
+      // Ctrl+Shift+D toggles DevTools as a detached window
+      if input.control and input.shift and input.key.toLowerCase() == 'd'
+        event.preventDefault()
+        if newWindow.webContents.isDevToolsOpened()
+          newWindow.webContents.closeDevTools()
+        else
+          newWindow.webContents.openDevTools({ mode: 'detach' })
+      // Ctrl+R reloads the window
+      if input.control and not input.shift and input.key.toLowerCase() == 'r'
+        event.preventDefault()
+        newWindow.webContents.reload()
+      // Ctrl+Q quits the application
+      if input.control and input.key.toLowerCase() == 'q'
+        event.preventDefault()
+        app.quit()
+    // per-window config copy: each renderer gets its own thisStart
+    winConfig := Object.assign({}, CONFIG, {thisStart})
+    newWindow.webContents.on 'did-finish-load', () =>
+      newWindow.webContents.send 'set-config', winConfig
+      // dev/test hook: NSTS_EXEC runs in each LRU window once the LRUs are
+      // up (2s after load) — e.g. driving a screen's test modes headlessly:
+      //   NSTS_EXEC="window.lrus.cdr1.screens.AE_PFD.enterTapeTest()" MEDS.sh --dev cdr1
+      if process.env.NSTS_EXEC
+        execJS := () =>
+          newWindow.webContents.executeJavaScript(process.env.NSTS_EXEC)
+            .catch (e) => console.error "[meds] NSTS_EXEC failed:", e
+        setTimeout(execJS, 2000)
+    rendererIndex := path.join(__dirname, '../renderer/index.html')
+    if fs.existsSync rendererIndex
+      await newWindow.webContents.loadFile rendererIndex
+    else
+      await newWindow.webContents.loadURL 'http://localhost:9080'
+    return newWindow
+
+  async createWindows(): Promise<void>
+    // Left-border drag-resize from the cde-window chrome: move x and grow
+    // width together, so on-screen content stays put while empty work space
+    // opens on the left (e.g. to reach overlay corner handles)
+    ipcMain.on 'resize-left', (event, dx) =>
+      win := BrowserWindow.fromWebContents(event.sender)
+      if win
+        b := win.getBounds()
+        d .= Math.round(dx)
+        // never shrink narrower than the original geometry (inset >= 0)
+        st := @insetState[win.id]
+        if st? and d > st.inset
+          d = st.inset
+        if d != 0
+          win.setBounds({x: b.x + d, y: b.y, width: b.width - d, height: b.height})
+
+    // Collect shared (headless) LRUs from the start list
+    sharedLRUs .= @CONFIG.start.filter((x: string): boolean => @CONFIG.lrus[x]?.shared)
+    windowed := @CONFIG.start.filter((x: string): boolean => not @CONFIG.lrus[x]?.shared)
+    // A start list of only headless LRUs (e.g. `meds idp1`) still needs
+    // one host window for the renderer context
+    startSharedWindow .= @CONFIG.startSharedWindow or (windowed.length == 0 and sharedLRUs.length > 0)
+    if startSharedWindow
+      await @startLRU(@CONFIG, 'shared', sharedLRUs)
+      sharedLRUs = []
+    for startName of windowed
+      // Bundle shared LRUs into the first windowed LRU's renderer
+      thisStart .= [startName]
+      if sharedLRUs.length > 0
+        thisStart = thisStart.concat(sharedLRUs)
+        sharedLRUs = []
+      @windows[startName] = await @startLRU(@CONFIG, startName, thisStart)
+
+  start(): void
+    @CONFIG = @loadConfig()
+
+    if @opts.list
+      names := Object.keys(@CONFIG.lrus).filter((n: string) => n != 'shared')
+      for name of names
+        lruConf := @CONFIG.lrus[name]
+        kind := if lruConf.shared then 'headless' else `window ${lruConf.window?.width}x${lruConf.window?.height}`
+        console.log `${name.padEnd(8)} ${(lruConf.config?.lru ?? '').padEnd(6)} ${lruConf.module}  (${kind})`
+      process.exit(0)
+
+    Menu.setApplicationMenu(null)
+    registerWindowIpc()
+    app.on 'ready', () : void =>
+      @createWindows()
+    app.on 'window-all-closed', (): void =>
+      app.quit()
+    app.on 'before-quit', (): void =>
+      // Force kill all renderer processes so lingering UDP sockets don't keep them alive
+      for w of BrowserWindow.getAllWindows()
+        w.destroy()
+    app.on 'activate', (): void =>
+      if BrowserWindow.getAllWindows().length == 0
+        @createWindows()
 
 
 //
@@ -162,6 +394,12 @@ main := () : void ->
   // would otherwise reject them as unknown options.
   electronFlags := new Set(['--no-sandbox', '--disable-gpu-sandbox', '--disable-setuid-sandbox'])
   userArgs .= process.argv.slice(userArgStart).filter((a) => not electronFlags.has(a))
+  // The packaged MEDS product shares this main bundle with GPC; its
+  // executable is named `meds`, so `meds crt1` should behave like
+  // `gpc meds crt1`.
+  execName := path.basename(process.execPath).toLowerCase().replace(/\.exe$/, '')
+  if execName == 'meds' and userArgs[0] != 'meds'
+    userArgs.unshift('meds')
   // The outer `gpc gui` wrapper (gpc/cmd_gui.coffee) spawns us with a
   // pre-resolved `--cli-opts=<base64-json>` blob so absolute paths survive
   // the exec.  Short-circuit the commander dispatch in that case — the
@@ -181,5 +419,8 @@ main := () : void ->
     dispatchCli(userArgs)
   if guiRequested
     startGui()
+  else if medsRequested
+    runner := new MedsRunner(medsCliOpts)
+    runner.start()
 
 main()

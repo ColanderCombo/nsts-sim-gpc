@@ -120,7 +120,9 @@ class Bus
       @server.setMulticastLoopback(true)
       @server.setMulticastTTL(128)
       @server.addMembership("239.255.1.1")
-      @server.on('message', @_recvMessage)
+      // bind: dgram invokes the handler with `this` = socket, which
+      // silently orphans recvCB/busID and drops every message
+      @server.on('message', (message, remote) => @_recvMessage(message, remote))
     // Don't let this socket prevent process exit
     @server.unref()
 

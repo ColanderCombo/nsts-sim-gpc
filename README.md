@@ -12,6 +12,13 @@ interactive debugger, an Electron GUI debugger, and a static
 disassembler/dumper. All four read the same `.fcm` ('flight computer
 memory') files.
 
+The repository also contains a simulator for MEDS, the Multifunction
+Electronic Display System ("glass cockpit") that replaced the original
+CRT/DEU displays.  A `meds` command launches MDU display units and
+IDPs (Interface/Display Processors) in their own windows; they talk to
+each other — and to running GPCs — over the same simulated UDP-multicast
+flight-critical busses.  See the MEDS section below.
+
 While this tree includes a simple assembler and (very) simple linker,
 the [nsts-sdl-dps](https://github.com/ColanderCombo/nsts-sdl-dps) repository provides wrappers to create a AP-101 toolchain
 and a cmake based build system that is the preferred way to use the gpc-sim.
@@ -169,6 +176,68 @@ Options:
   --symbols <file>  load symbol table JSON from linker
 ```
 
+MEDS — Glass Cockpit Displays
+-----------------------------
+
+`MEDS.sh` builds the bundles if needed and launches MEDS LRUs by name.
+LRU definitions (which MDU position, which IDP, window geometry, initial
+display) live in `config/meds.json`.
+
+```
+MEDS.sh --list                 # list available LRU names
+MEDS.sh crt1 idp1              # a center CRT MDU fed by IDP1
+MEDS.sh cdr1 plt1 idp1 idp2    # commander + pilot MDUs
+MEDS.sh --display AE_PFD crt2  # override the initial display
+MEDS.sh --dev crt1             # developer mode (standalone MDU)
+```
+
+By default LRUs behave like the real system: an MDU that loses its
+IDP's heartbeat drops to the "MDU IS AUTONOMOUS" display and the
+DISCONNECTED port menu, and the DPS display stays blank (POLL FAIL)
+until an IDP delivers format data over the bus.  `--dev` disables the
+heartbeat gating and preloads DPS test formats so a single MDU can be
+worked on standalone.
+
+MDU positions match the orbiter cockpit: `crt1`–`crt4` (center),
+`cdr1`/`cdr2` (commander), `plt1`/`plt2` (pilot), `mfd1`/`mfd2`,
+and `afd1` (aft flight deck).  IDPs (`idp1`–`idp4`) are headless — they
+join the bus mesh from a host window's renderer process.
+
+Each MDU is a 720x720 vector display rendered with Three.js: the
+edgekey menu system, DPS display (DEU-compatible, driven by display
+format bursts from an IDP), the AE PFD with its 3D ADI ball and
+scrolling AMI/AVVI tapes, and various subsystem status displays
+(HYD/APU, OMS/MPS, SPI, ...).
+
+Debug tools: Ctrl+Shift+D opens DevTools (`window.lrus.<name>` reaches
+each LRU); double-clicking outside the display canvas opens a live
+parameter editor with per-screen test controls (tape sweeps, ADI test
+patterns, DEU self-test).
+
+`npm run dist:meds` packages a standalone MEDS app (AppImage / dmg)
+via `electron-builder-meds.yml`; the packaged executable is named
+`meds`, so `meds crt1 idp1` works directly.
+
+### gpcmd — simulated GPC command traffic
+
+`GPCMD.sh` sends GPC→IDP commands (DEU protocol) onto the simulated
+Display/Keyboard busses (IDP1→DK1 … IDP4→DK4), standing in for a GPC
+until the AP-101 IOP/BCE integration takes over:
+
+```
+GPCMD.sh fill data/TEST-9011-GPC_MEMORY.dfb   # DATA FILL: display a format
+GPCMD.sh time --interval 1                    # TIME FILL: live DPS clock
+GPCMD.sh time --met 2/03:45:00 --interval 1   # ... starting at a given MET
+GPCMD.sh resetspl                             # RESET SPL: clear scratch pad
+GPCMD.sh raw 5 0001 00ff                      # arbitrary opcode + payload
+GPCMD.sh watch DK1                            # print traffic on a bus
+```
+
+A DATA FILL clears the DPS display's POLL FAIL state; TIME FILL takes
+over the MET/CRT header from the IDP's local test clock (which resumes
+a couple of seconds after GPC time stops).  The sim wire format is
+documented in `meds/gpcmd.coffee` and `meds/idp.coffee` (`recvDK`).
+
 Repository Contents
 -------------------
 
@@ -176,7 +245,11 @@ The gpc simulator was originally part of a larger system that also simulates oth
 
   - `simRunner/` contains the Electron main & renderer process implementation (now in [civet](https://civet.dev/), a TypeScript dialect).  `gpc gui` serializes its parsed CLI options to a base64 blob passed via `--cli-opts=…` to Electron, which `simRunner/main/main.civet` decodes on startup.  We use Electron only for the GUI debugger; the batch, REPL, dump, and disasm subcommands run as a plain node bundle (`dist/gpc.js`).
 
-  - `com/` contains common utilities, including a simple 'Bus' that lets LRUs communicate via multicast UDP packets.  In the gpc it's used to emulate the physical Shuttle busses connected to the IOP.
+  - `com/` contains common utilities, including a simple 'Bus' that lets LRUs communicate via multicast UDP packets.  In the gpc it's used to emulate the physical Shuttle busses connected to the IOP; MEDS uses the same busses for IDP↔MDU and (eventually) GPC↔IDP traffic.
+
+  - `meds/` contains the MEDS simulator: `mdu.coffee` (display unit), `idp.coffee` (Interface/Display Processor), `mduScreen_*.coffee` (the individual displays), `mduVectorDisplay.coffee` (Three.js vector renderer + reference-overlay tooling), and `medsConf.coffee` (the orbiter's MDU/IDP/bus wiring).  `dfbDump.coffee` and `dpsDispToFcb.coffee` are node-side tools for the DFB display-format binaries in `data/`.
+
+  - `config/meds.json` defines the launchable MEDS LRUs; `data/` holds the DEU/MEDS vector fonts and sample DFB files.
 
   - `cde/` contains definitions of [Lit gui elements](https://lit.dev/), including the toplevel `<cde-window>` that styles the window to the CDE look and feel.  There's no
   compelling reason to have this, other than CDE shows up quite a bit in Shuttle documentation from the 1990's and 2000's--and I think it looks neat.

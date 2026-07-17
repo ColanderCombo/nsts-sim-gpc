@@ -1,0 +1,138 @@
+
+import {Bus, BusMsg, busConfig} from './../com/bus.civet.jsx'
+
+$ = require('jquery')
+
+export class KYBD
+  @DEUKey: {
+    keys : {
+      ACK:        { sw: 1, ascii: 'ACK', gpcCode: 0x1c, deuCode: 0xfff9 }
+      MSG_RESET:  { sw: 2, ascii: 'MSG RESET', gpcCode: 0x1d, deuCode: 0xfff1 }
+      SYS_SUMM:   { sw: 3, ascii: 'SYS SUMM', gpcCode: 0x10, deuCode: 0xffe9 } 
+      FAULT_SUMM: { sw: 4, ascii: 'FAULT SUMM', gpcCode: 0x13, deuCode: 0xffe1 } 
+      C:          { sw: 5, ascii: 'C', gpcCode: 0x0c, deuCode: 0xffd9 }
+      B:          { sw: 6, ascii: 'B', gpcCode: 0x0b, deuCode: 0xffd1 }
+      A:          { sw: 7, ascii: 'A', gpcCode: 0x0a, deuCode: 0xffc9 }
+      GPC_CRT:    { sw: 8, ascii: 'GPC/CRT', gpcCode: 0x19, deuCode: 0xffc1 }
+
+      F:          { sw: 9, ascii: 'F', gpcCode: 0x0f, deuCode: 0xfffa }
+      E:          { sw:10, ascii: 'E', gpcCode: 0x0e, deuCode: 0xffba }
+      D:          { sw:11, ascii: 'D', gpcCode: 0x0d, deuCode: 0xff7a } 
+      IO_RESET:   { sw:12, ascii: 'I/O RESET', gpcCode: 0x18, deuCode: 0xff3a } 
+      3:          { sw:13, ascii: '3', gpcCode: 0x03, deuCode: 0xfefa }
+      2:          { sw:14, ascii: '2', gpcCode: 0x02, deuCode: 0xfefb }
+      1:          { sw:15, ascii: '1', gpcCode: 0x01, deuCode: 0xfe7a }
+      ITEM:       { sw:16, ascii: 'ITEM', gpcCode: 0x14, deuCode: 0xfe3a }
+
+      6:          { sw:17, ascii: '6', gpcCode: 0x06, deuCode: 0xfffb }
+      5:          { sw:18, ascii: '5', gpcCode: 0x05, deuCode: 0xfdfb }
+      4:          { sw:19, ascii: '4', gpcCode: 0x04, deuCode: 0xfbfb } 
+      EXEC:       { sw:20, ascii: 'EXEC', gpcCode: 0x1e, deuCode: 0xf9fb } 
+      9:          { sw:21, ascii: '9', gpcCode: 0x09, deuCode: 0xf7fb }
+      8:          { sw:22, ascii: '8', gpcCode: 0x08, deuCode: 0xf5fb }
+      7:          { sw:23, ascii: '7', gpcCode: 0x07, deuCode: 0xf3fb }
+      OPS:        { sw:24, ascii: 'OPS ', gpcCode: 0x11, deuCode: 0xf1fb }
+
+      PLUS:       { sw:25, ascii: '+', gpcCode: 0x16, deuCode: 0xfffc }
+      0:          { sw:26, ascii: '0', gpcCode: 0x00, deuCode: 0xeffc }
+      MINUS:      { sw:27, ascii: '-', gpcCode: 0x15, deuCode: 0xdffc } 
+      SPEC:       { sw:28, ascii: 'SPEC', gpcCode: 0x12, deuCode: 0xcffc } 
+      PRO:        { sw:29, ascii: 'PRO', gpcCode: 0x1f, deuCode: 0xbffc }
+      DECIMAL:    { sw:30, ascii: '.', gpcCode: 0x17, deuCode: 0xaffc }
+      CLEAR:      { sw:31, ascii: 'CLEAR', gpcCode: 0x1a, deuCode: 0x9ffc }
+      RESUME:     { sw:32, ascii: 'RESUME', gpcCode: 0x1b, deuCode: 0x8ffc }
+    }
+  }
+
+  @DPSKeys: {
+    27: @DEUKey.keys.MSG_RESET
+    8: @DEUKey.keys.CLEAR
+    48: @DEUKey.keys[0]
+    49: @DEUKey.keys[1]
+    50: @DEUKey.keys[2]
+    51: @DEUKey.keys[3]
+    52: @DEUKey.keys[4]
+    53: @DEUKey.keys[5]
+    54: @DEUKey.keys[6]
+    55: @DEUKey.keys[7]
+    56: @DEUKey.keys[8]
+    57: @DEUKey.keys[9]
+    65: @DEUKey.keys.A
+    66: @DEUKey.keys.B
+    67: @DEUKey.keys.C
+    68: @DEUKey.keys.D
+    69: @DEUKey.keys.E
+    70: @DEUKey.keys.F
+    105: @DEUKey.keys.IO_RESET # 'i'
+    # 105: @DEUKey.keys.IO_RESET # 'i'
+    # 118: @DEUKey.keys.OPS
+    111: @DEUKey.keys.OPS
+    # 83: @DEUKey.keys.SPEC
+    83: @DEUKey.keys.SPEC
+    73: @DEUKey.keys.ITEM
+    # 121: @DEUKey.keys.EXEC
+    13: @DEUKey.keys.EXEC
+    80: @DEUKey.keys.PRO
+    82: @DEUKey.keys.RESUME
+    187: @DEUKey.keys.PLUS
+    189: @DEUKey.keys.MINUS
+    190: @DEUKey.keys.DECIMAL
+    75: @DEUKey.keys.ACK
+  }
+
+  constructor: (@kybdBus, @mdu=null) ->
+    @_setupBus()
+    $(document).keydown (ev) =>
+      console.log(ev)
+      if ev.key == 'S' # 's'
+        console.log("Handle 's'")
+        @mdu.screenshot()
+      # (PFD test feeds moved to the debug parameter editor: dbl-click
+      # outside the canvas -> 'ADI test' pulldown / 'Hdot tape test' toggle)
+      # Debug: F12 / F11 cycle the DPS background through every data/*.dfb
+      if (ev.key == 'F12' or ev.key == 'F11') and not ev.ctrlKey and @mdu?
+        ev.preventDefault()
+        @mdu.setCurrentDisplay('DPS')
+        @mdu.screens['DPS']?.cycleBGDFB(if ev.key == 'F12' then 1 else -1)
+        @mdu.redraw()
+        return
+      # Debug: reference-screenshot overlays (Shift = cycle opacity). Images
+      # live in data/overlay_images/ and are selectable from the param
+      # editor's 'reference overlay' group, which every screen carries.
+      # F8 = the CURRENT screen's overlay (per-screen key via mdu.ovIdent;
+      # AE_PFD/DPS keep their legacy keys), F7 = the DPS overlay always
+      # (legacy shortcut).
+      if ev.key == 'F8' and @mdu?
+        ev.preventDefault()
+        {key, dflt} = @mdu.ovIdent()
+        if ev.shiftKey then @mdu.disp.cycleOverlayOpacity(key) else @mdu.disp.toggleOverlay(dflt, key)
+        return
+      if ev.key == 'F7' and @mdu?
+        ev.preventDefault()
+        if ev.shiftKey then @mdu.disp.cycleOverlayOpacity('dpsOverlayGeom') else @mdu.disp.toggleOverlay('dpsscreen.png','dpsOverlayGeom')
+        return
+      # Debug: F9 toggles the animated DEU self-test mode
+      if ev.key == 'F9' and @mdu?
+        ev.preventDefault()
+        @mdu.setCurrentDisplay('DPS')
+        @mdu.screens['DPS']?.toggleSelfTest()
+        @mdu.redraw()
+        return
+      if ev.keyCode of KYBD.DPSKeys
+        @keyPress(KYBD.DPSKeys[ev.keyCode])
+
+  _setupBus: () ->
+    @busName = "_KYBD#{@kybdBus}" 
+    @bus = new Bus(@busName, busConfig[@busName])
+    @bus.onReceive @recvKYBD
+
+  recvKYBD: (busID, msg, remote) =>
+    console.log "KYBD#{@kybdBus}: #{busID} recv #{msg}"
+
+  keyPress: (k) => 
+    console.log "KYBD keyPress", k
+    kybdMsg = new BusMsg(1)
+    kybdMsg.data16[0] = k.deuCode
+    @bus.sendMsg kybdMsg
+    if @mdu
+      @mdu.screens['DPS'].recvKey(k)

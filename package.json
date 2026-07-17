@@ -13,7 +13,11 @@
     "dist:prep": "electron-esbuild build && node esbuild/esbuild.gpc.config.js",
     "dist:pkg": "npm run dist:prep && electron-builder",
     "dist:linux": "npm run dist:prep && electron-builder --linux",
-    "dist:mac": "npm run dist:prep && electron-builder --mac"
+    "dist:mac": "npm run dist:prep && electron-builder --mac",
+    "meds": "electron dist/main/main.js meds",
+    "dist:meds": "npm run dist:prep && electron-builder --config electron-builder-meds.yml",
+    "gpcmd:build": "node esbuild/esbuild.gpcmd.config.js",
+    "gpcmd": "node dist/gpcmd.js"
   },
   "build": {
     "appId": "com.nsts.gpc",
@@ -24,6 +28,8 @@
     },
     "files": [
       "dist/**/*",
+      "config/meds.json",
+      "data/**/*",
       "package.json",
       "!**/*.map"
     ],
@@ -32,17 +38,24 @@
     },
     "asar": true,
     "linux": {
-      "target": [ "AppImage" ],
+      "target": [
+        "AppImage"
+      ],
       "category": "Development",
       "executableName": "gpc",
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
-      "executableArgs": [ "--no-sandbox" ]
+      "executableArgs": [
+        "--no-sandbox"
+      ]
     },
     "appImage": {
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     },
     "mac": {
-      "target": [ "dmg", "zip" ],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.developer-tools",
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     }
@@ -63,9 +76,15 @@
     "@danielx/civet": "0.6.93",
     "@electron/remote": "2.1.2",
     "commander": "14.0.3",
+    "earcut": "^2.2.4",
+    "jquery": "^3.7.1",
     "lit": "^3.3.2",
     "long": "5.3.2",
+    "machina": "^4.0.2",
+    "path-data-polyfill": "^1.0.4",
     "react": "18.2.0",
-    "react-dom": "18.2.0"
+    "react-dom": "18.2.0",
+    "svg-segmentize": "^0.1.6",
+    "three": "^0.150.1"
   }
 }

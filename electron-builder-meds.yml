@@ -1,0 +1,35 @@
+# electron-builder config for the MEDS product.
+#
+# Shares dist/ with the GPC product (same main bundle — the packaged
+# executable is named `meds`, and main.civet auto-prepends the `meds`
+# subcommand when it sees that basename, so `meds crt1 idp1` works).
+appId: com.nsts.meds
+productName: MEDS
+directories:
+  output: release-meds
+  buildResources: build-resources
+files:
+  - dist/**/*
+  - config/meds.json
+  - data/**/*
+  - package.json
+  - "!**/*.map"
+extraMetadata:
+  main: dist/main/main.js
+asar: true
+linux:
+  target:
+    - AppImage
+  category: Development
+  executableName: meds
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+  executableArgs:
+    - "--no-sandbox"
+appImage:
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.developer-tools
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"

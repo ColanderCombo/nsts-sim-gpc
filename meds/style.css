@@ -1,0 +1,31 @@
+html {
+    -webkit-app-region:drag;
+    /* width:6.71in;
+    height:6.71in; */
+    overflow:hidden;
+    margin: 0px;
+    padding: 0px;
+}
+
+body {
+    margin: 0px;
+    /* width:6.71in; */
+    /* height:6.71in; */
+}
+
+.invisible {
+    visibility:hidden;width:0;height:0
+}
+
+#screen {
+    margin:0px;
+    /* width:6.71in; */
+    /* height:6.71in; */
+    z-index:-10;
+
+/*    width: 1152px;
+    height: 1152px;
+*/
+ /*   width: 6.71in;
+    height: 6.71in;*/
+}

@@ -1,14 +1,57 @@
 "civet coffeeCompat"
 
 import * as gpc from './../../gpc/gui.coffee'
+import * as mdu from './../../meds/mdu.coffee'
+import * as idp from './../../meds/idp.coffee'
 
 ipcRenderer := window.ipcRenderer
 reactClient := require 'react-dom/client';
 
+// main-process left-edge resize tracking -> DOM event; content owners
+// (the MDU canvas + debug overlays) shift right by the inset so the
+// on-screen content stays put while work space opens on the left
+ipcRenderer.on "cde-left-inset", (e, inset) =>
+  window.dispatchEvent(new CustomEvent('cde-left-inset', {detail: inset}))
+
+// LRU-mode renderer: one window per windowed LRU (MDU display), with
+// headless "shared" LRUs (IDPs) bundled in for bus comms only
+startLRUs := async (CONFIG) =>
+  lruMap := {
+    'meds/mdu': mdu
+    'meds/idp': idp
+  }
+  // NB: this file is coffeeCompat — `for x in arr` iterates values
+  for lruName in CONFIG.thisStart
+    lruConf := CONFIG.lrus[lruName]
+    lruConf.NSTS_TOP = CONFIG.NSTS_TOP
+    lruConf.dev = CONFIG.dev
+    mod := lruMap[lruConf.module]
+    if not mod?
+      console.error "startup: no renderer module for #{lruConf.module} (LRU #{lruName})"
+      continue
+    lru := mod.default.start(lruConf)
+    // Shared (headless) LRUs are bundled into a windowed LRU's renderer for
+    // bus comms only -- they must NOT render initWindow() into #root, or they
+    // clobber the windowed LRU's React root (e.g. IDP blanking the MDU).
+    if lru.initWindow? and not lruConf.shared
+      container := document.getElementById("root")
+      await reactClient.createRoot(container!).render(await lru.initWindow())
+    // console access: window.lru is the last LRU started in this window
+    // (may be a bundled shared LRU, e.g. the IDP); window.lrus[name] is
+    // keyed by config name (crt1, idp1, ...) so debug pokes can find the MDU
+    window.lru = lru
+    window.lrus ?= {}
+    window.lrus[lruName] = lru
+    lru.start()
+
 ipcRenderer.on "set-config", async (e, CONFIG) =>
-  debugGui := gpc.default.start(CONFIG)
-  if debugGui.initWindow?
-    container := document.getElementById("root")
-    await reactClient.createRoot(container!).render(await debugGui.initWindow())
-  window.lru = debugGui
-  debugGui.start()
+  if CONFIG.thisStart?
+    await startLRUs(CONFIG)
+  else
+    // GPC debugger GUI
+    debugGui := gpc.default.start(CONFIG)
+    if debugGui.initWindow?
+      container := document.getElementById("root")
+      await reactClient.createRoot(container!).render(await debugGui.initWindow())
+    window.lru = debugGui
+    debugGui.start()
