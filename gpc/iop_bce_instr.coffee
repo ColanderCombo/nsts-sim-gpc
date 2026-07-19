@@ -600,10 +600,10 @@ export class BCEInstruction extends PackedBits
                     }
         '#RDL':     {
                         f:['#RDL ADDRESS']
-                        d:'11111011000000cccccccccccccccccc'
+                        d:'11111011000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
                             # Receive data long: count from memory at addr + 2*BCE#
-                            addr = v.c + 2 * t.curPE
+                            addr = v.a + 2 * t.curPE
                             count = (t.g_EAH(addr) & 0xffff) + 1
                             base = t.ls.BASE().get32()
                             bce = t.curBCE()
