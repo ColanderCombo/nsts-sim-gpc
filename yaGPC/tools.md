@@ -22,7 +22,7 @@ single-file standalone program.
 
 Binaries (`HALSFC`, `lnk101`) live under:
 
-    ../../virtualagc/yaShuttle/Source Code/PASS.REL32V0/
+    /home/rburkey/git/virtualagc/yaShuttle/Source Code/PASS.REL32V0/
 
 and must be on `PATH` for the scripts below to find them.
 
@@ -142,7 +142,7 @@ Common invocation flags (as used by `compileLinkRun`, see below):
 
 ## `compileLinkRun` — one-shot compile/link/run
 
-    ../../virtualagc/yaShuttle/Source Code/PASS.REL32V0/compileLinkRun
+    /home/rburkey/git/virtualagc/yaShuttle/Source Code/PASS.REL32V0/compileLinkRun
 
 A Python script that chains `HALSFC` -> `lnk101` -> `gpc run` (or
 `yaGPC`) for a single standalone HAL/S file, cleaning up intermediate
@@ -179,7 +179,7 @@ cycle with meaningful overhead.
 
 ## `yaHALMAT2`'s test suite
 
-Location (relative to here): `../../virtualagc/yaShuttle/yaHALMAT2/src/tests/`
+Location (relative to here): `/home/rburkey/git/virtualagc/yaShuttle/yaHALMAT2/src/tests/`
 
 - `run_all.sh` — the full permanent regression suite (currently ~169
   `test_*.hal` fixtures under `src/tests/hal/`). Intended to be run
@@ -200,14 +200,14 @@ Location (relative to here): `../../virtualagc/yaShuttle/yaHALMAT2/src/tests/`
   regression case, generally named/commented after the real-world
   sample program or bug report that motivated them.
 
-Build the emulator itself from `../../virtualagc/yaShuttle/yaHALMAT2/src/`:
+Build the emulator itself from `/home/rburkey/git/virtualagc/yaShuttle/yaHALMAT2/src/`:
 `cd` into that directory and run `make clean all`. The test shell
 scripts are Linux-only (untested on Windows).
 
 ## Documentation sources (yaHALMAT2's reengineered documentation)
 
 Location (relative to here):
-`../../virtualagc/yaShuttle/yaHALMAT2/reengineered-documentation/`
+`/home/rburkey/git/virtualagc/yaShuttle/yaHALMAT2/reengineered-documentation/`
 
 - `HALMAT.md` — top-level HALMAT intermediate-language documentation
   (word format, block structure, qualifier tables).
@@ -224,7 +224,7 @@ Location (relative to here):
 
 Primary/secondary sources referenced throughout (full text extracted
 to `.txt` for cheap `grep`/`pdftotext` lookups where noted), under
-`../../virtualagc/yaShuttle/yaHALMAT2/source-documentation/`:
+`/home/rburkey/git/virtualagc/yaShuttle/yaHALMAT2/source-documentation/`:
 
 - **[USA003087]** "HAL/S Programmer's Guide" — the primary
   human-readable reference for HAL/S statement syntax/semantics.
@@ -259,6 +259,6 @@ to `.txt` for cheap `grep`/`pdftotext` lookups where noted), under
 
 If a needed primary-source PDF isn't already in `source-documentation/`,
 check (paths relative to the `yaHALMAT2` directory, not here):
-`../../Desktop/sandroid.org/public_html/apollo/Shuttle/`,
-`../virtualagc-web/`, or `../Halmat/` — nearly everything shows up in
+`/home/rburkey/Desktop/sandroid.org/public_html/apollo/Shuttle/` or
+`/home/rburkey/git/virtualagc-web/` — nearly everything shows up in
 one of those.
