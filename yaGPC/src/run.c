@@ -536,6 +536,23 @@ static void prompt_and_provide_input(BatchRunner *r, int channel) {
     halucp_notify_interactive_input(&r->age.halUCP, 6);
 }
 
+/* Deliberate divergence from the JS reference (gpc/cmd_run.coffee's
+ * inputCallback in runInteractive): iohost_has_file_input() (like JS's
+ * IOHost#hasFileInput) is true only while unread lines remain, so once
+ * a --infileN channel's lines run out this falls into the terminal-
+ * prompt branch below exactly as the JS does. In the JS, that branch
+ * (promptInput -> readline's rl.question()) never resolves on real EOF
+ * — its callback only fires on a 'line' event, so an exhausted/closed
+ * stdin just stalls forever with nothing keeping Node's event loop
+ * alive, and the process silently exits 0 without ever reaching
+ * HalUCP#provideEof() or the program's ON ERROR handler. Confirmed
+ * against the live reference with a real HALSFC/lnk101-compiled
+ * READ-until-EOF program (the classic HAL/S idiom from "Programming in
+ * HAL/S" p.193): gpc run --interactive truncates it silently; this
+ * port's prompt_and_provide_input() below uses a blocking fgets(),
+ * which correctly returns EOF and calls halucp_provide_eof() here,
+ * completing the program as intended. Kept as the correct behavior
+ * rather than replicated bug-for-bug — see yaGPC port session notes. */
 static void interactive_input_cb(void *ctx, int channel, int iocode) {
     BatchRunner *r = ctx;
     (void)iocode;

@@ -8,6 +8,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPARE="$SCRIPT_DIR/compare.sh"
+COMPARE_STDIN="$SCRIPT_DIR/compare_stdin.sh"
+DEVNULL="/dev/null"
 
 FCMS="gpc/gen/SIMPLE.fcm gpc/gen/TEST.fcm gpc/gen/TESTSET.fcm gpc/gen/SS.fcm gpc/gen/asm.fcm gpc/gen/A3GRESCH.fcm"
 
@@ -43,6 +45,26 @@ for fcm in $SVC_FCMS; do
     bash "$COMPARE" "$name/verbose-trace" "$fcm" --start 0 --verbose --trace --max-steps 10 || fail=1
     bash "$COMPARE" "$name/no-trap-svc-error" "$fcm" --start 0 --verbose --trace --no-trap-svc-error --max-steps 10 || fail=1
 done
+
+echo "--- real HAL/S-compiled fixtures (HALSFC/lnk101, see test/fixtures/build_hal_fixtures.sh) ---"
+HELLO_SYM="yaGPC/test/fixtures/hello-lnk101.json"
+RW_SYM="yaGPC/test/fixtures/read_write-lnk101.json"
+bash "$COMPARE_STDIN" "hello/interactive" "$DEVNULL" --interactive --no-trace --no-verbose --symbols "$HELLO_SYM" --line-width 240 yaGPC/test/fixtures/hello.fcm || fail=1
+bash "$COMPARE" "hello/batch-verbose" --verbose --symbols "$HELLO_SYM" yaGPC/test/fixtures/hello.fcm || fail=1
+bash "$COMPARE_STDIN" "read_write/interactive" yaGPC/test/fixtures/read_write_stdin.txt --interactive --no-trace --no-verbose --symbols "$RW_SYM" --line-width 240 yaGPC/test/fixtures/read_write.fcm || fail=1
+
+echo "--- known gpc-run defect, checked against expected output only, NOT diffed against the reference ---"
+echo "    (gpc run --interactive silently truncates READ-until-EOF programs; see run.c's"
+echo "    interactive_input_cb comment. yaGPC completes the program correctly, by design.)"
+ONERROR_SYM="yaGPC/test/fixtures/read_eof_onerror-lnk101.json"
+onerror_out=$(printf "1, 1\n2, 2\n3, 4\n" | yaGPC/yaGPC --interactive --no-trace --no-verbose --symbols "$ONERROR_SYM" --line-width 240 yaGPC/test/fixtures/read_eof_onerror.fcm)
+if echo "$onerror_out" | grep -q "0      SAMPLES CORRECT,                3      SAMPLES INCORRECT"; then
+    echo "PASS [read_eof_onerror/yaGPC-completes-correctly]"
+else
+    echo "FAIL [read_eof_onerror/yaGPC-completes-correctly]"
+    echo "$onerror_out"
+    fail=1
+fi
 
 if [ "$fail" = 0 ]; then
     echo "=== ALL MATRIX RUNS PASS ==="
