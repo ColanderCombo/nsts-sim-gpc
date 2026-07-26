@@ -6,12 +6,12 @@ This port was created using Claude Sonnet 5, under direction.  The initial port 
 
 To build:
 <pre>
-\# In Linux, Mac OS, or Windows under MSYS2:
+# In Linux, Mac OS, or Windows under MSYS2:
 make
 </pre>
 or
 <pre>
-\# In Windows:
+# In Windows:
 nmake /v NMakefile
 </pre>
 To use, get `yaGPC` or `yaGPC.exe` into your `PATH`, and simply replace the commands "`gpc run ...`" that you would otherwise use with "`yaGPC ...`".
