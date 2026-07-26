@@ -71,7 +71,7 @@ THE END
 </pre>
 Whereas running it instead with `yaGPC` produces
 <pre>
-&gt; <span style="color: brown">yaGPC --interactive --no-trace --no-verbose --symbols HELLO-lnk101.json --line-width 240 HELLO.fcm</span>
+&gt; <span style="color: brown">yaGPC --interactive --no-trace --no-verbose --symbols HELLO-lnk101.json HELLO.fcm</span>
 THE BEGINNING
           1     HELLO, WORLD!
                     2     RON BURKEY SAYS ISN'T THIS FUN?
