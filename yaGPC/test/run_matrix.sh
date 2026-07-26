@@ -28,6 +28,22 @@ bash "$COMPARE" "TEST/watch" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 20
 bash "$COMPARE" "TEST/watch-log" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 500 --watch 0x10:4 --watch-log || fail=1
 bash "$COMPARE" "TEST/break" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 2000 --break 0x40 || fail=1
 
+echo "--- previously-uncovered CLI option matrix ---"
+bash "$COMPARE" "TEST/ebcdic" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 500 --ebcdic || fail=1
+bash "$COMPARE" "TEST/trap-svc-error" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 500 --trap-svc-error || fail=1
+bash "$COMPARE" "TEST/no-trap-svc-error" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 500 --no-trap-svc-error || fail=1
+bash "$COMPARE" "TEST/halucp-blanks" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 500 --halucp-format-num-blanks 3 || fail=1
+bash "$COMPARE" "TEST/line-width" gpc/gen/TEST.fcm --start 0 --verbose --max-steps 500 --line-width 80 || fail=1
+
+echo "--- HAL/S SVC trap matrix (hand-assembled fixtures, see test/fixtures/gen_svc_fcms.cjs) ---"
+SVC_FCMS="yaGPC/test/fixtures/svc_halt.fcm yaGPC/test/fixtures/svc_senderror.fcm yaGPC/test/fixtures/svc_unknown.fcm"
+for fcm in $SVC_FCMS; do
+    name=$(basename "$fcm" .fcm)
+    bash "$COMPARE" "$name/default" "$fcm" --start 0 --max-steps 10 || fail=1
+    bash "$COMPARE" "$name/verbose-trace" "$fcm" --start 0 --verbose --trace --max-steps 10 || fail=1
+    bash "$COMPARE" "$name/no-trap-svc-error" "$fcm" --start 0 --verbose --trace --no-trap-svc-error --max-steps 10 || fail=1
+done
+
 if [ "$fail" = 0 ]; then
     echo "=== ALL MATRIX RUNS PASS ==="
 else
