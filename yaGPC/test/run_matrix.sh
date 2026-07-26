@@ -66,6 +66,19 @@ else
     fail=1
 fi
 
+echo "--- another known gpc-run defect (iop.ls missing call parens, see iop.h) ---"
+echo "    reached for the first time by iop_msc_sio.fcm, which starts the MSC via a real"
+echo "    CPU PC instruction; gpc run crashes (TypeError), yaGPC completes correctly."
+iop_out=$(yaGPC/yaGPC --start 0x10 --verbose --max-steps 10 yaGPC/test/fixtures/iop_msc_sio.fcm 2>&1)
+iop_exit=$?
+if [ "$iop_exit" = 0 ] && echo "$iop_out" | grep -q "R04=00000001"; then
+    echo "PASS [iop_msc_sio/yaGPC-completes-correctly]"
+else
+    echo "FAIL [iop_msc_sio/yaGPC-completes-correctly] exit=$iop_exit"
+    echo "$iop_out"
+    fail=1
+fi
+
 if [ "$fail" = 0 ]; then
     echo "=== ALL MATRIX RUNS PASS ==="
 else

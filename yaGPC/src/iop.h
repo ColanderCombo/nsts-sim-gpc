@@ -47,14 +47,25 @@ typedef void (*IopInstrExecFn)(struct IOP *iop, DInstr *v);
  * is unreachable for typical batch runs: regBusyWait starts all-zero, so
  * IOP.execProcessors() no-ops for every processor until something
  * explicitly starts one (e.g. an MSC @SIO or a CPU PC-instruction command
- * that sets a busy bit), which none of this port's fixture .fcm files are
- * expected to do. iopls_ls() below implements the evidently-intended,
+ * that sets a busy bit), which none of the pre-existing HAL/S-compiled
+ * fixture .fcm files do. iopls_ls() below implements the evidently-intended,
  * correct behavior rather than replicating an accidental process crash —
  * consistent with how a couple of other genuine reference-implementation
  * bugs were handled earlier in this port (see cpu_instr.c's ICR/ISPB
- * notes). If Phase 11's full-corpus validation ever turns up an .fcm file
- * that actually starts a BCE/MSC and this divergence becomes observable,
- * revisit. */
+ * notes).
+ *
+ * CONFIRMED, not just theorized: test/fixtures/iop_msc_sio.fcm (a
+ * hand-assembled program that sets the MSC busy bit via a CPU `PC`
+ * instruction, same "derive bit-layout by hand, validate against the
+ * live JS reference first" technique as the svc_*.fcm fixtures) does
+ * exactly this and reproduces the predicted crash in `gpc run` verbatim
+ * (TypeError: this.cp.r is not a function, at IOPLocalStore.ls). yaGPC
+ * runs the same fixture to completion correctly (drives @SIO through the
+ * real execProcessors() round-robin scheduler for the first time via the
+ * actual run() pipeline, not just the isolated fixture harness) — see
+ * that fixture's generator script and its dedicated, non-reference-diffed
+ * check in run_matrix.sh (diffing against the reference here would never
+ * pass, by design, same as the read_eof_onerror case). */
 typedef struct {
     RegisterFile storePage[25];
     int slice;
