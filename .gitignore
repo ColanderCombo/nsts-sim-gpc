@@ -12,3 +12,4 @@ Thumbs.db
 .env.*.local
 package-lock.json
 .nvmrc
+.claude/
