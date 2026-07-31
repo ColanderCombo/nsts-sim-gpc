@@ -299,6 +299,30 @@ class Instruction extends PackedBits
             desc.dx = v.dx if v.dx?
             desc.dy = v.dy if v.dy?
 
+            # Execution times (AP-101S, IBM-85-C67-001 sect.17), microseconds.
+            # xts:  [normal, indir(XC=0,C=0), (XC=0,C=1), (XC=1,C=0), (XC=1,C=1),
+            #        auto storage mod, auto index]
+            # xtbs: [branch taken, branch not taken] (replaces xts[0] for branches)
+            # Precomputed as integer nanoseconds so accumulation stays exact.
+            if v.xts?
+                desc.xts = v.xts
+                desc.xtsNs = (Math.round(x*1000) for x in v.xts)
+            if v.xtbs?
+                desc.xtbs = v.xtbs
+                desc.xtbsNs = (Math.round(x*1000) for x in v.xtbs)
+
+            # Execution times, original AP-101 C/M (IBM 75-A97-001 sect.2.4).
+            # xtc:  [Even, OddNOK, OddNotNOK, Even100, Even200] for the
+            #       RS/RR/RI/SI form; xtcs: same for the short SRS form.
+            # The 1975 table has no branch-taken split, so there is no xtbc.
+            # Ops without xtc did not exist on the original AP-101.
+            if v.xtc?
+                desc.xtc = v.xtc
+                desc.xtcNs = (Math.round(x*1000) for x in v.xtc)
+            if v.xtcs?
+                desc.xtcs = v.xtcs
+                desc.xtcsNs = (Math.round(x*1000) for x in v.xtcs)
+
             for f in v.f
                 foperands = f.split(' ')[1]
                 foperands = foperands.replace /D2\(X2,B2\)/, "BDI"
@@ -418,6 +442,8 @@ class Instruction extends PackedBits
                     n:'Program Controlled I/O'
                     f:['PC R1,R2'],
                     d:'11011xxx11101yyy',
+                    xts:[4.5]   # >4.25 but <22.5 (no current DMA); typical-case value
+                    xtc:[4.4,4,4.4,4.5,4.6]   # NOTE 5: CPU not held by I/O
                     e:(t,v) ->
                         if not t.i_SUPER() then return
                         cmd = t.r(v.x).get32()
@@ -458,6 +484,8 @@ class Instruction extends PackedBits
                     f:['AR R1,R2'],
                     d:'00000xxx11100yyy',  # AR R1,R2
                     a:ADDR_FULLWORD
+                    xts:[0.25]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -471,6 +499,9 @@ class Instruction extends PackedBits
                     d:'00000xxxddddddbb',  # A R1,D2(B2)
                                             # A [@] [#] R1,D2(X2,B2)
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7.25]
+                    xtc:[1.8,2,2.8,2.1,2.3]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -512,6 +543,9 @@ class Instruction extends PackedBits
                     f:['AH R1,D2(B2)','AH R1,D2(X2,B2)']
                     d:'10000xxxddddddbb',
                     a:ADDR_HALFWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7]
+                    xtc:[1.8,2,2.8,2.1,2.3]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAH(v) << 16
@@ -551,6 +585,8 @@ class Instruction extends PackedBits
                     f:['AHI R2,Data']
                     d:'1011000011100yyy/I'
                     a:ADDR_HALFWORD
+                    xts:[0.25]
+                    xtc:[1.8,2,2.8,1.9,2]
                     e:(t,v) ->
                         v1 = v.I << 16
                         v2 = t.r(v.y).get32()
@@ -587,6 +623,8 @@ class Instruction extends PackedBits
                     n:'Add and Store'
                     f:['AST R1,D2(B2)','AST R1,D2(X2,B2)']
                     d:'00000xxx11111abb/X'
+                    xts:[0.75,6,7,5.75,7,8.25,10.25]
+                    xtc:[2.3,2.4,3.2,2.6,2.9]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -616,6 +654,8 @@ class Instruction extends PackedBits
                     n:'Compare'
                     f:['CR R1,R2'],
                     d:'00010xxx11100yyy'
+                    xts:[0.25]
+                    xtc:[1.6,1.2,1.6,1.7,1.8]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -626,6 +666,9 @@ class Instruction extends PackedBits
                     f:['C R1,D2(B2)','C R1,D2(X2,B2)']
                     d:'00010xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7.25]
+                    xtc:[2.2,2.4,3.2,2.4,2.6]
+                    xtcs:[2.2,1.8,2.2,2.4,2.6]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -675,6 +718,8 @@ class Instruction extends PackedBits
                     n:'Compare Between Limits'
                     f:['CBL R1,R2']
                     d:'00001xxx11101yyy'
+                    xts:[5]   # AVG
+                    xtc:[5.4,5,5.4,5.7,5.8]   # NOTE 1
                     e:(t,v) ->
                         r1val = t.r(v.x).get32()
                         r2val = t.r(v.y).get32()
@@ -733,6 +778,9 @@ class Instruction extends PackedBits
                     f:['CH R1,D2(B2)','CH R1,D2(X2,B2)']
                     d:'10010xxxddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7]
+                    xtc:[2.2,2.4,3.2,2.4,2.6]
+                    xtcs:[2.2,1.8,2.2,2.4,2.6]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAH(v) << 16
@@ -772,6 +820,8 @@ class Instruction extends PackedBits
                     f:['CHI R2,Data']
                     d:'1011010111100yyy/I'
                     a:ADDR_HALFWORD
+                    xts:[0.25]
+                    xtc:[2.2,2.4,3.2,2.3,2.4]
                     e:(t,v) ->
                         v1 = t.r(v.y).get32()
                         v2 = v.I << 16
@@ -808,6 +858,8 @@ class Instruction extends PackedBits
                     f:['CIST D2(B2),Data']
                     d:'10110101ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[1.5]
+                    xtc:[2.6,2.8,3.6,2.8,3]
                     e:(t,v) ->
                         v1 = v.I
                         v2 = t.g_EAH(v)
@@ -853,7 +905,10 @@ class Instruction extends PackedBits
                     n:'Divide'
                     f:['DR R1,R2'],
                     d:'01001xxx11100yyy'
+                    xts:[4.925]   # AVG, R1 even; R1 odd override in e
+                    xtc:[8.8,8.4,8.8,8.9,9]
                     e:(t,v) ->
+                        if v.x % 2 then t.opExecT = 4.675
                         hi = t.r(v.x).get32()
                         lo = if v.x % 2 then 0 else t.r(v.x+1).get32()
                         {quotient, overflow} = q31_div(hi, lo, t.r(v.y).get32())
@@ -865,10 +920,15 @@ class Instruction extends PackedBits
                     f:['D R1,D2(B2)','D R1,D2(X2,B2)']
                     d:'01001xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[4.925,9.05,8.8,8.8,8.8,10.05,11.8]   # AVG, R1 even; R1 odd override in e
+                    xtc:[9.4,9.6,10.4,9.6,10]
+                    xtcs:[9.4,9,9.4,9.6,10]
                     e:(t,v) ->
                         hi = t.r(v.x).get32()
                         lo = if v.x % 2 then 0 else t.r(v.x+1).get32()
                         {quotient, overflow} = q31_div(hi, lo, t.g_EAF(v))
+                        # R1-odd row (after g_EAF so xtCase is known)
+                        if v.x % 2 then t.opExecT = t.xtPick([4.675,8.8,7.55,7.55,7.55,9.8,10.05])
                         t.r(v.x).set32(quotient)
                         if overflow then t.psw.setOverflow(1)
                 }
@@ -893,6 +953,8 @@ class Instruction extends PackedBits
                     n:'Exclusive OR Upper and Lower'
                     f:['XUL R1,R2'],
                     d:'00000xxx11101yyy'
+                    xts:[1]
+                    xtc:[2.8,2.4,2.8,2.9,3]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -932,6 +994,9 @@ class Instruction extends PackedBits
                     a:ADDR_HALFWORD,
                     d:'11100xxxddddddbb',
                     eaFlg: 0x3e,
+                    xts:[0.5,4,5,3.75,5,6.25,8]
+                    xtc:[2,2.2,3,2.2,2.4]
+                    xtcs:[2.2,1.8,2.2,2.4,2.6]
                     e:(t,v) ->
                         #console.log v
                         #console.log "IAL x=#{v.x} d=#{v.d.asHex()} b=#{v.b}"
@@ -962,6 +1027,8 @@ class Instruction extends PackedBits
                     f:['IHL R1,D2(B2)','IHL R1,D2(X2,B2)']
                     d:'10000xxx11111abb/X'
                     a:ADDR_HALFWORD
+                    xts:[0.5,4.75,4.5,4.5,4.5,5.75,7.25]
+                    xtc:[2.8,3,3.8,3,3.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAH(v)
@@ -990,6 +1057,8 @@ class Instruction extends PackedBits
                     n:'Load Register'
                     f:['LR R1,R2'],
                     d:'00011xxx11100yyy'
+                    xts:[0.25]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         val = t.r(v.y).get32()
                         t.r(v.x).set32(val)
@@ -1000,6 +1069,9 @@ class Instruction extends PackedBits
                     f:['L R1,D2(B2)','L R1,D2(X2,B2)']
                     d:'00011xxxddddddbb',
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7.25]
+                    xtc:[1.8,2,2.8,2.1,2.3]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.r(v.x).set32(val)
@@ -1040,6 +1112,9 @@ class Instruction extends PackedBits
                     f:['LA R1,D2(B2)','LA R1,D2(X2,B2)']
                     d:'11101xxxddddddbb',
                     a:ADDR_HALFWORD
+                    xts:[0.25,4,5,3.75,5,6.25,8]
+                    xtc:[1.6,1.8,2.6,1.8,2]
+                    xtcs:[1.6,1.2,1.6,1.8,2]
                     e:(t,v) ->
                         ea = t.g_EA_16(v)
                         t.r(v.x).set32(ea << 16)
@@ -1050,6 +1125,7 @@ class Instruction extends PackedBits
                     f:['LHI R1,Value']
                     d:'11101xxx11110011/I'
                     a:ADDR_HALFWORD
+                    xts:[0.25]   # not in section 17 table; same as other halfword immediates
                     e:(t,v) ->
                         #console.log "LHI", v
                         t.r(v.x).set32(v.I << 16)
@@ -1083,6 +1159,8 @@ class Instruction extends PackedBits
                     f:['LCR R1,R2'],
                     d:'11101xxx11101yyy'
                     a:ADDR_FULLWORD
+                    xts:[0.5]
+                    xtc:[1.4,1,1.4,1.5,1.6]
                     e:(t,v) ->
                         v2 = t.r(v.y).get32()
                         result = ~v2 + 1
@@ -1113,6 +1191,8 @@ class Instruction extends PackedBits
                     n:'Load Fixed Immediate'
                     f:['LFXI R1,Value']
                     d:'10111xxx1110yyyy'
+                    xts:[0.75]
+                    xtc:[2.8,2.4,2.8,2.9,3]
                     e:(t,v) ->
                         lits = [ 0xfffe0000, 0xffff0000, 0x00000000, 0x00010000,
                                  0x00020000, 0x00030000, 0x00040000, 0x00050000,
@@ -1149,6 +1229,9 @@ class Instruction extends PackedBits
                     f:['LH R1,D2(B2)','LH R1,D2(X2,B2)']
                     d:'10011xxxddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7]
+                    xtc:[1.8,2,2.8,2,2.2]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v2 = t.g_EAH(v)
                         result = v2 << 16
@@ -1182,6 +1265,8 @@ class Instruction extends PackedBits
                     f:['LM D2(B2)','LM D2(X2,B2)']
                     d:'1100110011111abb/X'
                     a:ADDR_FULLWORD
+                    xts:[8.5,12.25,13.25,12,13.25,14.5,16.25]
+                    xtc:[10.6,10.8,11.6,11.6,12.6]
                     e:(t,v) ->
                         v2ea = t.g_EA(v)
                         for i in [0..7]
@@ -1219,6 +1304,8 @@ class Instruction extends PackedBits
                     f:['MSTH D2(B2),Data']
                     d:'10110000ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[3]
+                    xtc:[2.5,2.6,3.4,2.7,2.9]
                     e:(t,v) ->
                         v1 = v.I & 0xffff
                         v2 = t.g_EAH(v)
@@ -1256,6 +1343,8 @@ class Instruction extends PackedBits
                     n:'Multiply'
                     f:['MR R1,R2'],
                     d:'01000xxx11100yyy'
+                    xts:[2.4]   # R1 even; R1 odd override in e
+                    xtc:[5.2,4.8,5.2,5.3,5.4]
                     e:(t,v) ->
                         if v.x % 2 == 0
                             {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.r(v.y).get32())
@@ -1263,6 +1352,7 @@ class Instruction extends PackedBits
                             t.r(v.x + 1).set32(lo)
                             if overflow then t.psw.setOverflow(1)
                         else
+                            t.opExecT = 2.15
                             {result, overflow} = q15_mul(t.r(v.x).get32() >> 16, t.r(v.y).get32() >> 16)
                             t.r(v.x).set32(result)
                             if overflow then t.psw.setOverflow(1)
@@ -1272,6 +1362,9 @@ class Instruction extends PackedBits
                     f:['M R1,D2(B2)','M R1,D2(X2,B2)']
                     d:'01000xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[2.4,6.53,7.53,6.28,7.53,8.78,10.53]   # R1 even; R1 odd override in e
+                    xtc:[5.6,5.8,6.6,5.8,6]
+                    xtcs:[5.6,5.2,5.6,5.8,6]
                     e:(t,v) ->
                         if v.x % 2 == 0
                             {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.g_EAF(v))
@@ -1280,6 +1373,8 @@ class Instruction extends PackedBits
                             if overflow then t.psw.setOverflow(1)
                         else
                             {result, overflow} = q15_mul(t.r(v.x).get32() >> 16, t.g_EAF(v) >> 16)
+                            # R1-odd row (after g_EAF so xtCase is known)
+                            t.opExecT = t.xtPick([2.15,6.28,7.28,6.03,7.28,8.53,10.28])
                             t.r(v.x).set32(result)
                             if overflow then t.psw.setOverflow(1)
                 }
@@ -1309,6 +1404,9 @@ class Instruction extends PackedBits
                     f:['MH R1,D2(B2)','MH R1,D2(X2,B2)']
                     d:'10101xxxddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[1.35,5.48,5.23,5.23,5.23,6.48,7.98]
+                    xtc:[5,5.2,6,5.2,5.4]
+                    xtcs:[5,4.6,5,5.2,5.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32() >> 16
                         v2 = t.g_EAH(v)
@@ -1343,6 +1441,8 @@ class Instruction extends PackedBits
                     f:['MHI R2,Data']
                     d:'1011011111100yyy/I'
                     a:ADDR_HALFWORD
+                    xts:[1.35]
+                    xtc:[6.2,6.4,7.2,6.3,6.4]
                     e:(t,v) ->
                         v1 = v.I
                         if v1 & 0x8000 then v1 = v1 - 0x10000
@@ -1391,6 +1491,8 @@ class Instruction extends PackedBits
                     f:['MIH R1,D2(B2)','MIH R1,D2(X2,B2)']
                     d:'10011xxx11111abb/X'
                     a:ADDR_HALFWORD
+                    xts:[1.7,5.83,5.58,5.58,5.58,6.825,8.025]   # AVG
+                    xtc:[6,6.2,7,6.2,6.4]
                     e:(t,v) ->
                         # Multiplicand: bits 0-15 of R1 (signed integer halfword)
                         v1 = t.r(v.x).get32() >> 16
@@ -1426,6 +1528,9 @@ class Instruction extends PackedBits
                     f:['ST R1,D2(B2)','ST R1,D2(X2,B2)']
                     d:'00110xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[0.5,4.75,5.75,4.5,5.75,7,9]
+                    xtc:[2,2.2,3,2.3,2.6]
+                    xtcs:[2,1.6,2,2.2,2.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         result = v1
@@ -1453,6 +1558,9 @@ class Instruction extends PackedBits
                     f:['STH R1,D2(B2)','STH R1,D2(X2,B2)']
                     d:'10111xxxddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[0.5,4.5,5.5,4.25,5.5,6.75,8.5]
+                    xtc:[2.8,3,3.8,3.1,3.4]
+                    xtcs:[2.8,2.4,2.8,3,3.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         result = v1 >>> 16
@@ -1484,6 +1592,8 @@ class Instruction extends PackedBits
                     f:['STM D2(B2)','STM D2(X2,B2)']
                     d:'1100100011111abb/X'
                     a:ADDR_FULLWORD
+                    xts:[7.25,10.25,11.25,10,11.25,12.5,14.25]
+                    xtc:[11.8,12,12.8,12.7,13.6]
                     e:(t,v) ->
                         v2ea = t.g_EA(v)
                         for i in [0..7]
@@ -1524,6 +1634,8 @@ class Instruction extends PackedBits
                     n:'Subtract'
                     f:['SR R1,R2'],
                     d:'00001xxx11100yyy'
+                    xts:[0.25]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -1536,6 +1648,9 @@ class Instruction extends PackedBits
                     f:['S R1,D2(B2)','S R1,D2(X2,B2)']
                     d:'00001xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.5,7.25]
+                    xtc:[1.8,2,2.8,2,2.2]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -1572,6 +1687,8 @@ class Instruction extends PackedBits
                     n:'Subtract From Storage'
                     f:['SST R1,D2(B2)','SST R1,D2(X2,B2)']
                     d:'00001xxx11111abb/X'
+                    xts:[1]
+                    xtc:[2.3,2.4,3.2,2.6,2.9]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -1616,6 +1733,9 @@ class Instruction extends PackedBits
                     f:['SH R1,D2(B2)','SH R1,D2(X2,B2)']
                     d:'10001xxxddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[0.25,4.5,4.25,4.25,4.25,5.75,7.25]
+                    xtc:[1.8,2,2.8,2,2.2]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAH(v) << 16
@@ -1654,6 +1774,9 @@ class Instruction extends PackedBits
                     f:['TD D2(B2)','TD D2(X2,B2)']
                     d:'10100000ddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[3,5.75,5.5,5.5,5.5,6.75,8.25]
+                    xtc:[3.2,3.4,4.2,3.5,3.8]
+                    xtcs:[3.2,2.8,3.2,3.5,3.8]
                     e:(t,v) ->
                         v1 = t.g_EAH(v)
                         result = (v1 - 1) & 0xffff
@@ -1700,6 +1823,8 @@ class Instruction extends PackedBits
                     f:['BALR R1,R2'],
                     d:'11100xxx11100yyy'
                     t:OPTYPE_BRCH
+                    xtbs:[3.5,4.5]
+                    xtc:[1.8,1.4,1.8,1.9,2]
                     e:(t,v) ->
                         t.r(v.x).set32(t.psw.psw1.get32())
                         # BALR R1, 0 -> no branch (R2 field must be nonzero)
@@ -1713,6 +1838,8 @@ class Instruction extends PackedBits
                     d:'11100xxx11110abb/X'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[3.75,7,10,6.75,10,8,9.5]
+                    xtc:[1.6,1.8,2.6,1.7,1.8]
                     e:(t,v) ->
                         branch = t.g_EA(v)
                         t.r(v.x).set32(t.psw.psw1.get32())
@@ -1751,6 +1878,8 @@ class Instruction extends PackedBits
                     d:'11011xxx11110abb/X'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[2.5,5.75,8.75,5.5,8.75,6.75,8.25]
+                    xtbs:[2.5,1.5]
                     e:(t,v) ->
                         R1 = t.r(v.x).get32()
                         index = R1 >>> 16
@@ -1825,6 +1954,8 @@ class Instruction extends PackedBits
                     f:['BCR M1,R2']
                     d:'11000xxx11100yyy'
                     t:OPTYPE_BRCH
+                    xts:[0.25]
+                    xtc:[1.8,1.4,1.8,1.9,2]
                     e:(t,v) ->
                         m1 = v.x
                         v2 = t.g_EXPAND(t.r(v.y).get32() >>> 16, OPTYPE_BRCH)
@@ -1838,6 +1969,9 @@ class Instruction extends PackedBits
                     d:'11000xxx11110abb/X'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[1.25,4.25,7.25,4,7.25,5.25,6.25]
+                    xtbs:[1.25,0.25]
+                    xtc:[1.8,2,2.8,1.9,2]
                     e:(t,v) ->
                         m1 = v.x
                         v2 = t.g_EA(v)
@@ -1876,6 +2010,8 @@ class Instruction extends PackedBits
                     d:'11011xxxdddddd10'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[0.25]
+                    xtc:[2,1.6,2,2.1,2.3]
                     e:(t,v) ->
                         m1 = v.x
                         disp = v.d
@@ -1922,6 +2058,8 @@ class Instruction extends PackedBits
                     f:['BCRE M1,R2']
                     d:'11000xxx11101yyy'
                     t:OPTYPE_BRCH
+                    xtbs:[5.75,0.5]
+                    xtc:[2.8,2.4,2.8,2.9,3]
                     e:(t,v) ->
                         m1 = v.x
                         branch = t.r(v.y).get32() >>> 16
@@ -1964,6 +2102,8 @@ class Instruction extends PackedBits
                     d:'11011xxxdddddd00'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[0.25]
+                    xtc:[2,1.6,2,2.1,2.2]
                     e:(t,v) ->
                         m1 = v.x
                         disp = v.d
@@ -2005,6 +2145,8 @@ class Instruction extends PackedBits
                     f:['BCTR R1,R2'],
                     d:'11010xxx11100yyy'
                     t:OPTYPE_BRCH
+                    xtbs:[1.75,0.75]
+                    xtc:[2.2,1.8,2.2,2.3,2.4]
                     e:(t,v) ->
                         # Decrement bits 0-15 of R1
                         r1val = t.r(v.x).get32()
@@ -2021,6 +2163,9 @@ class Instruction extends PackedBits
                     d:'11010xxx11110abb/X'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[1.75,4.5,7.5,4.25,7.5,5.5,7]
+                    xtbs:[1.75,0.75]
+                    xtc:[2.2,2.4,3.2,2.3,2.4]
                     e:(t,v) ->
                         # Decrement bits 0-15 of R1
                         r1val = t.r(v.x).get32()
@@ -2062,6 +2207,8 @@ class Instruction extends PackedBits
                     d:'11011xxxdddddd11'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xtbs:[1.75,0.75]
+                    xtc:[2.4,2,2.4,2.5,2.6]
                     e:(t,v) ->
                         # Decrement bits 0-15 of R1
                         r1val = t.r(v.x).get32()
@@ -2119,6 +2266,8 @@ class Instruction extends PackedBits
                     f:['BVCR M1,R2']
                     d:'11001xxx11100yyy'
                     t:OPTYPE_BRCH
+                    xtbs:[1.25,0.5]
+                    xtc:[2,1.6,2,2.1,2.3]
                     e:(t,v) ->
                         m1 = v.x
                         carry = t.psw.getCarry()
@@ -2145,6 +2294,9 @@ class Instruction extends PackedBits
                     d:'11001xxx11110abb/X'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[1.25,4,7,3.75,7,5,6.5]
+                    xtbs:[1.25,0.5]
+                    xtc:[2,2.2,3,2.1,2.2]
                     e:(t,v) ->
                         m1 = v.x
                         carry = t.psw.getCarry()
@@ -2212,6 +2364,8 @@ class Instruction extends PackedBits
                     d:'11011xxxdddddd01'
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xtbs:[1.25,0.5]
+                    xtc:[2.2,1.8,2.2,2.3,2.4]
                     e:(t,v) ->
                         m1 = v.x
                         carry = t.psw.getCarry()
@@ -2272,6 +2426,8 @@ class Instruction extends PackedBits
                     n:'Normalize and Count'
                     f:['NCT R1,R2'],
                     d:'11100xxx11101yyy'
+                    xts:[1.05]   # 1.05+(.075*N) via override in e
+                    xtc:[3.6,3.2,3.6,3.7,3.8]   # based on 3 shifts
                     e:(t,v) ->
                         # Zero all bits of R1
                         t.r(v.x).set32(0)
@@ -2292,6 +2448,7 @@ class Instruction extends PackedBits
                         # Count goes in bits 0-15 (upper halfword) of R1
                         t.r(v.x).set32(count << 16)
                         t.psw.setCarry(1)
+                        t.opExecT = 1.05 + 0.075*count
                 }
 
         # SHIFT LEFT LOGICAL
@@ -2325,8 +2482,11 @@ class Instruction extends PackedBits
                     f:['SLL R1,Count']
                     d:'11110xxxdddddd00'
                     t:OPTYPE_SHFT
+                    xts:[0.675]   # .675+(0.1*N) via override in e
+                    xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        t.opExecT = 0.675 + 0.1*shiftCnt
                         v1 = t.r(v.x).get32()
                         if shiftCnt >= 32
                             # Carry = last bit shifted out (bit 0 if shiftCnt==32, else 0)
@@ -2372,8 +2532,11 @@ class Instruction extends PackedBits
                     f:['SLDL R1,Count']
                     t:OPTYPE_SHFT
                     d:'11111xxxdddddd00'
+                    xts:[1]   # 1.0+(0.25*N) via override in e
+                    xtc:[2.8,2.4,2.8,2.9,3]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        t.opExecT = 1.0 + 0.25*shiftCnt
                         hi = t.r(v.x).get32() >>> 0
                         lo = t.r(v.x + 1).get32() >>> 0
                         if shiftCnt == 0
@@ -2427,8 +2590,11 @@ class Instruction extends PackedBits
                     f:['SRA R1,Count']
                     d:'11110xxxdddddd01'
                     t:OPTYPE_SHFT
+                    xts:[0.65]   # .650+(0.1*N) via override in e
+                    xtc:[2,1.6,2,2.1,2.2]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        t.opExecT = 0.65 + 0.1*shiftCnt
                         if shiftCnt == 0 then return
                         v1 = t.r(v.x).get32()
                         # Arithmetic right shift: sign bit fills vacated positions
@@ -2462,8 +2628,11 @@ class Instruction extends PackedBits
                     f:['SRDA R1,Count']
                     d:'11111xxxdddddd01'
                     t:OPTYPE_SHFT
+                    xts:[1]   # 1.0+(0.25*N) via override in e
+                    xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        t.opExecT = 1.0 + 0.25*shiftCnt
                         if shiftCnt == 0 then return
                         hi = t.r(v.x).get32()
                         lo = t.r(v.x + 1).get32() >>> 0
@@ -2508,8 +2677,11 @@ class Instruction extends PackedBits
                     f:['SRDL R1,Count']
                     d:'11111xxxdddddd10'
                     t:OPTYPE_SHFT
+                    xts:[1]   # 1.0+(0.1*N) via override in e
+                    xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        t.opExecT = 1.0 + 0.1*shiftCnt
                         if shiftCnt == 0 then return
                         hi = t.r(v.x).get32() >>> 0
                         lo = t.r(v.x + 1).get32() >>> 0
@@ -2551,8 +2723,11 @@ class Instruction extends PackedBits
                     f:['SRL R1,Count']
                     d:'11110xxxdddddd10'
                     t:OPTYPE_SHFT
+                    xts:[0.65]   # .650+(0.1*N) via override in e
+                    xtc:[2,1.6,2,2.1,2.2]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        t.opExecT = 0.65 + 0.1*shiftCnt
                         if shiftCnt == 0 then return
                         v1 = t.r(v.x).get32() >>> 0
                         if shiftCnt >= 32
@@ -2582,8 +2757,11 @@ class Instruction extends PackedBits
                     f:['SRR R1,Count']
                     d:'11110xxxdddddd11'
                     t:OPTYPE_SHFT
+                    xts:[0.65]   # .650+(0.1*N) via override in e
+                    xtc:[2.2,1.8,2.2,2.3,2.5]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1) % 32
+                        t.opExecT = 0.65 + 0.1*shiftCnt
                         if shiftCnt == 0 then return
                         v1 = t.r(v.x).get32() >>> 0
                         result = ((v1 >>> shiftCnt) | (v1 << (32 - shiftCnt))) >>> 0
@@ -2620,8 +2798,11 @@ class Instruction extends PackedBits
                     f:['SRDR R1,Count']
                     d:'11111xxxdddddd11'
                     t:OPTYPE_SHFT
+                    xts:[2]   # 2.0+(0.5*N), N mod 32, via override in e
+                    xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1) % 64
+                        t.opExecT = 2.0 + 0.5*(if shiftCnt < 32 then shiftCnt else shiftCnt - 32)
                         if shiftCnt == 0 then return
                         hi = t.r(v.x).get32() >>> 0
                         lo = t.r(v.x + 1).get32() >>> 0
@@ -2669,6 +2850,8 @@ class Instruction extends PackedBits
                     n:'AND'
                     f:['NR R1,R2'],
                     d:'00100xxx11100yyy'
+                    xts:[0.25]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -2681,6 +2864,9 @@ class Instruction extends PackedBits
                     f:['N R1,D2(B2)','N R1,D2(X2,B2)']
                     d:'00100xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.75,4.5,4.5,4.5,5.75,6.5]
+                    xtc:[1.8,2,2.8,2,2.2]
+                    xtcs:[1.8,1.4,1.8,1.9,2.1]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2719,6 +2905,8 @@ class Instruction extends PackedBits
                     f:['NHI R2,Data']
                     d:'1011011011100yyy/I'
                     a:ADDR_HALFWORD
+                    xts:[0.25]
+                    xtc:[1.8,2,2.8,1.9,2]
                     e:(t,v) ->
                         v1 = t.r(v.y).get32()
                         v2 = v.I << 16
@@ -2734,6 +2922,8 @@ class Instruction extends PackedBits
                     f:['NIST D2(B2),Data']
                     d:'10110110ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[3]
+                    xtc:[2.5,2.6,3.4,2.7,2]   # Even200 2.0 as printed (sic; XOR/OR rows read 2.9)
                     e:(t,v) ->
                         v1 = v.I
                         v2 = t.g_EAH(v)
@@ -2748,6 +2938,8 @@ class Instruction extends PackedBits
                     n:'AND and Store'
                     f:['NST R1,D2(B2)','NST R1,D2(X2,B2)']
                     d:'00100xxx11111abb/X'
+                    xts:[0.75,6,7,5.75,7,8.25,10.25]
+                    xtc:[2.3,2.4,3.2,2.6,2]   # Even200 2.0 as printed (sic; XOR/OR rows read 2.9)
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2762,6 +2954,8 @@ class Instruction extends PackedBits
                     n:'Exclusive OR'
                     f:['XR R1,R2'],
                     d:'01110xxx11100yyy'
+                    xts:[0.25]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -2774,6 +2968,9 @@ class Instruction extends PackedBits
                     f:['X R1,D2(B2)','X R1,D2(X2,B2)']
                     d:'01110xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.75,4.5,4.5,4.5,5.75,7.5]
+                    xtc:[1.8,2,2.8,2,2.2]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2789,6 +2986,8 @@ class Instruction extends PackedBits
                     f:['XHI R2,Data']
                     d:'1011010011100yyy/I'
                     a:ADDR_HALFWORD
+                    xts:[0.25]
+                    xtc:[1.8,2,2.8,1.9,2]
                     e:(t,v) ->
                         v1 = v.I << 16
                         v2 = t.r(v.y).get32()
@@ -2804,6 +3003,8 @@ class Instruction extends PackedBits
                     f:['XIST D2(B2),Data']
                     d:'10110100ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[3]
+                    xtc:[2.5,2.6,3.4,2.7,2.9]
                     e:(t,v) ->
                         v1 = v.I
                         v2 = t.g_EAH(v)
@@ -2818,6 +3019,8 @@ class Instruction extends PackedBits
                     n:'Exclusive OR and Store'
                     f:['XST R1,D2(B2)','XST R1,D2(X2,B2)']
                     d:'01110xxx11111abb/X'
+                    xts:[0.75,6,7,5.75,7,8.25,10.25]
+                    xtc:[2.3,2.4,3.2,2.6,2.9]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2832,6 +3035,8 @@ class Instruction extends PackedBits
                     n:'OR'
                     f:['OR R1,R2'],
                     d:'00101xxx11100yyy'
+                    xts:[0.25]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
@@ -2844,6 +3049,9 @@ class Instruction extends PackedBits
                     f:['O R1,D2(B2)','O R1,D2(X2,B2)']
                     d:'00101xxxddddddbb'
                     a:ADDR_FULLWORD
+                    xts:[0.25,4.75,4.5,4.5,4.5,5.75,6.5]
+                    xtc:[1.8,2,2.8,2,2.2]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2859,6 +3067,8 @@ class Instruction extends PackedBits
                     f:['OHI R2,Data']
                     d:'1011001011100yyy/I'
                     a:ADDR_HALFWORD
+                    xts:[0.25]
+                    xtc:[1.8,2,2.8,1.9,2]
                     e:(t,v) ->
                         v1 = v.I << 16
                         v2 = t.r(v.y).get32()
@@ -2893,6 +3103,8 @@ class Instruction extends PackedBits
                     n:'OR and Store'
                     f:['OST R1,D2(B2)','OST R1,D2(X2,B2)']
                     d:'00101xxx11111abb/X'
+                    xts:[0.75,6,7,5.75,7,8.25,10.25]
+                    xtc:[2.3,2.4,3.2,2.6,2.9]
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
@@ -2965,6 +3177,8 @@ class Instruction extends PackedBits
                     n:'Search Under Mask'
                     f:['SUM R1,R2'],
                     d:'10011xxx11101yyy'
+                    xts:[2.5]   # 2.5*(elements tested) via override in e
+                    xtc:[6.4,6,6.4,6.6,6.8]   # NOTE 2: count=1; +2.6/count internal, +2.7 even100, +2.8 even200
                     e:(t,v) ->
                         # R2 bits 0-15: count (positive two's complement integer)
                         count = t.r(v.y).get32() >>> 16
@@ -2992,6 +3206,8 @@ class Instruction extends PackedBits
                             maskedAi = ai & mask
                             if (maskedAi ^ maskedFV) != 0
                                 # Mismatch found - store failure address in R1 even upper half
+                                t.opExecT = 2.5 * (i + 1)   # 2.5us per element tested (S)
+                                t.xtcAddT = 2.6 * i         # C/M NOTE 2: +2.6/extra count
                                 r1Val = (curAddr << 16) | (r1Val & 0xffff)
                                 t.r(evenReg).set32(r1Val)
                                 t.psw.setCC(3)
@@ -3000,6 +3216,8 @@ class Instruction extends PackedBits
                             curAddr = (curAddr + modifier) & 0xffff
 
                         # All matched - update R1 even with final address
+                        t.opExecT = 2.5 * Math.max(count, 1)          # S
+                        t.xtcAddT = 2.6 * (Math.max(count, 1) - 1)    # C/M NOTE 2
                         r1Val = (curAddr << 16) | (r1Val & 0xffff)
                         t.r(evenReg).set32(r1Val)
                         t.psw.setCC(0)
@@ -3038,6 +3256,8 @@ class Instruction extends PackedBits
                     f:['SB D2(B2),Data']
                     d:'10110010ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[3]
+                    xtc:[2.5,2.6,3.4,2.7,2.8]
                     e:(t,v) ->
                         v1 = v.I
                         v2 = t.g_EAH(v)
@@ -3069,6 +3289,9 @@ class Instruction extends PackedBits
                     f:['SHW D2(B2)','SHW D2(X2,B2)']
                     d:'10100010ddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[1.5,4.5,5.5,4.25,5.5,6.75,8.5]
+                    xtc:[3.2,3.4,4.2,3.5,3.8]
+                    xtcs:[3.2,2.8,3.2,3.5,3.8]
                     e:(t,v) ->
                         result = 0xffff
                         t.s_EAH(v,result)
@@ -3107,6 +3330,8 @@ class Instruction extends PackedBits
                     f:['TB D2(B2),Data']
                     d:'10110011ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[2]
+                    xtc:[2.8,3,3.8,3,3.2]
                     e:(t,v) ->
                         v1 = v.I
                         v2 = t.g_EAH(v)
@@ -3146,6 +3371,8 @@ class Instruction extends PackedBits
                     n:'Test Register Bits'
                     f:['TRB R2,Data']
                     d:'1011001111100yyy/I'
+                    xts:[1]
+                    xtc:[2.2,2.4,3.2,2.3,2.4]
                     e:(t,v) ->
                         v1 = v.I << 16
                         v2 = t.r(v.y).get32()
@@ -3184,6 +3411,9 @@ class Instruction extends PackedBits
                     f:['TH D2(B2)','TH D2(X2,B2)']
                     d:'10100011ddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[1.75,5.25,5,5,5,6.25,7.75]
+                    xtc:[2.6,2.8,3.6,2.8,3]
+                    xtcs:[2.6,2.2,2.6,2.8,3]
                     e:(t,v) ->
                         v1 = t.g_EAH(v)
                         testResult = v1
@@ -3228,6 +3458,8 @@ class Instruction extends PackedBits
                     f:['ZB D2(B2),Data']
                     d:'10110001ddddddbb/I'
                     a:ADDR_HALFWORD
+                    xts:[3.25]
+                    xtc:[2.7,2.8,3.6,2.9,3.1]
                     e:(t,v) ->
                         v1 = v.I
                         v2 = t.g_EAH(v)
@@ -3263,6 +3495,8 @@ class Instruction extends PackedBits
                     n:'Zero Register Bits'
                     f:['ZRB R2,Data']
                     d:'1011000111100yyy/I'
+                    xts:[0.25]
+                    xtc:[1.8,2,2.8,1.9,2]
                     e:(t,v) ->
                         # Expand immediate data to fullword (append 16 low-order zeros)
                         mask = v.I << 16
@@ -3296,6 +3530,9 @@ class Instruction extends PackedBits
                     f:['ZH D2(B2)','ZH D2(X2,B2)']
                     d:'10100001ddddddbb'
                     a:ADDR_HALFWORD
+                    xts:[1.5,4.5,5.5,4.25,5.5,6.75,8.5]
+                    xtc:[3.2,3.4,4.2,3.6,4]
+                    xtcs:[3.2,2.8,3.2,3.5,3.8]
                     e:(t,v) ->
                         t.s_EAH(v,0)
                 }
@@ -3373,6 +3610,8 @@ class Instruction extends PackedBits
                     n:'Add Long'
                     f:['AEDR R1,R2'],
                     d:'01010xxx11101yyy'
+                    xts:[6.25]
+                    xtc:[5.6,5.2,5.6,5.7,5.8]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(),t.f(v.y+1).get32())
@@ -3393,6 +3632,8 @@ class Instruction extends PackedBits
                     d:'01010xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[6.5,10.5,10.25,10.25,10.25,11.5,13.25]
+                    xtc:[7,7.2,8,7.3,7.6]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.g_EAF(v), t.g_EAF(v,2))
@@ -3415,6 +3656,8 @@ class Instruction extends PackedBits
                     f:['AER R1,R2'],
                     d:'01010xxx11100yyy'
                     a:ADDR_HALFWORD
+                    xts:[2.25]
+                    xtc:[2.8,2.4,2.8,2.9,3]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
@@ -3434,6 +3677,9 @@ class Instruction extends PackedBits
                     d:'01010xxxddddddbb'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[2.5,6.75,6.5,6.5,6.5,7.5,9]
+                    xtc:[3,3.2,4,3.2,3.4]
+                    xtcs:[3,2.6,3,3.2,3.4]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
@@ -3492,6 +3738,8 @@ class Instruction extends PackedBits
                     f:['CER R1,R2'],
                     d:'01001xxx11101yyy'
                     a:ADDR_HALFWORD
+                    xts:[1.5]
+                    xtc:[4,3.6,4,4.1,4.2]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
@@ -3503,6 +3751,8 @@ class Instruction extends PackedBits
                     d:'01001xxx11111abb/X'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[1.75,6,5.75,5.75,5.75,6.75,8.5]
+                    xtc:[4.2,4.4,5.2,4.4,4.6]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
@@ -3574,6 +3824,8 @@ class Instruction extends PackedBits
                     f:['CEDR R1,R2'],
                     d:'00011xxx11101yyy'
                     a:ADDR_HALFWORD
+                    xts:[5.5]
+                    xtc:[7.6,7.2,7.6,7.7,7.8]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
@@ -3585,6 +3837,8 @@ class Instruction extends PackedBits
                     d:'00011xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[5.75,9.75,9.5,9.5,9.5,10.75,12.5]
+                    xtc:[8.4,8.6,9.4,8.6,8.8]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
@@ -3637,6 +3891,8 @@ class Instruction extends PackedBits
                     n:'Convert Float to Fixed'
                     f:['CVFX R1,R2'],
                     d:'00111xxx11100yyy'
+                    xts:[2.25]
+                    xtc:[4,3.6,4.4,4.1,4.2]
                     e:(t,v) ->
                         rawIn = t.f(v.y).get32() >>> 0
                         v2 = FloatIBM.From32(rawIn)
@@ -3708,6 +3964,8 @@ class Instruction extends PackedBits
                     n:'Convert Fixed to Float Long'
                     f:['CVFL R1,R2'],
                     d:'00111xxx11101yyy'
+                    xts:[1.75]
+                    xtc:[3.4,3,4,3.5,3.6]
                     e:(t,v) ->
                         # Get 32-bit two's complement value from R2.
                         u = t.r(v.y).get32() >>> 0
@@ -3874,6 +4132,8 @@ class Instruction extends PackedBits
                     f:['DEDR R1,R2'],
                     d:'00010xxx11101yyy'
                     a:ADDR_HALFWORD
+                    xts:[22.75]
+                    xtc:[115.6,115.2,115.6,115.7,115.8]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
@@ -3889,6 +4149,8 @@ class Instruction extends PackedBits
                     d:'00010xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[23,27.75,27.75,27.75,27.75,28.75,29.75]
+                    xtc:[116.6,116.8,117.6,116.8,117]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
@@ -3907,6 +4169,8 @@ class Instruction extends PackedBits
                     f:['DER R1,R2'],
                     d:'01101xxx11100yyy'
                     a:ADDR_HALFWORD
+                    xts:[7.25]
+                    xtc:[9.8,9.4,9.8,9.9,10]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
@@ -3920,6 +4184,9 @@ class Instruction extends PackedBits
                     d:'01101xxxddddddbb'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[7.5,12,11.5,11.5,11.5,12.75,15.25]
+                    xtc:[10,10.2,11,10.2,10.4]
+                    xtcs:[10,9.6,10,10.2,10.4]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
@@ -3951,6 +4218,8 @@ class Instruction extends PackedBits
                     d:'01111xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[1.5,5.5,5,5,5,6.25,8.75]
+                    xtc:[3,3.2,4,3.3,3.6]
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.f(v.x  ).set32(val)
@@ -3981,6 +4250,8 @@ class Instruction extends PackedBits
                     f:['LER R1,R2'],
                     d:'01111xxx11100yyy'
                     a:ADDR_FULLWORD
+                    xts:[1]
+                    xtc:[1.4,1,1.4,1.5,1.6]
                     e:(t,v) ->
                         val = t.f(v.y).get32()
                         t.f(v.x).set32(val)
@@ -3997,6 +4268,9 @@ class Instruction extends PackedBits
                     d:'01111xxxddddddbb'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[1.2,5,4.75,4.75,4.75,5.75,8.5]
+                    xtc:[1.8,2,2.8,2.1,2.3]
+                    xtcs:[1.8,1.4,1.8,2,2.2]
                     e:(t,v) ->
                         val = t.g_EAF(v)
                         t.f(v.x).set32(val)
@@ -4034,6 +4308,8 @@ class Instruction extends PackedBits
                     n:'Load Complement Short'
                     f:['LECR R1,R2'],
                     d:'01111xxx11101yyy',
+                    xts:[1]
+                    xtc:[1.4,1,1.4,1.5,1.6]
                     e:(t,v) ->
                         v2 = t.f(v.y).get32()
                         result = (v2 ^ 0x80000000) >>> 0
@@ -4065,6 +4341,8 @@ class Instruction extends PackedBits
                     n:'Load Fixed Register'
                     f:['LFXR R1,R2'],
                     d:'00100xxx11101yyy',
+                    xts:[0.75]
+                    xtc:[1.4,1,1.4,1.5,1.6]
                     e:(t,v) ->
                         t.r(v.x).set32(t.f(v.y).get32())
                 }
@@ -4115,6 +4393,8 @@ class Instruction extends PackedBits
                     n:'Load Float Long Immediate'
                     f:['LFLI R1,Value'],
                     d:'10001xxx1110yyyy',
+                    xts:[0.75]
+                    xtc:[2.6,2.2,2.6,2.7,2.8]
                     e:(t,v) ->
                         t.f(v.x).set32(0x41000000 | (v.y<<20))
                 }
@@ -4137,6 +4417,8 @@ class Instruction extends PackedBits
                     n:'Load Float Long Register'
                     f:['LFLR R1,R2'],
                     d:'00101xxx11101yyy',
+                    xts:[0.75]
+                    xtc:[1.2,0.8,1.2,1.3,1.4]
                     e:(t,v) ->
                         t.f(v.x).set32(t.r(v.y).get32())
                 }
@@ -4301,6 +4583,8 @@ class Instruction extends PackedBits
                     n:'Multiply Long'
                     f:['MEDR R1,R2'],
                     d:'00110xxx11101yyy'
+                    xts:[18.5]
+                    xtc:[24,23.6,24,24.1,24.2]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
@@ -4315,6 +4599,8 @@ class Instruction extends PackedBits
                     d:'00110xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[19,22.5,22.25,22.25,22.25,24.25,25.75]
+                    xtc:[25.2,25.4,26.2,25.4,25.6]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2hw1 = t.g_EAF(v)
@@ -4334,7 +4620,10 @@ class Instruction extends PackedBits
                     n:'Multiply Short'
                     f:['MER R1,R2'],
                     d:'01100xxx11100yyy'
+                    xts:[6]   # R1 even; R1 odd override in e
+                    xtc:[6.4,6,6.4,6.5,6.6]
                     e:(t,v) ->
+                        if v.x % 2 then t.opExecT = 5.5
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
                         {result, exc} = mulE(v1, v2)
@@ -4347,9 +4636,18 @@ class Instruction extends PackedBits
                     d:'01100xxxddddddbb'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[6.25,10.5,10.25,10.25,10.25,11.5,13.25]   # RS, R1 even; R1-odd and SRS-form overrides in e
+                    xtc:[6.6,6.8,7.6,6.8,7]
+                    xtcs:[6.6,6.2,6.6,6.8,7]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
+                        # R1-odd row (after g_EAF so xtCase is known);
+                        # short-SRS form is 5.75 for both parities
+                        if v.x % 2
+                            t.opExecT = t.xtPick([5.75,10.0,9.75,9.75,9.75,11.0,12.75])
+                        else if v.niaIncr == 1
+                            t.opExecT = 5.75
                         {result, exc} = mulE(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to32())
@@ -4387,6 +4685,8 @@ class Instruction extends PackedBits
                     n:'Subtract Long'
                     f:['SEDR R1,R2'],
                     d:'01011xxx11101yyy'
+                    xts:[6.25]
+                    xtc:[6.2,5.8,6.2,6.3,6.4]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(),t.f(v.y+1).get32())
@@ -4407,6 +4707,8 @@ class Instruction extends PackedBits
                     d:'01011xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[6.5,10.75,10.5,10.5,10.5,11.5,13.5]
+                    xtc:[7.6,7.8,8.6,7.8,8]
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(),t.f(v.x+1).get32())
                         v2 = FloatIBM.From64(t.g_EAF(v), t.g_EAF(v,2))
@@ -4460,6 +4762,8 @@ class Instruction extends PackedBits
                     f:['SER R1,R2'],
                     d:'01011xxx11100yyy'
                     a:ADDR_FULLWORD
+                    xts:[2.25]
+                    xtc:[3.8,3.4,3.8,3.9,4]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.f(v.y).get32())
@@ -4479,6 +4783,9 @@ class Instruction extends PackedBits
                     d:'01011xxxddddddbb'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[2.5,4.75,4.5,4.5,4.5,4.5,9.5]
+                    xtc:[4,4.2,5,4.2,4.4]
+                    xtcs:[4,3.6,4,4.2,4.4]
                     e:(t,v) ->
                         v1 = FloatIBM.From32(t.f(v.x).get32())
                         v2 = FloatIBM.From32(t.g_EAF(v))
@@ -4516,6 +4823,8 @@ class Instruction extends PackedBits
                     d:'00111xxx11111abb/X'
                     a:ADDR_DBLEWORD
                     fp:'DP'
+                    xts:[1,5.25,5,5,5,5,7.5]
+                    xtc:[4,4.2,5,4.2,4.4]
                     e:(t,v) ->
                         t.s_EAF(v,t.f(v.x  ).get32(),0)
                         t.s_EAF(v,t.f(v.x+1).get32(),2)
@@ -4537,6 +4846,9 @@ class Instruction extends PackedBits
                     d:'00111xxxddddddbb'
                     a:ADDR_FULLWORD
                     fp:'SP'
+                    xts:[0.5,4.75,4.5,4.5,4.5,4.5,7.5]
+                    xtc:[2.8,3,3.8,3,3.2]
+                    xtcs:[2.8,2.4,2.8,3,3.2]
                     e:(t,v) ->
                         v1 = t.f(v.x).get32()
                         result = v1
@@ -4619,6 +4931,7 @@ class Instruction extends PackedBits
                     f:['DIAG R1,D2(B20)', 'DIAG R1,D2(X2,B2)']
                     d:'11000xxx11111abb/X'
                     a:ADDR_HALFWORD
+                    xts:[1]   # placeholder; per-function estimates in POO sect.15, attach via opExecT when DIAG is implemented
                     e:(t,v) ->
                         # XXX UNIMPL
                 }
@@ -4690,6 +5003,8 @@ class Instruction extends PackedBits
                     f:['ISPB M1,D2(B2)','ISPB M1,D2(X2,B2)']
                     d:'11101xxx11111abb/X',
                     a:ADDR_HALFWORD
+                    xts:[5.625,8,9,7.75,9,10.25,12]   # M1<=3; M1>3 override in e
+                    xtc:[3.2,3.4,4.2,3.5,3.8]
                     e:(t,v) ->
                         if not t.i_SUPER() then return
                         ea = t.g_EA(v)
@@ -4710,6 +5025,7 @@ class Instruction extends PackedBits
                             else
                                 # Illegal M1 (100-111): leaves store protect override set
                                 # Per docs, no illegal operation interrupt, just override
+                                t.opExecT = 0.125   # sect.17: R1(M1) >= 5
                                 t.storeProtectOverride = true
                 }
 
@@ -4748,6 +5064,8 @@ class Instruction extends PackedBits
                     f:['LPS D2(B2)','LPS D2(X2,B2)']
                     d:'1100110111111abb/X'
                     a:ADDR_FULLWORD
+                    xts:[10.25,13.25,14.25,13,14.25,15.5,17.25]
+                    xtc:[3.8,4,4.8,4,4.3]
                     e:(t,v) ->
                         if not t.i_SUPER() then return
                         eaw1 = t.g_EA(v)
@@ -4840,18 +5158,40 @@ class Instruction extends PackedBits
                     f:['MVH R1,R2'],
                     d:'01101xxx11101yyy',
                     dy: 'dsssssssssssssss0000________eee'
+                    xts:[7.75]   # count-dependent override in e
                     e:(t,v) ->
                         r1val = t.r(v.x).get32()
                         r2val = t.r(v.y).get32()
                         destAddr = (r1val >>> 16) & 0xffff
                         count = r1val & 0xffff
-                        if count & 0x8000 then return # negative -> noop
+                        if count & 0x8000
+                            # negative count -> noop (2.25 less on DSR path)
+                            t.opExecT = if destAddr & 0x8000 then 7.5 - 2.25 else 7.5
+                            return
                         srcAddr = (r2val >>> 16) & 0x7fff
                         if r2val & 0x80000000
                             dsr = r2val & 0xf
                             srcAddr = (dsr << 15) | srcAddr
-                        if destAddr & 0x8000
+                        # Destination sector: R1 bit 0 = 1 -> PSW DSR;
+                        # bit 0 = 0 -> R1's DSE register (POO sect.9)
+                        destUsesDSR = (destAddr & 0x8000) != 0
+                        if destUsesDSR
                             destAddr = (t.psw.getDSR() << 15) | (destAddr & 0x7fff)
+                        else
+                            dse = t.regFiles[t.psw.getRegSet()].getDSE(v.x)
+                            destAddr = (dse << 15) | (destAddr & 0x7fff)
+                        # Sect.17 count-dependent times; the PSW-DSR
+                        # destination path runs 2.25 us faster
+                        n = count
+                        if n == 0
+                            t.opExecT = 7.75
+                        else if srcAddr - destAddr == 1
+                            t.opExecT = 9.5 + 1.75*n
+                        else if n % 2 == 0
+                            t.opExecT = 10.25 + 0.875*n
+                        else
+                            t.opExecT = 12.0 + 0.875*(n-1)
+                        t.opExecT -= 2.25 if destUsesDSR
                         while count > 0
                             count--
                             hw = t.ram.get16(srcAddr + count)
@@ -4896,6 +5236,8 @@ class Instruction extends PackedBits
                     n:'Set Program Mask'
                     f:['SPM R2'],
                     d:'1100100011101yyy',
+                    xts:[5.25]
+                    xtc:[2.4,2,2.4,2.6,2.8]
                     e:(t,v) ->
                         r2val = t.r(v.y).get32()
                         # Bits 16-23 of R2 (IBM numbering) = bits 15-8 in JS
@@ -4933,6 +5275,8 @@ class Instruction extends PackedBits
                     n:'Set System Mask'
                     f:['SSM D2(B2)','SSM D2(X2,B2)']
                     d:'1000100011111abb/X',
+                    xts:[7.75,10.63,11.63,10.38,11.63,12.875,14.625]
+                    xtc:[3.4,3.6,4.4,3.6,3.8]
                     e:(t,v) ->
                         if not t.i_SUPER() then return
                         hwVal = t.g_EAH(v)
@@ -5024,6 +5368,7 @@ class Instruction extends PackedBits
                     d:'11010xxx11111abb/X',
                     a:ADDR_HALFWORD
                     t:OPTYPE_BRCH
+                    xts:[18.125,21.5,24.5,21.25,24.5,22.5,24]
                     e:(t,v) ->
                         # Compute branch address first
                         branchAddr = t.g_EA(v)
@@ -5148,6 +5493,7 @@ class Instruction extends PackedBits
                     n:'Stack Return'
                     f:['SRET M1,R2'],
                     d:'10010xxx11101yyy',
+                    xts:[17.5]
                     e:(t,v) ->
                         # Test M1 against CC (same as BCR)
                         m1 = v.x
@@ -5201,6 +5547,8 @@ class Instruction extends PackedBits
                     f:['SVC D2(B2)','SVC D2(X2,B2)']
                     d:'1100100111111abb/X',
                     a:ADDR_HALFWORD
+                    xts:[20.25,22.75,23.75,22.5,23.75,25,26.75]
+                    xtc:[7.6,7.8,8.6,8.2,8.8]
                     e:(t,v) ->
                         ea = t.g_EA(v)
                         # Delegate to HalUCP for SVC interception (SEND ERROR, halt, etc.)
@@ -5260,6 +5608,8 @@ class Instruction extends PackedBits
                     n:'Test and Set'
                     f:['TS D2(B2)','TS D2(X2,B2)']
                     d:'1011100011111abb/X',
+                    xts:[3.75,6.5,6.25,6.25,6.25,7.5,9]
+                    xtc:[3,3.2,4,3.2,3.4]
                     e:(t,v) ->
                         ea = t.g_EA(v)
                         value = t.ram.get16(ea)
@@ -5316,6 +5666,8 @@ class Instruction extends PackedBits
                     f:['TSB D2(B2),Data']
                     d:'10110111ddddddbb/I',
                     a:ADDR_HALFWORD
+                    xts:[3]
+                    xtc:[3.4,3.6,4.4,3.6,3.8]
                     e:(t,v) ->
                         mask = v.I
                         ea = t.g_EA(v)
@@ -5355,6 +5707,7 @@ class Instruction extends PackedBits
                     n:'Load Data Memory'
                     f:['LDM D2(B2)','LDM D2(X2,B2)']
                     d:'0110100011111abb/X'
+                    xts:[6.75,10,10,10,10,10.25,10.25]
                     e:(t,v) ->
                         fw = t.g_EAF(v)
                         regSet = t.psw.getRegSet()
@@ -5390,10 +5743,14 @@ class Instruction extends PackedBits
                     n:'Load Extended Address Register'
                     f:['LXAR R1,R2']
                     d:'01000xxx11101yyy'
+                    xts:[3.5]   # -1.25 early out (equal DSE) in e
                     e:(t,v) ->
                         addrConst = t.r(v.y).get32()
                         addr = (addrConst >>> 16) & 0x7fff
                         dseVal = addrConst & 0xf
+                        # POO: equal new/current DSE -> microcode early out
+                        if t.regFiles[t.psw.getRegSet()].getDSE(v.x) == dseVal
+                            t.opExecT = 3.5 - 1.25
                         t.r(v.x).set32(addr << 16)
                         t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
                 }
@@ -5402,10 +5759,15 @@ class Instruction extends PackedBits
                     n:'Load Extended Address'
                     f:['LXA R1,D2(B2)','LXA R1,D2(X2,B2)']
                     d:'01000xxx11111abb/X'
+                    xts:[3.5,6.5,6.25,6.25,6.25,6.5,5.25]   # -1.25 early out (equal DSE) in e
                     e:(t,v) ->
                         addrConst = t.g_EAF(v)
                         addr = (addrConst >>> 16) & 0x7fff
                         dseVal = addrConst & 0xf
+                        # POO: equal new/current DSE -> microcode early out
+                        # (-1.25 us, applied to the addressing-case time)
+                        if t.regFiles[t.psw.getRegSet()].getDSE(v.x) == dseVal
+                            t.opExecT = t.xtPick([3.5,6.5,6.25,6.25,6.25,6.5,5.25]) - 1.25
                         t.r(v.x).set32(addr << 16)
                         t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
                 }
@@ -5416,6 +5778,7 @@ class Instruction extends PackedBits
                     n: 'Store Extended Address Register'
                     f:['STXAR R1,R2']
                     d: '10100xxx11101yyy'
+                    xts:[2.5]
                     e:(t,v) =>
                         return
                 }
@@ -5423,6 +5786,7 @@ class Instruction extends PackedBits
                     n: 'Store Extended Address'
                     f:['STXA R1,D2(B2)','STXA R1,D2(X2,B2)']
                     d: '10100xxx11111abb/X'
+                    xts:[2.5,6.5,8,6.25,8,8.25,8.75]
                     e:(t,v) ->
                         addrConst = t.g_EAF(v)
                         addr = (addrConst >>> 16) & 0x7fff
@@ -5449,6 +5813,7 @@ class Instruction extends PackedBits
                     n:'Store Data Memory'
                     f:['STDM D2(B2)','STDM D2(X2,B2)']
                     d:'1001000011111abb/X'
+                    xts:[2.25,5.25,6.75,5,5.25,7,7.5]
                     e:(t,v) ->
                         regSet = t.psw.getRegSet()
                         fw = (t.regFiles[regSet].getDSE(0) << 28) |
@@ -5563,12 +5928,33 @@ class Instruction extends PackedBits
                     n:'Internal Control Register'
                     f:['ICR R1,R2'],
                     d:'11011xxx11100yyy',
+                    xts:[1]   # fallback; documented commands set opExecT in e (POO p.10-3)
+                    xtc:[3.4,3,3.4,3.5,3.6]   # fallback (read-counters) row; e() supplies the per-command row
                     e:(t,v) ->
                         if not t.i_SUPER() then return
 
                         # Control word from R2
                         cw = t.r(v.y).get32()
                         cmd = (cw >>> 27) & 0x1f  # bits 0-4 = D field
+
+                        # AP-101S per-command typical times (85-C67-001 p.10-3)
+                        t.opExecT = switch cmd
+                            when 0b00000 then 5.5     # read counter 1
+                            when 0b00001 then 5.75    # read counter 2
+                            when 0b01000 then 5.5     # load counter 1
+                            when 0b01001 then 5.75    # load counter 2
+                            when 0b00101 then 20.25   # read AGE
+                            when 0b01101 then 20.0    # load AGE
+                            else t.opExecT            # others undocumented
+
+                        # AP-101 C/M per-command times (75-A97-001 p.2-12)
+                        t.xtcRow = switch cmd
+                            when 0b00000, 0b00001 then [3.4,3.0,3.4,3.5,3.6]  # read counter
+                            when 0b01000, 0b01001 then [3.2,2.8,3.2,3.3,3.4]  # write counter
+                            when 0b00101 then [28.8,28.4,28.8,28.9,29.0]      # AGE read
+                            when 0b01101 then [5.4,5.0,5.4,5.5,5.6]           # AGE write
+                            when 0b01100 then [3.6,3.2,3.6,3.7,3.8]           # discretes out
+                            else t.xtcRow
 
                         switch cmd
                             when 0b00000  # Read Counter 1
@@ -5583,10 +5969,13 @@ class Instruction extends PackedBits
                                 r1 = t.r(v.x).get32()
                                 t.ram.set16(0x00b0, (r1 >>> 16) & 0xffff)
                                 t.counter1 = r1 & 0xffff
+                                # Write resets the clock interrupt latch
+                                t.intPending.clk1 = false
                             when 0b01001  # Write Counter 2
                                 r1 = t.r(v.x).get32()
                                 t.ram.set16(0x00b1, (r1 >>> 16) & 0xffff)
                                 t.counter2 = r1 & 0xffff
+                                t.intPending.clk2 = false
                             when 0b00101  # Read AGE
                                 # AGE not simulated - return 0
                                 t.r(v.x).set32(0)

@@ -11,6 +11,7 @@ import {AGEHarness} from 'gpc/ageharness'
 import {IOHost} from 'gpc/iohost'
 import Instruction from 'gpc/cpu_instr'
 import {HalUCP} from 'gpc/halUCP'
+import {RTPacer} from 'gpc/rtpacer'
 import {P as noColor, formatRegVal, formatTraceLine, formatRegDump} from 'gpc/trace'
 
 export class BatchRunner
@@ -18,6 +19,10 @@ export class BatchRunner
     @opts = opts
     @fcmPath = opts.fcmPath
     @maxSteps = opts.maxSteps ? 100000
+    @maxSteps = Infinity if @maxSteps <= 0
+    @realTime = opts.realTime ? false
+    @rtFactor = opts.rtFactor ? 1.0
+    @rtIdleTimeoutMs = (opts.rtIdleTimeout ? 10) * 1000
     @breakpoint = opts.breakpoint ? null
     @memWatchpoints = opts.memWatchpoints ? []  # [{addr, count}]
     @watchLog = opts.watchLog ? false
@@ -28,6 +33,12 @@ export class BatchRunner
     @interactive = opts.interactive ? false
 
     @age = new AGEHarness()
+    if opts.cpuModel?
+      m = opts.cpuModel.toUpperCase()
+      if m not in ['S', 'C']
+        process.stderr.write "FATAL: --cpu-model must be 's' or 'c'\n"
+        process.exit(1)
+      @age.cpu.model = m
     @age.halUCP.verbose = @verbose
     @age.halUCP.errorCallback = (msg) -> process.stderr.write "\n*** " + msg + "\n\n"
 
@@ -206,6 +217,8 @@ export class BatchRunner
     @info "Entry: 0x#{@entryPoint.asHex(4)}"
     @info "Max steps: #{@maxSteps}"
     @info "Trace: #{if @traceEnabled then 'on' else 'off'}"
+    if @realTime
+      @info "Real-time: on (factor #{@rtFactor})"
     if @breakpoint?
       @info "Breakpoint: 0x#{@breakpoint.asHex(4)}"
     @info ""
@@ -220,6 +233,7 @@ export class BatchRunner
     step = 0
     stopReason = null
     lastSection = null
+    @pacer = if @realTime then new RTPacer(@age.cpu, @rtFactor, @rtIdleTimeoutMs) else null
     # Build flat list of watched halfword addresses for fast checking
     watchAddrs = []
     for wp in @memWatchpoints
@@ -228,7 +242,7 @@ export class BatchRunner
     hasWatchpoints = watchAddrs.length > 0
 
     while step < @maxSteps
-      before = @age.snapshotRegs()
+      before = if @traceEnabled then @age.snapshotRegs() else null
       nia = @age.cpu.psw.getNIA()
 
       # Trace when NIA jumps into a new CSECT:
@@ -245,8 +259,8 @@ export class BatchRunner
       hw1 = @age.mainStorage.get16(nia)
       hw2 = @age.mainStorage.get16(nia + 1)
 
-      # Decode
-      disasm = Instruction.toStr(hw1, hw2)
+      # Decode (disassembly text only when something will display it)
+      disasm = if @traceEnabled then Instruction.toStr(hw1, hw2) else null
       [d, v] = Instruction.decode(hw1, hw2)
       instrLen = if d? then d.origLen else 1
 
@@ -268,14 +282,17 @@ export class BatchRunner
 
       @age.gpc.exec1()
 
-      after = @age.snapshotRegs()
-      changes = @age.diffRegs(before, after)
-      changes = changes.filter (c) -> c.name != 'NIA'
-
       if @traceEnabled
+        after = @age.snapshotRegs()
+        changes = @age.diffRegs(before, after)
+        changes = changes.filter (c) -> c.name != 'NIA'
         @write @_formatTraceLine(step, nia, hw1, hw2, disasm, instrLen, changes)
 
       step++
+
+      # Real-time pacing: sleep off any lead over the wall clock
+      if @pacer? and (step & 255) == 0
+        await @pacer.pace()
 
       if @traceEnabled and @dumpInterval > 0 and step % @dumpInterval == 0
         for line in @_formatRegDump(step)
@@ -290,6 +307,8 @@ export class BatchRunner
           newVal = @age.mainStorage.get16(addr, false)
           if newVal != watchBefore[idx]
             section = @age.sym.getSectionAt(nia)
+            disasm ?= Instruction.toStr(hw1, hw2)
+            after = @age.snapshotRegs()
             msg = "memory watchpoint: HW 0x#{addr.toString(16).padStart(5,'0')} " +
               "changed 0x#{watchBefore[idx].toString(16).padStart(4,'0')} -> " +
               "0x#{newVal.toString(16).padStart(4,'0')} " +
@@ -310,20 +329,34 @@ export class BatchRunner
           break
 
       if @age.cpu.psw.getWaitState()
-        stopReason = "wait state"
-        break
+        if @pacer?
+          # Real time keeps flowing in the wait state: advance simulated
+          # time at the real-time rate until an interrupt wakes the CPU.
+          why = await @pacer.idleWait()
+          if why != 'resumed'
+            stopReason = "wait state (#{why})"
+            break
+        else
+          stopReason = "wait state"
+          break
 
     if not stopReason?
       stopReason = "max steps reached (#{@maxSteps})"
 
     @info "--- STOPPED after #{step} steps (reason: #{stopReason}) ---"
+    simUs = @age.cpu.execTimeUs()
+    @info "--- simulated CPU time: #{(simUs/1000).toFixed(3)} ms ---"
+    if @pacer?
+      wallMs = @pacer.wallMs()
+      ratio = if wallMs > 0 then (simUs/1000) / wallMs else 0
+      @info "--- wall time: #{wallMs.toFixed(0)} ms (#{ratio.toFixed(2)}x real speed) ---"
     @info "--- FINAL REGISTERS ---"
     for line in @_formatRegDump(step)
       @info line
 
     @flush()
 
-    if stopReason != "wait state"
+    if stopReason.indexOf("wait state") != 0
       process.stderr.write "ERROR: #{stopReason}\n"
       process.exit(1)
 
@@ -351,6 +384,7 @@ export class BatchRunner
     @step = 0
     @stopReason = null
     @lastSection = null
+    @pacer = if @realTime then new RTPacer(@age.cpu, @rtFactor, @rtIdleTimeoutMs) else null
 
     # attach channels without files to the console:
     @age.halUCP.inputCallback = (channel, iocode) =>
@@ -398,7 +432,7 @@ export class BatchRunner
   execLoop: ->
     lastSection = @lastSection
     while @step < @maxSteps
-      before = @age.snapshotRegs()
+      before = if @traceEnabled then @age.snapshotRegs() else null
       nia = @age.cpu.psw.getNIA()
 
       if @traceEnabled and @age.sym.symbols?
@@ -414,7 +448,7 @@ export class BatchRunner
       hw1 = @age.mainStorage.get16(nia)
       hw2 = @age.mainStorage.get16(nia + 1)
 
-      disasm = Instruction.toStr(hw1, hw2)
+      disasm = if @traceEnabled then Instruction.toStr(hw1, hw2) else null
       [d, v] = Instruction.decode(hw1, hw2)
       instrLen = if d? then d.origLen else 1
 
@@ -436,14 +470,17 @@ export class BatchRunner
 
       @age.gpc.exec1()
 
-      after = @age.snapshotRegs()
-      changes = @age.diffRegs(before, after)
-      changes = changes.filter (c) -> c.name != 'NIA'
-
       if @traceEnabled
+        after = @age.snapshotRegs()
+        changes = @age.diffRegs(before, after)
+        changes = changes.filter (c) -> c.name != 'NIA'
         @write @_formatTraceLine(@step, nia, hw1, hw2, disasm, instrLen, changes)
 
       @step++
+
+      # Real-time pacing: sleep off any lead over the wall clock
+      if @pacer? and (@step & 255) == 0
+        await @pacer.pace()
 
       if @traceEnabled and @dumpInterval > 0 and @step % @dumpInterval == 0
         for line in @_formatRegDump(@step)
@@ -451,8 +488,14 @@ export class BatchRunner
         @write ""
 
       if @age.cpu.psw.getWaitState()
-        @stopReason = "wait state"
-        break
+        if @pacer?
+          why = await @pacer.idleWait()
+          if why != 'resumed'
+            @stopReason = "wait state (#{why})"
+            break
+        else
+          @stopReason = "wait state"
+          break
 
     @lastSection = lastSection
 
@@ -462,11 +505,17 @@ export class BatchRunner
 
     if @stopReason?
       @info "--- STOPPED after #{@step} steps (reason: #{@stopReason}) ---"
+      simUs = @age.cpu.execTimeUs()
+      @info "--- simulated CPU time: #{(simUs/1000).toFixed(3)} ms ---"
+      if @pacer?
+        wallMs = @pacer.wallMs()
+        ratio = if wallMs > 0 then (simUs/1000) / wallMs else 0
+        @info "--- wall time: #{wallMs.toFixed(0)} ms (#{ratio.toFixed(2)}x real speed) ---"
       @info "--- FINAL REGISTERS ---"
       for line in @_formatRegDump(@step)
         @info line
       @flush()
-      exitCode = if @stopReason == "wait state" then 0 else 1
+      exitCode = if @stopReason.indexOf("wait state") == 0 then 0 else 1
       if exitCode != 0
         process.stderr.write "ERROR: #{@stopReason}\n"
       process.exit(exitCode)
@@ -486,7 +535,11 @@ export addCommand = (program) ->
   IOHost.addOptions(cmd)
 
   cmd
-    .option('--max-steps <n>', 'max instructions to execute', '100000')
+    .option('--max-steps <n>', 'max instructions to execute (0 = unlimited)', '100000')
+    .option('--cpu-model <m>', 'CPU model for instruction timing: s = AP-101S (default), c = original AP-101 C/M')
+    .option('--real-time', 'pace execution at (approximately) real AP-101S speed', false)
+    .option('--rt-factor <x>', 'real-time speed multiplier (2 = 2x real speed)', '1')
+    .option('--rt-idle-timeout <s>', 'stop after this many wall seconds in wait state with no wakeup', '10')
     .option('--break <addr>', 'stop at halfword address (hex)')
     .option('--watch <spec>', 'memory watchpoint: addr[:count] in hex', (v, prev) ->
       prev ?= []
@@ -506,6 +559,9 @@ export addCommand = (program) ->
       runner = new BatchRunner(Object.assign({}, o, {
         fcmPath
         maxSteps: parseInt(o.maxSteps, 10)
+        realTime: o.realTime or false
+        rtFactor: parseFloat(o.rtFactor)
+        rtIdleTimeout: parseFloat(o.rtIdleTimeout)
         breakpoint: if o.break then parseHex(o.break) else null
         memWatchpoints: o.watch or []
         watchLog: o.watchLog or false

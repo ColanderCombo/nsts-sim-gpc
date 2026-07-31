@@ -151,7 +151,7 @@ export class ProgramStatusWord
     # 48:63 Interrupt Code
     #
     @DESC1: 'ppppppppppppppppccrvf_usbbbbdddd'
-    @DESC2: 'mmmmmmmmeeeercwpiiiiiiiiiiiiiiiiii'
+    @DESC2: 'mmmmmmmmeeeercwpiiiiiiiiiiiiiiii'
 
     constructor: () ->
         @psw1 = new Register('psw1',32)

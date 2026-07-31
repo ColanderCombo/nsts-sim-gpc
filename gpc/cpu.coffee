@@ -63,11 +63,28 @@ export class CPU
     @intCode = 0                 # Interrupt code for program check
     @halUCP = null               # HalUCP instance for SVC interception
 
-    # Hardware counters
-    @counter1 = 0                # Counter 1 (PSA 00B0)
-    @counter2 = 0                # Counter 2 (PSA 00B1)
-    @counter1Enabled = false
-    @counter2Enabled = false
+    # Program interval timers (POO 2.5.2 "System" interrupts).  Each is a
+    # 32-bit counter decrementing once per microsecond of CPU time.  The
+    # low halfword lives in a hardware counter (here), the high halfword
+    # in main store at 00B0 (counter 1) / 00B1 (counter 2).
+    @counter1 = 0xffff           # Counter 1 low halfword (hi at PSA 00B0)
+    @counter2 = 0xffff           # Counter 2 low halfword (hi at PSA 00B1)
+
+    # Accumulated execution time.  Instruction times (xts/xtbs/opExecT) are
+    # microseconds from IBM-85-C67-001 sect.17; accumulate integer ns to
+    # stay exact (all table values are multiples of 5 ns).
+    @timeNs = 0                  # total CPU time since power-on
+    @cntAccumNs = 0              # sub-microsecond residue for counter ticks
+    @xtCase = 0                  # addressing-mode timing case of current instr
+    @xtIndexed = false           # plain indexing used (AP-101 C/M: +0.4us)
+    @opExecT = null              # per-instruction override (us), set by e()
+    @xtcRow = null               # C-model row override [5 x us], set by e()
+    @xtcAddT = null              # C-model additive (us), set by e()
+
+    # CPU model for instruction timing: 'S' (AP-101S, xts/xtbs) or
+    # 'C' (original AP-101 C/M, xtc/xtcs).
+    @model = 'S'
+    @prevDiscont = false         # last instr broke sequential fetch (C: ~NOK)
 
   r: (x) -> @regFiles[@psw.getRegSet()].r(x)
   f: (x) -> @regFiles[2].r(x)
@@ -509,6 +526,10 @@ export class CPU
                   #    modification of the base.
                   #
                   if v.ia==1 and v.ii==0
+                      # Timing: single-level indirection has no column of its
+                      # own in the sect.17 table; use the closest double-
+                      # indirection case (XC=1: no post-indexing here).
+                      @xtCase = 3
                       indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
                       indirectHW = @ram.get16(indirectAddr)
                       ea = @g_EXPAND(indirectHW,v.opType)
@@ -524,6 +545,7 @@ export class CPU
                   #    replaces bits 0 through 15 of the indirect address
                   #    word. (See Figure 2-15.)
                   if v.ia==1 and v.ii==1
+                      @xtCase = 5     # timing: auto storage modification
                       indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
                       indirectFW = @ram.get32(indirectAddr)
                       ea = indirectFW >>> 16
@@ -544,6 +566,7 @@ export class CPU
                   #    EA is then expanded to a 19-bit EA, as explained in the
                   #    Expanded Addressing section.)
                   if v.ia==0 and v.ii==0
+                      @xtIndexed = true   # timing (C/M): plain indexing
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       ea = pea + regx
                       ea = @g_EXPAND(ea,v.opType)
@@ -561,6 +584,7 @@ export class CPU
                   #    the EA is determined.)
                   #
                   if v.ia==0 and v.ii==1
+                      @xtCase = 6     # timing: auto indexing
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       modifier = @r(v.i).get32() & 0xffff
                       ea16 = (pea + regx) & 0xffff
@@ -582,6 +606,9 @@ export class CPU
                   #    modification of the base.
                   #
                   if v.ia==1 and v.ii==0
+                      # Timing: indirection with post-indexing; closest table
+                      # case is double indirection XC=0 (post-indexed), C=0.
+                      @xtCase = 1
                       indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
                       indirectHW = @ram.get16(indirectAddr)
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
@@ -678,7 +705,10 @@ export class CPU
                       cd = (indirectFW >>> 8) & 1     # bit 23
                       ptrBSR = (indirectFW >>> 4) & 0xF  # bits 24-27
                       ptrDSR = indirectFW & 0xF          # bits 28-31
-                      
+
+                      # Timing: double indirection, case selected by (XC,C)
+                      @xtCase = 1 + xc*2 + c
+
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)  # aligned index register value
 
                       if c == 0
@@ -787,12 +817,14 @@ export class CPU
 
                   # Step 5: Indirect halfword (expand for memory lookup, not for result)
                   if v.ia==1 and v.ii==0
+                      @xtCase = 3     # timing: see g_EA step 5
                       indirectAddr = @g_EXPAND(pea, OPTYPE_DATA)
                       indirectHW = @ram.get16(indirectAddr)
                       ea = indirectHW & 0xffff
 
                   # Step 6: Indirect fullword with modification (expand for memory lookup)
                   if v.ia==1 and v.ii==1
+                      @xtCase = 5     # timing: auto storage modification
                       indirectAddr = @g_EXPAND(pea, OPTYPE_DATA)
                       indirectFW = @ram.get32(indirectAddr)
                       ea = (indirectFW >>> 16) & 0xffff
@@ -805,11 +837,13 @@ export class CPU
 
                   # Step 7: Indexed, no indirect
                   if v.ia==0 and v.ii==0
+                      @xtIndexed = true   # timing (C/M): plain indexing
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       ea = (pea + regx) & 0xffff
 
                   # Step 8: Indexed with modification
                   if v.ia==0 and v.ii==1
+                      @xtCase = 6     # timing: auto indexing
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       modifier = @r(v.i).get32() & 0xffff
                       ea = (pea + regx) & 0xffff
@@ -818,6 +852,7 @@ export class CPU
 
                   # Step 9: Indirect with post-indexing (expand for memory lookup)
                   if v.ia==1 and v.ii==0
+                      @xtCase = 1     # timing: see g_EA step 9
                       indirectAddr = @g_EXPAND(pea, OPTYPE_DATA)
                       indirectHW = @ram.get16(indirectAddr)
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
@@ -830,6 +865,8 @@ export class CPU
                       indirectFW = @ram.get32(indirectAddr)
                       address16 = (indirectFW >>> 16) & 0xffff
                       xc = (indirectFW >>> 11) & 1
+                      c16 = (indirectFW >>> 10) & 1
+                      @xtCase = 1 + xc*2 + c16   # timing: double indirection
                       regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
                       if xc == 0
                           ea = (address16 + regx) & 0xffff
@@ -941,6 +978,41 @@ export class CPU
           else
               return insBits
 
+  # Pick the timing-table value for the current addressing case from a row
+  # of alternate times.  Used by e() overrides whose whole row differs from
+  # the xts default (e.g. R1-odd multiply/divide).
+  xtPick: (row) -> row[@xtCase] ? row[0]
+
+  execTimeUs: () -> @timeNs / 1000
+
+  # Advance CPU time by ns and tick the two 1-MHz interval timers.
+  # Callable from outside exec1 as well (e.g. to model wait-state time).
+  advanceTimeNs: (ns) ->
+      @timeNs += ns
+      @cntAccumNs += ns
+      if @cntAccumNs >= 1000
+          ticks = (@cntAccumNs / 1000) | 0
+          @cntAccumNs -= ticks*1000
+          @counter1 = @tickCounter(@counter1, 0x00B0, 'clk1', ticks)
+          @counter2 = @tickCounter(@counter2, 0x00B1, 'clk2', ticks)
+
+  # Decrement one interval timer by `ticks` microseconds (POO 2.5.2).  The
+  # low halfword is the 16-bit hardware counter; on borrow, microcode
+  # decrements the high halfword in main store (bypassing store protect).
+  # When the high halfword is 0000 at borrow time it wraps to FFFF and the
+  # clock interrupt is raised.
+  tickCounter: (low, hiAddr, intName, ticks) ->
+      low -= ticks
+      if low < 0
+          low += 0x10000        # ticks <= 65535, so at most one borrow
+          hi = @ram.get16(hiAddr)
+          if hi == 0
+              @ram.set16(hiAddr, 0xffff, false)
+              @intPending[intName] = true
+          else
+              @ram.set16(hiAddr, hi - 1, false)
+      return low
+
   reset: () ->
       @psw.psw1.set32(@ram.get32(0x14))
       @psw.psw2.set32(@ram.get32(0x16))
@@ -994,22 +1066,59 @@ export class CPU
           @intPending.programCheck = true
           @intCode = 0x0009
 
+      # Instruction timing: reset the per-instruction state.  g_EA/g_EA_16
+      # set xtCase/xtIndexed for the special addressing modes; e() may set
+      # opExecT (microseconds) to override the table values entirely.
+      @xtCase = 0
+      @xtIndexed = false
+      @opExecT = null
+      @xtcRow = null
+      @xtcAddT = null
+      seqNIA = @psw.getNIA()    # fall-through NIA, for branch-taken detection
+
       if d.e?
           d.e(@,v)
-      # Decrement hardware counters and check for interrupt
-      if @counter1Enabled
-          @counter1--
-          if @counter1 <= 0
-              @counter1 = @ram.get16(0x00B0) << 16  # Reload from PSA high halfword
-              @intPending.clk1 = true
-      if @counter2Enabled
-          @counter2--
-          if @counter2 <= 0
-              @counter2 = @ram.get16(0x00B1) << 16
-              @intPending.clk2 = true
+
+      if @model == 'C' and (@xtcRow? or d.xtcNs? or d.xtcsNs?)
+          # Original AP-101 C/M (IBM 75-A97-001 sect.2.4).  Column by IC
+          # parity; the ~NOK column applies only right after a discontinuity
+          # (branch/interrupt).  Operands assumed in internal (CPU) memory —
+          # the Even-100/Even-200 columns (IOP external memory / EMU) are
+          # not yet selected.  opExecT overrides are AP-101S formulas and
+          # are ignored here; count-scaled C ops (e.g. SUM note 2) TBD.
+          if @xtcRow?
+              # e() supplied a command-specific row (us), e.g. ICR
+              row = (Math.round(x*1000) for x in @xtcRow)
+          else
+              row = if v.niaIncr == 1 and d.xtcsNs? then d.xtcsNs else (d.xtcNs ? d.xtcsNs)
+          col = if nia & 1 then (if @prevDiscont then 2 else 1) else 0
+          dtNs = row[col]
+          dtNs += Math.round(@xtcAddT * 1000) if @xtcAddT?
+          # NOTE 4 adders: index +0.4, index modification +1.2,
+          # indirect +1.2 (+0.4 when post-indexed), indirect mod +2.8
+          dtNs += 400 if @xtIndexed
+          switch @xtCase
+              when 1 then dtNs += 1600          # indirect, post-indexed
+              when 2, 3, 4 then dtNs += 1200    # indirect
+              when 5 then dtNs += 2800          # indirect modification
+              when 6 then dtNs += 1200          # index modification
+      else if @opExecT?
+          dtNs = Math.round(@opExecT * 1000)
+      else if @xtCase == 0 and d.xtbsNs?
+          taken = @psw.getNIA() != seqNIA
+          dtNs = d.xtbsNs[if taken then 0 else 1]
+      else if d.xtsNs?
+          dtNs = d.xtsNs[@xtCase] ? d.xtsNs[0]
+      else
+          dtNs = 250            # op missing from the timing table
+      @advanceTimeNs(dtNs)
 
       # Check and service pending interrupts
       @checkInterrupts()
+
+      # Sequential-fetch discontinuity (branch taken or interrupt swap):
+      # the next instruction starts with an empty lookahead (C-model ~NOK)
+      @prevDiscont = @psw.getNIA() != seqNIA
 
       times[1] = _now()
       times[2] = times[1] - times[0]
