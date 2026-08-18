@@ -133,6 +133,7 @@ export class Screen_DPS extends MDUScreen
 
 
       desc = @fcw.decodeFCW(fcw)
+      continue unless desc?
       switch desc.nm
         when 'POSTX'
           xc = desc.v.x

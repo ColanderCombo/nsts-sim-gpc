@@ -17,6 +17,17 @@ export class FCW extends PackedBits
 
   decodeFCW: (hw) ->
     desc = @decode(hw)
+    if not desc?
+      # Word doesn't match any implemented FCW opcode -- either a real,
+      # not-yet-implemented multi-halfword FCW's own operand word (see
+      # this file's own "Format control words" comment block: several
+      # real historical FCW types are documented but not yet built into
+      # @FCWS, e.g. multi-hw POSITION), or a FETCH's own referenced/
+      # fetched payload data, not itself an FCW opcode at all. Skip
+      # rather than crash the whole format -- one unrecognized word
+      # shouldn't take down every other word already decoded correctly.
+      console.log "decodeFCW: NO MATCH for hw=0x#{hw.toString(16)} -- skipping"
+      return undefined
     dd = desc.v
     if desc.nm == 'CHAR1'
       dd.char = @DEUCharset[dd.char]
