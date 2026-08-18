@@ -80,7 +80,7 @@ export class Screen_DPS extends MDUScreen
   
   setBGDFB: (msg) ->
     @bgFCWS.fill(0)   # clear stale FCWs so a shorter format doesn't leave leftovers
-    for i in [1..msg.data16.length]
+    for i in [1...msg.data16.length]
       @bgFCWS[i-1] = msg.data16[i]
 
     # capture the new group drawFCWS returns, else the old one is never removed
