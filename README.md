@@ -385,6 +385,22 @@ to load the unit, `--no-bite` answers with a zero BITE register (which is
 what a GPC reads as no response at all), and `--dump` writes display
 memory out on exit.
 
+MMU — Mass Memory Unit
+----------------------
+
+`MMU.sh` runs a mass memory unit on its bus and answers a GPC.  
+
+```
+MMU.sh run --unit 1 --volume tape.mmv   # serve a tape on MM1 (BCE 18)
+MMU.sh create tape.mmv                  # an empty volume
+MMU.sh put tape.mmv 0/0/0/0 data.bin    # lay halfwords on the tape
+MMU.sh get tape.mmv 4/4/3/8 --blocks 17 # read them back
+MMU.sh ls tape.mmv                      # what a volume holds
+MMU.sh dump tape.mmv 4/4/3/8            # hex dump one block
+MMU.sh watch MM1 --decode               # decode the bus traffic
+MMU.sh send MM1 588000                  # put one command on the bus
+```
+
 Repository Contents
 -------------------
 
@@ -394,6 +410,11 @@ The gpc simulator was originally part of a larger system that also simulates oth
 
   - `com/` contains common utilities, including a simple 'Bus' that lets LRUs communicate via multicast UDP packets.  In the gpc it's used to emulate the physical Shuttle busses connected to the IOP; MEDS uses the same busses for IDP↔MDU and (eventually) GPC↔IDP traffic.
 
+  - `mmu/` contains a simulation of the Shuttle Mass Memory Unit: 
+    - `mmu.coffee`, 
+    - `volume.coffee` (the tape and its file format), 
+    - `mmuConf.coffee` (geometry, command and status layouts)
+    - `cli.coffee` (the `MMU.sh` command). 
   - `meds/` contains the MEDS simulator: 
     - `mdu.coffee` (display unit), 
     - `idp.coffee` (Interface/Display Processor), 
@@ -455,7 +476,7 @@ AP-101 Implementation Notes
 
   - We model both the AP-101/B model originally installed in the Shuttle and the AP-101/S upgrade.  We default to AP-101/S mode.
 
-  - The simulator includes an implementation of the IOP coprocessor used to interface to the 24 serial shuttle busses. This implementation has only had *very* basic testing and almost certainly will not work with real MSC/BCE programs.  This is future work.
+  - The simulator includes an implementation of the IOP coprocessor used to interface to the 24 serial shuttle busses.  Verification is still in progress, but it's known to be able to communicate with the MEDS and MMU implementations also in this repository.
 
 References
 ----------

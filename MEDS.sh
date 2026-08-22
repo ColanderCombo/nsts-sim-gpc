@@ -14,4 +14,12 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 "${DIR}/node_modules/.bin/electron-esbuild" build || exit $?
+
+# electron-esbuild CLEANS dist/, which takes the node bundles with it, so
+# rebuild them here -- otherwise the next `node dist/gpcmd.js` after a MEDS
+# launch fails with MODULE_NOT_FOUND.
+for cfg in gpc gpcmd mmu; do
+    node "${DIR}/esbuild/esbuild.${cfg}.config.js" >/dev/null || exit $?
+done
+
 exec "${DIR}/node_modules/.bin/electron" "${DIR}/dist/main/main.js" meds "$@"

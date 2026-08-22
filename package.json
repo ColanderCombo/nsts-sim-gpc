@@ -17,7 +17,9 @@
     "meds": "electron dist/main/main.js meds",
     "dist:meds": "npm run dist:prep && electron-builder --config electron-builder-meds.yml",
     "gpcmd:build": "node esbuild/esbuild.gpcmd.config.js",
-    "gpcmd": "node dist/gpcmd.js"
+    "gpcmd": "node dist/gpcmd.js",
+    "mmu:build": "node esbuild/esbuild.mmu.config.js",
+    "mmu": "node dist/mmu.js"
   },
   "build": {
     "appId": "com.nsts.gpc",
