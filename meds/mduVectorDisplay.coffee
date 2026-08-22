@@ -645,7 +645,9 @@ export class VectorDisplay
       hd.style.cssText = 'position:absolute; width:12px; height:12px; margin:-6px 0 0 -6px; background:#00ffff; border:1px solid #000; transform:rotate(45deg); z-index:10001; cursor:move; -webkit-app-region:no-drag;'
       wrap.appendChild(hd)
       hd)
-    # --- rotate tool: double-click the image to set the rotation centre
+    # rotate tool
+    #
+    # Double-click the image to set the rotation centre
     # (small red cross), then type a signed angle in degrees (fractions ok)
     # into the box below the image and hit Enter; + rotates clockwise.
     # Centre and cumulative angle persist with the corners.
@@ -670,7 +672,9 @@ export class VectorDisplay
     rotTot.style.cssText = 'margin-left:6px;'
     rotBox.appendChild(rotTot)
     wrap.appendChild(rotBox)
-    # --- nudge tool: double-click any corner/edge handle for fine (sub-px)
+    # nudge tool
+    #
+    # Double-click any corner/edge handle for fine (sub-px)
     # position adjustments. Arrow buttons / arrow keys move the selected
     # handle by the step size; the x/y boxes take exact coordinates (edges
     # use their midpoint — moving it shifts both of that edge's corners).
@@ -883,7 +887,8 @@ export class VectorDisplay
     if o.save? then o.save()
     else try window.localStorage.setItem(key, JSON.stringify({corners:o.corners, opacity: parseFloat(o.im.style.opacity), ver:2}))
 
-  # ---- overlay image library (debug) -----------------------------------------
+  # overlay image library (debug)
+  #
   # The reference-overlay image is selectable from data/overlay_images/ via
   # the param editor's 'reference overlay' group. The choice binds to the
   # placement: it lives in the live state (localStorage `key`.img) and rides
@@ -912,7 +917,8 @@ export class VectorDisplay
     o = @_overlays?[key]
     o? and o.wrap.style.display != 'none'
 
-  # ---- overlay placement slots (debug) --------------------------------------
+  # overlay placement slots (debug)
+  #
   # Named save slots for a reference overlay's placement (corners, opacity,
   # rotate-tool state). localStorage layout: registry at `<key>:slots` =
   # {names:[...], cur}, each slot's snapshot at `<key>#<name>`; the LIVE

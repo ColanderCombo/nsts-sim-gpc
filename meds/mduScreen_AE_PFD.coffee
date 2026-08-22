@@ -59,7 +59,8 @@ export class Screen_AE_PFD extends MDUScreen
     @curData.adiPch = rpy[1]
     @curData.adiYaw = rpy[2]
 
-  # ---- live-feed tape test --------------------------------------------------
+  # live-feed tape test
+  #
   # Driven by the 'Hdot tape test' toggle in the debug parameter editor.
   # Sweeps hdot tape-minimum -> maximum -> minimum through the normal
   # curData/data() feed path, in tape-POSITION space so the tape scrolls at
@@ -97,7 +98,8 @@ export class Screen_AE_PFD extends MDUScreen
     @curData.hdot = Math.round(v) * (if pos < 0 then -1 else 1)
     @_redrawAVVI()
 
-  # ---- live-feed altitude tape test -------------------------------------------
+  # live-feed altitude tape test
+  #
   # Sweeps the H tape end to end (-1000 ft .. 165 nmi) at constant tape
   # speed (position space, so every ALT_SEGS regime gets equal screen time),
   # with the radar altimeter locking below 5000 ft to exercise the pointer
@@ -197,7 +199,8 @@ export class Screen_AE_PFD extends MDUScreen
     @_redrawAVVI()
     @updateADI()
 
-  # ---- live-feed ADI test ---------------------------------------------------
+  # live-feed ADI test
+  #
   # Driven by the 'ADI test' pulldown in the debug parameter editor
   # (dbl-click outside the canvas):
   #   pitch sweep  +pitch revolution: horizon drops, ball top-to-bottom
@@ -286,7 +289,8 @@ export class Screen_AE_PFD extends MDUScreen
     d.adiYawRate = 5 * Math.sin(2*Math.PI * t/19)
     @updateADI()
 
-  # ---- live-feed G-meter test -----------------------------------------------
+  # live-feed G-meter test
+  #
   # Driven by the 'G-meter test' pulldown in the debug parameter editor.
   # Every mode sweeps the needle + digital through the full -1..4g range
   # (triangle, 12 s); the mode picks the major mode, exercising each meter
@@ -343,7 +347,8 @@ export class Screen_AE_PFD extends MDUScreen
     @accMeter = @_redo @accMeter, => @drawAccMeter(ACC_ARGS...)
     @majorMode = @_redo @majorMode, => @drawMajorMode()
 
-  # ---- live-feed alpha tape test --------------------------------------------
+  # live-feed alpha tape test
+  #
   # Driven by the 'Alpha tape test' checkbox in the debug parameter editor.
   # Alpha sweeps -8..24 (through the whole green min/max band, hitting both
   # the grey negative and white positive faces — no need to walk the full
@@ -377,7 +382,8 @@ export class Screen_AE_PFD extends MDUScreen
     @curData.mach = Math.round((0.3 + tri(17)*2.9) * 100) / 100
     @ami = @_redo @ami, => @drawAMI()
 
-  # ---- live-feed velocity tape test ------------------------------------------
+  # live-feed velocity tape test
+  #
   # Driven by the 'Vel tape test' checkbox in the debug parameter editor.
   # u sweeps the tape end to end in tape units (mach 0..4, then VR as Kfps
   # up to 27), exercising both tape ends and the label/tick regime change
@@ -1487,7 +1493,8 @@ export class Screen_AE_PFD extends MDUScreen
     @adi = new THREE.Object3D()
     @adi.name = "ADI"
 
-    # --- ADI circular space ------------------------------------------------
+    # ADI circular space
+    #
     # Children of @adiC are authored in a circular frame: origin at the ball
     # centre, BOTH axes in row units, so a radius means the same thing in x
     # and y and circles are round by construction. The group transform then
@@ -1770,7 +1777,8 @@ export class Screen_AE_PFD extends MDUScreen
     @updateADI()
     return @adi
 
-  # ---- ADI ball -----------------------------------------------------------
+  # ADI ball
+  #
   # Software ball per JSC-18863 fig 8-13. Ball model space: unstretched row
   # units, y down, z toward the viewer, origin at the ball centre:
   #   S(p,w) = R ( cos w (cos p ẑ − sin p ŷ) + sin w x̂ )
@@ -2043,7 +2051,8 @@ export class Screen_AE_PFD extends MDUScreen
       mk geom, @d.mats[0][@d.c2h.white], -1
     return g
 
-  # ---- ADI drive ----------------------------------------------------------
+  # ADI drive
+  #
   # Re-derives every data-driven ADI element. The ball geometry is static;
   # attitude only updates the rotor's rotation, and the needle / roll bug /
   # rate pointer / digital readout groups are cheaply rebuilt.

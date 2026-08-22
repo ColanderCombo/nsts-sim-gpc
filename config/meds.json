@@ -20,7 +20,8 @@
       "lru": "IDP",
       "module": "meds/idp",
       "config": {
-        "lru": "IDP1"
+        "lru": "IDP1",
+        "ipled": false
       }
     },
     "idp2": {

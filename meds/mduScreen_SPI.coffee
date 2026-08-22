@@ -168,7 +168,8 @@ export class Screen_SPI extends MDUScreen
     m.renderOrder = 2      # above the SDF tick strokes (cores at 1)
     return m
 
-  # ---- live-feed indicator test ---------------------------------------------
+  # live-feed indicator test
+  #
   # Driven by the 'SPI sweep test' checkbox in the debug parameter editor
   # (dbl-click outside the canvas). Sweeps every surface through its full
   # range as a triangle wave; each channel gets its own period so the

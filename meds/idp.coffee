@@ -1,26 +1,16 @@
-# import * as fs from 'fs'
 fs = window.fs
 import 'com/util'
 import {LRU} from './../com/lru.civet.jsx'
 import {Bus, BusMsg} from './../com/bus.civet.jsx'
-import {MEDSConf} from  'meds/medsConf'
-import {FCW} from 'meds/deuFCW'
+import {MEDSConf, MDUMsg} from 'meds/medsConf'
+import {FCW, wordsFromBytes} from 'meds/deuFCW'
+import * as DEU from 'meds/deuProto'
+import {DEUUnit} from 'meds/deuUnit'
+import {KYBD} from 'meds/kybd'
 import React from 'react'
 
 #
 # Interface/Display Processor
-#
-# Opcodes:
-#   1 = DATA FILL
-#   2 = TIME FILL + POLL
-#   3 = IPL FILL
-#   4 = DUMP
-#   5 = BITE STATUS
-#   6 = RESET SPL
-#   7 = CRT FMT FILL
-#   8 = REMOTE FILL (not used)
-#   9 = REMOTE DUMP
-# 
 #
 
 # DEU Display Control Program (DCP) info
@@ -36,7 +26,7 @@ import React from 'react'
 #   0x19BC  Message Line Buffer
 #   0x19EE  Display Buffer
 #   0x1FE5  I/O Buffer
-
+#
 # Mem map:
 #   0x0100  Critical Format Index Table
 #     ->
@@ -53,69 +43,16 @@ import React from 'react'
 #   0x0F95  poll response keyboard buffer
 #     ->
 #   0x0FA4
+#     ...
+#   0x0FB4
+#     ->
+#   0x0FD4  keyswitch code table
 #   
 #   0x19EE  Display Header - ADDRESS OF DEU FILL FOR HEADER
 #
 #   0x1A06  Address of the Uplink Indicator
 #
 #   0x1A0E  Address of the Uplink Indicator - DEU BRANCH ADDRESS 
-#
-
-class DEUMsg 
-  #extends PackedBits
-  constructor: () ->
-    @makeMsgTable()
-
-  makeMsgTable: () ->
-
-  msgDefs: {
-    respHdr: {
-      d:'ooooriiimmafktcl'
-      f:{
-        o: 'msgOp'
-          # 0=NOT USED
-          # 1=KEYBOARD MESSAGE RESPONSE
-          # 2=BITE STATUS RESPONSE
-          # 3=MODE STATUS RESPONSE
-          # 4=MEMORY FILL
-        r: 'msgResetMsg'
-        i: 'deuId'
-          # 5=DEU1
-          # 6=DEU2
-          # 7=DEU3
-        m: 'majFunc'
-          # 0=PAYLOAD MAINTAINENCE
-          # 1=GN&C
-          # 2=SYSTEMS MAINTAINENCE
-          # 3=INVALID
-        a: 'ackMsg'
-        f: 'displayFreeze'
-        k: 'kybMsgPresent'
-        t: 'standaloneSelftestInProgress'
-        c: 'criticaltBiteStatusPresent'
-        l: 'initializationRequired'
-      }
-    }
-    respData2: {
-      d:'ffffffff___ccccc'
-      f:{
-        f: 'formatIndex'
-        c: 'countOfKeystrokes'
-      }
-    }
-    respDataKeys: {
-      d:'aaaaabbbbbccccc_'
-      f:{
-        a:'key1'
-        b:'key2'
-        c:'key3'
-      }
-    }
-  }
-
-
-# DEU buffer size = 1627 halfwords
-#
 #
 
 
@@ -132,27 +69,18 @@ export class IDP extends LRU
 
     @fcw = new FCW()
     @mduCmdBus = @bus["_#{@id}"]
+    @dkBus = @bus[@idpConfig.dkBus]
     @running = false
 
-    # IDP bus config lookup (does not overwrite @idpConfig from MEDSConf)
-    @idpBusConfig = {
-      IDP1: {
-        busses: ['FC1', 'FC2', 'FC3', 'FC4', 'DK1', '_KYBD1', '_IDP1']
-        dk: 'DK1', kybd: ['_KYBD1']
-      }
-      IDP2: {
-        busses: ['FC1', 'FC2', 'FC3', 'FC4', 'DK2', '_KYBD2', '_KYBD3', '_IDP2']
-        dk: 'DK2', kybd: ['_KYBD2', '_KYBD3']
-      }
-      IDP3: {
-        busses: ['FC1', 'FC2', 'FC3', 'FC4', 'DK3', '_KYBD1', '_KYBD2', '_IDP3']
-        dk: 'DK3', kybd: ['_KYBD1', '_KYBD2']
-      }
-      IDP4: {
-        busses: ['FC1', 'FC2', 'FC3', 'FC4', 'DK4', '_KYBD3', '_IDP4']
-        dk: 'DK4', kybd: ['_KYBD3']
-      }
-    }
+    @unit = new DEUUnit
+      name: "IDP#{@id}"
+      ipled: @CONFIG.config?.ipled
+      send: (words) => @_send words
+      fill: (addr, words) => @_sendToMDUs addr, words
+      reset: () => @_resetScratchPad()
+      time: (t) => @_sendClock t
+      poll: () => @_sendPollTick()
+      log: (text) => console.log text
 
     for id,bus of @bus
       console.log "|||", id, bus
@@ -161,7 +89,6 @@ export class IDP extends LRU
       else if /DK/.test id
         bus.onReceive @recvDK,@
       else if /IDP/.test id
-        #console.log "recvMDU", id
         bus.onReceive @recvMDU,@
       else if /KYBD/.test id
         bus.onReceive @recvKYBD,@
@@ -178,168 +105,101 @@ export class IDP extends LRU
     </cde-window>
 
 
+  # The FC1-4 busses carry flight instrument (a.k.a. "steam gauge")
+  # data from the ADC.  Not yet implemented.
+  #
   recvFC: (t,busID, msg, remote) ->
-    console.log "IDP#{t.id}: #{busID} recv #{msg}"
-    #
-    # device ID's:
-    #
-    #     5   DEU1
-    #     6   DEU2
-    #     7   DEU3
-    #
-    # message types:
-    #
-    #   1 (FILL) - Memory Fill
-    #   2 (POLL) - Poll
-    #       word count: 1
-    #   3 (KYBD) - Keyboard Request
-    #       word count: 42
-    #   4 (DUMP) - Dump
-    #   5 (RBS)  - Bite Status Request
-    #       word count: 5
-    #   6 (RSPL) - Reset Scratch Pad Line
-    #       word count: 0
-    #
 
-  # GPC -> IDP command traffic (DK bus).  Sim wire format (see
-  # meds/gpcmd.coffee): data16[0] = DEU opcode, payload follows.
+  # Display/Keyboard (DK) busses
+  #
   recvDK: (t,busID, msg, remote) ->
-    op = msg.data16[0]
-    switch op
-      when 1  # DATA FILL: FCW stream -> forward to the MDUs as a background DFB
-        console.log "IDP#{t.id}: #{busID} DATA FILL (#{msg.rawData.length-2} bytes)"
-        out = new BusMsg(msg.data16.length)
-        out.data16[0] = 0xff00
-        for i in [2...msg.rawData.length]
-          out.data8[i] = msg.data8[i]
-        t.mduCmdBus.sendMsg out
-      when 2  # TIME FILL + POLL: met/crt in seconds (32b hi/lo each)
-        met = (msg.data16[1]*0x10000 + msg.data16[2]) * 1000
-        crt = (msg.data16[3]*0x10000 + msg.data16[4]) * 1000
-        t._lastGpcTimeAt = Date.now()
-        t.fillTime(met, crt)
-      when 6  # RESET SPL -> tell the MDUs to clear the scratch pad line
-        console.log "IDP#{t.id}: #{busID} RESET SPL"
-        out = new BusMsg(1)
-        out.data16[0] = 0xff02
-        t.mduCmdBus.sendMsg out
-      else
-        console.log "IDP#{t.id}: #{busID} unhandled GPC op #{op}"
+    t.unit.recv msg.data16
+
+  # `DEUUnit` has already counted these in `stats.wordsOut`.
+  _send: (words) ->
+    return if not @dkBus? or words.length == 0
+    msg = new BusMsg(words.length)
+    msg.data16[i] = words[i] & 0xffff for i in [0...words.length]
+    @dkBus.sendMsg msg
+
+  # The IDP -> MDU messages; the tags are `MDUMsg` in meds/medsConf.
+  _sendMDU: (tag, words = []) ->
+    return if not @mduCmdBus?
+    msg = new BusMsg(1 + words.length)
+    msg.data16[0] = tag
+    msg.data16[1 + i] = words[i] & 0xffff for i in [0...words.length]
+    @mduCmdBus.sendMsg msg
+
+  _sendToMDUs: (addr, words) -> @_sendMDU MDUMsg.FILL, [addr].concat(words)
+
+  # The GPC polled this unit.  This drives POLL FAIL on the MDU's DPS
+  # display, and nothing else: it says a GPC is talking to us, not that the
+  # IDP is alive.  See `_heartbeat`.
+  _sendPollTick: () -> @_sendMDU MDUMsg.POLL, [@id]
+
+  # The IDP's own heartbeat, free-running.  An MDU is autonomous when its
+  # port goes quiet, and a port is quiet only when the IDP has stopped -- not
+  # when a GPC has.  So this ticks whether or not anything is on the DK bus,
+  # which is what lets MEDS run with no GPC at all.
+  #
+  # The MDU also advances the DEU's flashing attribute on this beat, so local
+  # flashing keeps working with no GPC.  Eight beats a second is what lets it
+  # hold the flash's 5/8 : 3/8 duty cycle; see Screen_DPS.blinkTick.
+  HEARTBEAT_MS = 125
+
+  _heartbeat: () ->
+    return if @_hbTimer?
+    @_hbTimer = window.setInterval (() => @_sendMDU MDUMsg.HEARTBEAT, [@id]),
+                                   HEARTBEAT_MS
+
+  # The header clock, straight from the GPC.  It does NOT go into display
+  # memory: the GPC's own variable-data fill covers 0x19EE..0x1AB2, so
+  # drawing there would overwrite the fields the GPC is updating.  The clock
+  # is the display's own furniture -- on a real unit the control program
+  # draws it -- so it rides to the MDU as its own message.
+  _sendClock: (t) ->
+    return if not t?
+    @_sendMDU MDUMsg.CLOCK, [Math.max(0, Math.round(t.mission)),
+                             Math.max(0, Math.round(t.event)), t.conv]
+
+  _resetScratchPad: () -> @_sendMDU MDUMsg.RESET_SPL
 
   recvMDU: (t,busID, msg, remote) ->
-    if msg.data16[0] < 0xff00
+    if msg.data16[0] < MDUMsg.FILL
       console.log "IDP#{t.id}: #{busID} recv #{msg}"
       #console.log msg
 
+  # Keyboard Handling
+  #
   recvKYBD: (t,busID, msg, remote) ->
-    console.log "IDP#{t.id}: KYBD #{busID} recv #{msg}"
+    for w in msg.data16
+      k = KYBD.byScan(w)
+      if k?
+        t.unit.pressKey k.gpcCode
+      else
+        console.log "IDP#{t.id}: unknown keyboard scan code " +
+                    "0x#{(w & 0xffff).toString(16)}"
+
+  #
+  # Dev/Testing
+  # test code only enabled with --dev
+  #
+  # Load a raw format control word stream into display memory at the display
+  # header address, which is where a refresh starts.
+  loadFCWs: (words, addr = DEU.ADDR.DISPLAY_HEADER) ->
+    for w, i in words
+      @unit.mem[(addr + i) & (DEU.DEU_MEMORY_WORDS - 1)] = w & 0xffff
+    @_sendToMDUs(addr, Array.from(words))
 
   execDPS: () ->
-    console.log(@CONFIG)
     @bgDFB = fs.readFileSync @CONFIG.NSTS_TOP+'data/'+'TEST-9011-GPC_MEMORY.dfb'
-    dfbMsg = new BusMsg(1+@bgDFB.length)
-    dfbMsg.data16[0] = 0xff00
-    for c,i in @bgDFB
-      dfbMsg.data8[i+2] = c
-    console.log "execDPS", dfbMsg
-    @mduCmdBus.sendMsg dfbMsg
-
-  fillHeader: () ->
-    # POSTX OPS_Page_X_Coordinate OPS_Page_Y_Coordinates
-    # CHAR2 <OPS>
-    # CHAR2 <OPS>
-    # CHAR1 /
-    # CHAR1 <SPEC>/NOOP
-    # CHAR2 <SPEC>/NOOP
-    # CHAR /
-    # CHAR1 <DISP>/NOOP
-    # CHAR2 <DISP>/NOOP
-    # POSTX GPC_ID_X_Coordinate OPS_Page_Y_Coordinate
-    # CHAR1 GPC_ID
-
-  makeDFB: (s,opt={}) ->
-    dfb = []
-    curFCW = {}
-
-    if opt? and opt.xy?
-      dfb.push @fcw.encodeFCW {nm:'POSTX', x:opt.xy[0], y:opt.xy[1]}
-    for x in s
-      if curFCW.nm == 'CHAR1'
-        curFCW = {nm:'CHAR2', char1:@fcw.DEUCharset[curFCW.char], char2:x}
-        dfb.pop()
-        dfb.push @fcw.encodeFCW curFCW
-      else
-        curFCW = {nm:'CHAR1', char:x, blink:0, intensity:0}
-        dfb.push @fcw.encodeFCW curFCW
-    # dfb.push 0
-    return dfb
-
-  _makeTimeStr: (curTime,y=0) ->
-    yearMillis = curTime
-    # now = new Date(Date.now())
-    # jan1 = new Date(now.getFullYear(),0,1)
-    # yearMillis = now - jan1
-    dayOfYear = Math.floor((yearMillis) / (24*60*60*1000))
-    dayMillis = yearMillis - (dayOfYear*24*60*60*1000)
-    hour = Math.floor(dayMillis / (60*60*1000))
-    hourMillis = dayMillis - (hour*60*60*1000)
-    min = Math.floor(hourMillis / (60*1000))
-    minMillis = hourMillis - (min*60*1000)
-    sec = Math.floor(minMillis /(1000))
-    timeStr = "#{dayOfYear.toString().lpad('0',3)}/#{hour.toString().lpad('0',2)}:#{min.toString().lpad('0',2)}:#{sec.toString().lpad('0',2)}"
-    dfb = @makeDFB(timeStr, {xy:[39,y]})
-    return dfb
-
-  fillTime: (metTime,crtTime) ->
-    met = @_makeTimeStr(metTime,0)
-    crt = @_makeTimeStr(crtTime,1)
-    crt.push 0
-
-    if not @dfbMsg?
-      @dfbMsg = new BusMsg(1+met.length+crt.length)
-      @dfbMsg.data16[0] = 0xff01
-    for c,i in met
-      @dfbMsg.data16[i+1] = c
-    for c,i in crt
-      @dfbMsg.data16[i+1+met.length] = c
-    @mduCmdBus.sendMsg @dfbMsg
-
-  _updateHSW: () ->
-    # JSC-18819/4.8-2
-    @HSW = 0
-    # @HSW |= 1                   # bit 0: Logic 1 - Always set to 1
-    # @HSW |= @IPLed << 1         # bit 1: IPL has been performed
-    # @HSW |= @IPLerr << 2        # bit 2: IPL error
-    # @HSW |= @IPLcce << 3        # bit 3: IPL circuit check error
-    # @HSW |= @SGintError << 4    # bit 4: Symbol generator intensity parity error
-    # @HSW |= @SGsincosError << 5 # bit 5: Symbol generator sin-cosine parity error
-    # @HSW |= @SGactive << 6      # bit 6: Symbol generator active
-    # @HSW |= @SGcharError << 7   # bit 7: Symbol generator character parity error
-    # @HSW |= @OscError << 8      # bit 8: Oscillator error
-    # @HSW |= @SASTP_zeroDeflErr  # bit 9: SASTP: Symbol generator analog zero deflection test error
-
-  _buildStatusResp: () ->
-
+    @loadFCWs wordsFromBytes(@bgDFB)
 
   exec: () ->
-    # console.log "exec", @id, @bus
-    if not @hbMsg?
-      @hbMsg = new BusMsg(2)
-      @hbMsg.data16[0] = 0xffff
-      @hbMsg.data16[1] = @id
-    if @running
-        @bus["_#{@id}"].sendMsg @hbMsg
-        if @CONFIG.dev and not @bgDFB
-          # dev mode: preload a test background DFB into the DPS display
-          @execDPS()
-        else if not @_lastGpcTimeAt? or (Date.now() - @_lastGpcTimeAt) > 2000
-          # local time fill for the DPS header — only while no GPC is
-          # sourcing time (op 2 on the DK bus takes over)
-          now = new Date(Date.now())
-          jan1 = new Date(now.getFullYear(),0,1)
-          yearMillis = now - jan1
-          @fillTime(yearMillis,0)
-    window.setTimeout((()=>@exec()),500.0)
+    @_heartbeat()
+    # dev mode has no GPC at all, so the test background is loaded once here
+    # rather than driven from the bus.
+    @execDPS() if @CONFIG.dev and not @bgDFB
 
 
 start = (CONFIG) ->

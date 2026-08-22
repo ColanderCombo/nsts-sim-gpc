@@ -114,6 +114,17 @@ class Bus
     @selfEcho = []
     @_startMulticast()
 
+  // Which interface the simulated buses live on.  Every LRU is a process on
+  // this machine, so the default is loopback; NSTS_BUS_IFACE takes a local
+  // address to run a bus across a real network instead.
+  //
+  // The interface MUST be pinned.  Joining the group without naming one
+  // delivers every datagram TWICE on macOS: a sender hears two copies of its
+  // own send, and so does every peer.  The self-echo filter below drops one
+  // copy and passes the other, so a terminal reads its own transmission back
+  // as a reply -- which desynchronises every bus program by one word.
+  @IFACE = process.env.NSTS_BUS_IFACE ?? "127.0.0.1"
+
   _startMulticast()
     // @server = dgram.createSocket({type:"udp4", reuseAddr:true, lookup:lookup})
     @server = dgram.createSocket({type:"udp4", reuseAddr:true})
@@ -121,7 +132,8 @@ class Bus
       @server.setBroadcast(true)
       @server.setMulticastLoopback(true)
       @server.setMulticastTTL(128)
-      @server.addMembership("239.255.1.1")
+      @server.setMulticastInterface(Bus.IFACE)
+      @server.addMembership("239.255.1.1", Bus.IFACE)
       // bind: dgram invokes the handler with `this` = socket, which
       // silently orphans recvCB/busID and drops every message
       @server.on('message', (message, remote) => @_recvMessage(message, remote))

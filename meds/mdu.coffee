@@ -15,7 +15,7 @@ import 'meds/style.css'
 import {LRU} from '../com/lru.civet.jsx'
 import {Bus, BusMsg} from '../com/bus.civet.jsx'
 
-import {MEDSConf} from  'meds/medsConf'
+import {MEDSConf, MDUMsg} from 'meds/medsConf'
 import {VectorDisplay} from 'meds/mduVectorDisplay'
 import {MDUMenuArea} from 'meds/mduMenuArea'
 import {MDUEdgeKeys} from 'meds/mduEdgeKeys'
@@ -60,8 +60,13 @@ export class MDU extends LRU
     super(lruConfig)
 
     @screenMods = ScreenMods
-    @_heartbeatTimer = 3
-    @_heartbeatTimerSec = 3
+    @_pollWatchdog = null        # POLL FAIL: re-armed by the GPC's poll
+    @_idpWatchdog = null         # the port: re-armed by the IDP's heartbeat
+    @_idpWatchdogSec = null
+    # Assumed alive until the watchdog says otherwise -- `_idpLost` has to be
+    # able to fire the FIRST time, when nothing has been heard at all.
+    @_idpUp = true
+    @_secTimedOut = false
     @CONFIG = CONFIG
     @config = config
     @priPortIDP = priPortIDP
@@ -96,11 +101,6 @@ export class MDU extends LRU
 
     @dps_poll_fail = true
 
-    @dps_bg_cmds = []
-    @queued_keys = []
-    @dps_syntax_error = false
-    @dps_blinking = []
-
     @_edgeKeys = new MDUEdgeKeys()
     @_edgeKeys.setHandler(@handleEdgekey, @handleEdgekeyFail)
 
@@ -121,7 +121,7 @@ export class MDU extends LRU
     @setCurrentMenu(@CONFIG.init.menu)
     @setCurrentDisplay(@CONFIG.init.display)
 
-    @handleHeartbeat()
+    @watchIDP()
     @redraw()
 
     @kybd = new KYBD(1,@)
@@ -150,33 +150,67 @@ export class MDU extends LRU
       curIDP: @priPortIDP
     }
 
+  POLL_FAIL_MS = 4000       # DPS poll fail timer
+  IDP_LOST_MS = 2000        # 'MDU Autonomous' fail timer (16 missed beats)
+  STARTUP_MS = 10000        # ...but allow for an IDP that starts up slowly
+
+  _rearm: (name, ms, expired) ->
+    window.clearTimeout(@[name]) if @[name]?
+    @[name] = window.setTimeout (() => @[name] = null ; expired()), ms
+
+  _pollLost: () ->
+    return if @dps_poll_fail
+    @dps_poll_fail = true
+    @screens?['DPS']?.setPollFail(true)
+    @redraw()
+
   recvFromPri: (t,busID, msg, remote) ->
-    #console.log "MDU recvFromPri", t, busID, msg, remote
-    t._heartbeatTimer = 3
-    if msg.data16[0] == 0xff00  # dfb update
-      # an IDP is delivering DPS format data — poll is good
-      t.dps_poll_fail = false
-      if t.screens? and t.screens['DPS']?
-        t.screens['DPS'].setBGDFB(msg)
-        t.screens['DPS'].setPollFail(false)
+    # Any traffic at all says the port is alive; only a POLL says a GPC is.
+    t._idpHeard()
+    t._rearm '_idpWatchdog', IDP_LOST_MS, (-> t._idpLost())
+    scr = t.screens?['DPS']
+    switch msg.data16[0]
+      when MDUMsg.HEARTBEAT
+        # The DEU's flashing attribute is local: it advances one phase per
+        # heartbeat, so it keeps flashing with no GPC on the bus.
+        scr?.blinkTick()
+      when MDUMsg.POLL
+        t._rearm '_pollWatchdog', POLL_FAIL_MS, (-> t._pollLost())
+        t._pollHeard()
+      when MDUMsg.FILL
+        if scr?
+          scr.applyFill(msg.data16[1],
+                        (msg.data16[i] for i in [2...msg.data16.length]))
+          t.redraw()
+      when MDUMsg.CLOCK
+        if scr?
+          scr.setClock(msg.data16[1], msg.data16[2], msg.data16[3])
+          t.redraw()
+      when MDUMsg.RESET_SPL
+        if scr?
+          scr.spl?.clear()
+          scr.setSyntaxError false
+          scr.updateScratchpad()
         t.redraw()
-    if msg.data16[0] == 0xff01  # time fill
-      if t.screens? and t.screens['DPS']?
-       t.screens['DPS'].setTime(msg)
-    if msg.data16[0] == 0xff02  # reset scratch pad line
-      t.queued_keys = []
-      t.dps_syntax_error = false
-      scr = t.screens?['DPS']
-      if scr?
-        scr.queued_keys = []
-        scr.setSyntaxError false
-        scr.updateScratchpad()
-      t.redraw()
 
 
+  # A GPC is polling us again.
+  _pollHeard: () ->
+    return if not @dps_poll_fail
+    @dps_poll_fail = false
+    @screens?['DPS']?.setPollFail(false)
+    @redraw()
+
+  # The secondary port has a heartbeat of its own, so it can drop
+  # independently of the primary -- which is what the AUTONOMOUS display's
+  # timeout line reports.
   recvFromSec: (t,busID, msg, remote) ->
-    #console.log "MDU recvFromSec", t, busID, msg, remote
-    t._heartbeatTimerSec = 3
+    if t._secTimedOut
+      t._secTimedOut = false
+      t._autonomous() if t.curDisplay == "AUTONOMOUS"
+    t._rearm '_idpWatchdogSec', IDP_LOST_MS, (->
+      t._secTimedOut = true
+      t._autonomous() if t.curDisplay == "AUTONOMOUS")
 
   redraw: () ->
     @disp.dirty = true
@@ -193,20 +227,6 @@ export class MDU extends LRU
 
   handleEdgekeyFail: (keyId) =>
     @mdu_menuArea.setEdgekeyFailed(keyId)
-
-  keyPress: (k) ->
-    if k in KYBD.DPSKeys
-      console.log("Keypress: ", k)
-
-    if k == KYBD.DPSKeys[27]
-      @queued_keys = []
-      @dps_syntax_error = false
-    else if k == KYBD.DPSKeys[8]
-      @queued_keys.pop()
-    else
-      @queued_keys.push k
-    # if k == MDU.DPSKeys[121]
-    #     if @queued_keys[0] == MDU.DPSKeys[118]
 
   setCurrentMenu: (menuName) ->
     @currentMenuName = menuName
@@ -264,33 +284,43 @@ export class MDU extends LRU
     #@updateMduData()
     @mdu_menuArea.setNegView(@modeNegView)
 
-  handleHeartbeat: () ->
-    # dev mode: MDU is standalone — no IDP heartbeat gating
+  watchIDP: () ->
     return if @CONFIG.dev
-    @_heartbeatTimer--
-    @_heartbeatTimerSec-- if @secPortIDP?
-    if @_heartbeatTimer < 0
-      if @curDisplay != "AUTONOMOUS"
-        @prevDisplay = @curDisplay
-        @prevMenuName = @currentMenuName
-        @setCurrentDisplay('AUTONOMOUS')
-        @setCurrentMenu('DISCONNECTED')
-        #@currentMenu = @Menus['DISCONNECTED']
-        console.log "AUTO", @prevMenuName
-        @redraw()
-      # keep the timeout-reason line current (the sec port can drop
-      # after the pri port did)
-      secTimedOut = @secPortIDP? and @_heartbeatTimerSec < 0
-      if @screens['AUTONOMOUS']?.setTimeouts(true, secTimedOut)
-        @redraw()
-    else
-      if @curDisplay == "AUTONOMOUS"
-        @setCurrentDisplay(@prevDisplay)
-        console.log "RESTORE", @prevMenuName
-        #@currentMenu = @prevMenu
-        @setCurrentMenu(@prevMenuName)
-        @redraw()
-    window.setTimeout((()=>@handleHeartbeat()),500.0)
+    # A longer grace at startup than mid-run: the IDP's process may still be
+    # coming up.
+    @_rearm '_idpWatchdog', STARTUP_MS, (=> @_idpLost())
+    @_rearm '_idpWatchdogSec', STARTUP_MS, (=>
+      @_secTimedOut = true
+      @_autonomous() if @curDisplay == "AUTONOMOUS") if @secPortIDP?
+
+  _autonomous: () ->
+    if @curDisplay != "AUTONOMOUS"
+      @prevDisplay = @curDisplay
+      @prevMenuName = @currentMenuName
+      @setCurrentDisplay('AUTONOMOUS')
+      @setCurrentMenu('DISCONNECTED')
+      #@currentMenu = @Menus['DISCONNECTED']
+      console.log "AUTO", @prevMenuName
+      @redraw()
+    # keep the timeout-reason line current: the sec port can drop after the
+    # pri port did, and each has its own heartbeat
+    if @screens['AUTONOMOUS']?.setTimeouts(not @_idpUp, @_secTimedOut)
+      @redraw()
+
+  _idpLost: () ->
+    return if not @_idpUp
+    @_idpUp = false
+    console.log "MDU#{@id}: port timeout -- no IDP heartbeat"
+    @_autonomous()
+
+  _idpHeard: () ->
+    return if @_idpUp
+    @_idpUp = true
+    if @curDisplay == "AUTONOMOUS"
+      @setCurrentDisplay(@prevDisplay)
+      console.log "RESTORE", @prevMenuName
+      @setCurrentMenu(@prevMenuName)
+      @redraw()
 
   # per-screen reference-overlay identity: localStorage key + default image.
   # AE_PFD/DPS keep their legacy keys — the long-tuned placements live under
@@ -328,7 +358,8 @@ export class MDU extends LRU
        set: ((v) => d.overlayApplyValsSet(key, v, scr.ovHooks?()))}
     ]
 
-  # ---- live feed-parameter editor (debug) ----------------------------------
+  # live feed-parameter editor (debug)
+  #
   # Double-click outside the display canvas toggles a panel placed to the
   # right of the active area (grow the window right/left first to make
   # room). It lists the current screen's curData fields; edits apply live

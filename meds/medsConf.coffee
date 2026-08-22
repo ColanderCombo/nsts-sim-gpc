@@ -1,4 +1,18 @@
 
+# The IDP -> MDU messages.  Word 0 is the tag; the tags are 0xFF00 and up so
+# they cannot collide with a format control word
+#
+export MDUMsg = {
+  FILL:      0xff00     # a display-memory fill: DEU address, then the words
+  RESET_SPL: 0xff02     # the GPC reset the scratch pad line
+  CLOCK:     0xff03     # the header clock
+  POLL:      0xff04     # a GPC polled this unit
+  HEARTBEAT: 0xffff     # the IDP is alive
+}
+
+export MDUMsgName = {}
+MDUMsgName[v] = k for k, v of MDUMsg
+
 export MEDSConf = {
   mdus: {
     CRT1: {

@@ -63,10 +63,8 @@ export class KYBD
     68: @DEUKey.keys.D
     69: @DEUKey.keys.E
     70: @DEUKey.keys.F
-    105: @DEUKey.keys.IO_RESET # 'i'
-    # 105: @DEUKey.keys.IO_RESET # 'i'
-    # 118: @DEUKey.keys.OPS
-    111: @DEUKey.keys.OPS
+    84: @DEUKey.keys.IO_RESET     # T
+    79: @DEUKey.keys.OPS           # O
     # 83: @DEUKey.keys.SPEC
     83: @DEUKey.keys.SPEC
     73: @DEUKey.keys.ITEM
@@ -78,7 +76,19 @@ export class KYBD
     189: @DEUKey.keys.MINUS
     190: @DEUKey.keys.DECIMAL
     75: @DEUKey.keys.ACK
+    89: @DEUKey.keys.SYS_SUMM       # Y
+    85: @DEUKey.keys.FAULT_SUMM     # U
+    71: @DEUKey.keys.GPC_CRT        # G
   }
+
+  # Keyboard scan code -> the key it names, built on first use.  The scan
+  # codes are the row/column strobe pattern the keyboard puts on the bus;
+  # `gpcCode` is the 5-bit code the DEU protocol carries.
+  @byScan: (scan) ->
+    if not @_scanToKey?
+      @_scanToKey = {}
+      @_scanToKey[k.deuCode] = k for _, k of @DEUKey.keys
+    @_scanToKey[scan & 0xffff]
 
   constructor: (@kybdBus, @mdu=null) ->
     @_setupBus()
@@ -87,10 +97,8 @@ export class KYBD
       if ev.key == 'S' # 's'
         console.log("Handle 's'")
         @mdu.screenshot()
-      # (PFD test feeds moved to the debug parameter editor: dbl-click
-      # outside the canvas -> 'ADI test' pulldown / 'Hdot tape test' toggle)
-      # Debug: F12 / F11 cycle the DPS background through every data/*.dfb
       if (ev.key == 'F12' or ev.key == 'F11') and not ev.ctrlKey and @mdu?
+        # Debug: F12 / F11 cycle the DPS background through every data/*.dfb
         ev.preventDefault()
         @mdu.setCurrentDisplay('DPS')
         @mdu.screens['DPS']?.cycleBGDFB(if ev.key == 'F12' then 1 else -1)
