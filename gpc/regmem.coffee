@@ -86,25 +86,25 @@ export class RegisterFile
         for reg, idx in @regs
             reg._regFile = @
             reg._regIdx = idx
-        # DSE: 4-bit Data Sector Extension for base registers 0-3
-        @dse = [0, 0, 0, 0]
+        # DSE: a 4-bit Data Sector Extension per general register:
+        @dse = [0, 0, 0, 0, 0, 0, 0, 0]
         # Access tracking: step number of last write
         @lastWritten = new Uint32Array(@num + 1)
-        @dseLastWritten = new Uint32Array(4)
+        @dseLastWritten = new Uint32Array(8)
         @step = 0  # synced by AP101._syncStep()
 
     r: (x) -> @regs[x]
 
-    getDSE: (baseReg) -> @dse[baseReg & 3]
-    setDSE: (baseReg, value) ->
-        @dse[baseReg & 3] = value & 0xf
-        @dseLastWritten[baseReg & 3] = @step
+    getDSE: (reg) -> @dse[reg & 7]
+    setDSE: (reg, value) ->
+        @dse[reg & 7] = value & 0xf
+        @dseLastWritten[reg & 7] = @step
 
     markWritten: (regNum) ->
         @lastWritten[regNum] = @step
 
     getLastWritten: (regNum) -> @lastWritten[regNum]
-    getDSELastWritten: (baseReg) -> @dseLastWritten[baseReg & 3]
+    getDSELastWritten: (reg) -> @dseLastWritten[reg & 7]
 
     log: () ->
         lstr = ""
@@ -146,8 +146,12 @@ export class ProgramStatusWord
     #    43     P11 SPR2N
     #    44 Register set controls which of two sets of general registers
     #    45 Machine Check Mask
-    #    46 Run/Wait State Bit
-    #    47 Problem State or Supervisor State
+    #    46 Wait State Bit         (0 = process state, 1 = wait state)
+    #    47 Problem/Supervisor Bit (0 = supervisor,    1 = problem)
+    #
+    #  All mask bits above (20, 22, 23, 32:39, 45) are:
+    #       0 = interrupt inhibited
+    #       1 = interrupt allowed.
     # 48:63 Interrupt Code
     #
     @DESC1: 'ppppppppppppppppccrvf_usbbbbdddd'
@@ -174,6 +178,10 @@ export class ProgramStatusWord
     _setField2: (f,v) ->
         @psw2.set32(@pack2.setFld(@psw2.get32(),f,v))
         @lastWritten2 = @step
+
+    # The raw 16-bit instruction counter, before expansion.  IC-relative
+    # address arithmetic is done on these 16 bits and expanded afterwards.
+    getIC16: () -> @_getField1(@pack1.desc.f.p)
 
     getNIA: () ->
         # Return the full 19-bit expanded address
@@ -227,8 +235,8 @@ export class ProgramStatusWord
     getMachCheckMask: () -> @_getField2(@pack2.desc.f.c)
     setMachCheckMask: (v) -> @_setField2(@pack2.desc.f.c,v)
 
-    getWaitState: () -> !@_getField2(@pack2.desc.f.w)
-    setWaitState: (v) -> @_setField2(@pack2.desc.f.w,!v)
+    getWaitState: () -> @_getField2(@pack2.desc.f.w) != 0
+    setWaitState: (v) -> @_setField2(@pack2.desc.f.w, if v then 1 else 0)
 
     getProblemState: () -> @_getField2(@pack2.desc.f.p)
     setProblemState: (v) -> @_setField2(@pack2.desc.f.p,v)

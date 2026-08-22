@@ -2,8 +2,30 @@
 # MSC Instruction Set
 #
 # Instruction decode and execution for the Master Sequence Controller.
-# Split from msc.coffee — see iop_msc.coffee for the MSC class itself.
 #
+
+# STP -- Self Test instruction memory locations
+#
+# The MSC and BCE self-test micro programs check "ability to read and write
+# from memory" against a fixed block of PSA fullwords, and that copy is the
+# only externally visible evidence the test ran.  The layout is:
+#
+#   0106  the MSC's source fullword
+#   0108  the MSC's destination fullword
+#   010A  BCE 1's fullword: the high halfword is the source, the low
+#         halfword the destination.  BCE n is at 010A + 2*(n-1).
+#
+# ...and each processor's self-test leaves a signature in the diagnostic
+# processor's (25's) local store, which is why the POO warns that "Diagnostic
+# Processor 25 should not be enabled while self-test is running.  MSC
+# self-test modifies Proc 25's locations in local store".
+export STP_MSC_READ  = 0x0106
+export STP_MSC_WRITE = 0x0108
+export STP_BCE_BASE  = 0x010a
+export PROC_SELFTEST = 25
+export STP_P25_A0 = 0x00010000
+export STP_P25_B1 = 0x00000000
+export STP_P25_C1 = 0x00037fff
 
 # Sign-extend an n-bit value to 32 bits
 signExtend = (val, bits) ->
@@ -27,7 +49,7 @@ export class MSCInstruction
         for name, op of @ops
             continue unless op.d and op.d.length > 0
             desc = @_parseDesc(op.d)
-            entry = { nm: name, desc: desc, e: op.e, d: op.d }
+            entry = { nm: name, desc: desc, e: op.e, d: op.d, f: op.f, pr: op.pr }
 
             if op.d.length <= 16
                 tbl = @_opTable16
@@ -102,6 +124,45 @@ export class MSCInstruction
 
         # Unrecognized instruction - no-op, advance PC
         t.incrNIA(1)
+
+    # Disassembly
+    #
+    OPERAND_FIELDS: {
+        ADDRESS: 'ad', VALUE: 'ad', COUNT: 'd', CONDITION: 'c'
+        DELTA: 't', BCE: 'b', MASK: 'd', REGISTER: 'd'
+        IMM: 'i', IL: 'lI'
+    }
+
+    toStr: (hw1, hw2) ->
+        hw1 = hw1 & 0xffff
+        hw2 = hw2 & 0xffff
+        if (hw1 >>> 12) == 0xf
+            fullword = (((hw1 & 0xffff) * 0x10000) + (hw2 & 0xffff)) >>> 0
+            entry = @_matchLong(fullword)
+            if entry
+                return { text: @_render(entry, @_decodeFields(fullword, entry)), len: 2, nm: entry.nm }
+        entry = @_matchShort(hw1)
+        if entry
+            return { text: @_render(entry, @_decodeFields(hw1, entry)), len: 1, nm: entry.nm }
+        return { text: "??? #{hw1.toString(16).padStart(4, '0')}", len: 1, nm: null }
+
+    _render: (entry, v) ->
+        ops = []
+        fmt = entry.f?[0]
+        if fmt?
+          rest = fmt.split(' ').slice(1).join(' ')
+          for name in (if rest then rest.split(',') else [])
+            key = name.trim().toUpperCase().replace(/\s+/g, '')
+            letters = @OPERAND_FIELDS[key] ? ''
+            letter = (l for l in letters when v[l]?)[0]
+            ops.push(if letter? then "X'#{v[letter].toString(16).toUpperCase()}'" else key)
+        else
+          ops.push("X'#{val.toString(16).toUpperCase()}'") for k, val of v when k != 'nm'
+        # The i bit is the index/indirect flag the long forms carry.
+        ops.push('X') if v.i
+        text = entry.nm
+        text += '  ' + ops.join(',') if ops.length > 0
+        return text
 
     _matchShort: (hw1) ->
         hw1 = hw1 >>> 0
@@ -202,7 +263,7 @@ export class MSCInstruction
                         ea = t.mscLongEA(v.a, v.i)
                         v1 = t.g_EAF(ea)
                         t.ls.setACC(v1)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # LOAD ACC WITH HALFWORD (long, absolute)
         '@LH':  {
@@ -212,7 +273,7 @@ export class MSCInstruction
                         ea = t.mscLongEA(v.a, v.i)
                         v1 = t.g_EAH(ea)
                         t.ls.setACC(v1)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # STORE ACC FULLWORD (long, absolute)
         '@STF': {
@@ -222,7 +283,7 @@ export class MSCInstruction
                         ea = t.mscLongEA(v.a, v.i)
                         v2 = t.ls.getACC()
                         t.s_EAF(ea, v2)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # STORE ACCUMULATOR HALFWORD (long, absolute)
         '@STH': {
@@ -232,7 +293,7 @@ export class MSCInstruction
                         ea = t.mscLongEA(v.a, v.i)
                         v2 = t.ls.AL().get16()
                         t.s_EAH(ea, v2)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
 
         #
@@ -258,8 +319,7 @@ export class MSCInstruction
                             if v1 > 0
                                 doBranch = true
                         if doBranch
-                            d8 = signExtend(v.d, 8)
-                            t.incrNIA(d8)
+                            t.incrNIA(1 + signExtend(v.d, 8))
                         else
                             t.incrNIA(1)
                 }
@@ -281,8 +341,7 @@ export class MSCInstruction
                             if v1 > 0
                                 doBranch = true
                         if doBranch
-                            d8 = signExtend(v.d, 8)
-                            t.incrNIA(d8)
+                            t.incrNIA(1 + signExtend(v.d, 8))
                         else
                             t.incrNIA(1)
 
@@ -393,11 +452,11 @@ export class MSCInstruction
                         # Restore program exception bit from saved status bit 16
                         if stval & 0x00010000
                             pe = t.regProgExcept.get32()
-                            pe = pe | 1 # bit 0 = MSC
+                            pe = (pe | t.procBit(t.PROC_MSC)) >>> 0   # MSC to GO
                             t.regProgExcept.set32(pe)
                         else
                             pe = t.regProgExcept.get32()
-                            pe = pe & ~1
+                            pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                             t.regProgExcept.set32(pe)
                 }
 
@@ -421,22 +480,26 @@ export class MSCInstruction
                             t.incrNIA(1)
                 }
         # COMPARE IMMEDIATE
-        # Three-way skip: ACC < value -> skip 1, ACC = value -> skip 2,
-        # ACC > value -> fall through (NIA+1)
+        #
+        # "The 32-bit effective value is arithmetically compared to the
+        # accumulator.  The present program counter is incremented by:
+        # +2 If ACC > E.V., +3 If ACC < E.V., +4 If ACC = E.V." 
+        #
         '@CI':  {
                     f:['@CI VALUE']
                     d:'1111i110_____0aaaaaaaaaaaaaaaaaa'
                     e:(t,v)->
-                        ea = t.mscLongEA(v.a, v.i)
-                        # In immediate mode, EA is the value itself
-                        val = ea
+                        # In immediate mode the effective value is the
+                        # address field itself, "treated as a two's
+                        # complement number ... sign extended 14 places".
+                        val = signExtend(t.mscLongEA(v.a, v.i), 18)
                         acc = t.ls.getACC()
-                        if acc < val
-                            t.incrNIA(2)  # skip 1 (NIA is already +1 for long instr)
-                        else if acc == val
-                            t.incrNIA(3)  # skip 2
+                        if acc > val
+                            t.incrNIA(2)
+                        else if acc < val
+                            t.incrNIA(3)
                         else
-                            t.incrNIA(1)
+                            t.incrNIA(4)
                 }
         # COMPARE (memory)
         '@C':   {
@@ -444,28 +507,34 @@ export class MSCInstruction
                     d:'1111i110_____1aaaaaaaaaaaaaaaaaa'
                     e:(t,v)->
                         ea = t.mscLongEA(v.a, v.i)
-                        val = t.g_EAF(ea)
-                        acc = t.ls.getACC()
-                        if acc < val
+                        val = t.g_EAF(ea) | 0
+                        acc = t.ls.getACC() | 0
+                        if acc > val
                             t.incrNIA(2)
-                        else if acc == val
+                        else if acc < val
                             t.incrNIA(3)
                         else
-                            t.incrNIA(1)
+                            t.incrNIA(4)
                 }
         # TEST UNDER MASK IMMEDIATE
-        # If (ACC & mask) != 0, skip 1 instruction
+        #
+        # "The effective value is logically anded with the accumulator.
+        # If the result is not zero, then the program counter is
+        # incremented by 3 (skip next halfword).  Otherwise, the program
+        # counter is incremented by two (execute next instruction)."
         '@TMI': {
                     f:['@TMI VALUE']
                     d:'1111i111_____0aaaaaaaaaaaaaaaaaa'
                     e:(t,v)->
-                        ea = t.mscLongEA(v.a, v.i)
-                        mask = ea  # immediate value is the mask
+                        # "This 18-bit quantity ... is right-justified with
+                        # 14 leading 1's to fill 32 bits" -- a mask of ones
+                        # above the field, not zeroes.
+                        mask = (t.mscLongEA(v.a, v.i) | 0xfffc0000) >>> 0
                         acc = t.ls.getACC()
                         if (acc & mask) != 0
-                            t.incrNIA(2)  # skip 1
+                            t.incrNIA(3)
                         else
-                            t.incrNIA(1)
+                            t.incrNIA(2)
                 }
         # TEST UNDER MASK (memory)
         '@TM':  {
@@ -476,9 +545,9 @@ export class MSCInstruction
                         mask = t.g_EAF(ea)
                         acc = t.ls.getACC()
                         if (acc & mask) != 0
-                            t.incrNIA(2)
+                            t.incrNIA(3)
                         else
-                            t.incrNIA(1)
+                            t.incrNIA(2)
                 }
 
         #
@@ -500,13 +569,13 @@ export class MSCInstruction
                             bceNum = t.ls.getACC() & 0x1f
                         # Check if BCE is waiting (not busy, not halted)
                         if bceNum > 0 and bceNum <= 24
-                            if t.regBusyWait.getbit32(bceNum) or t.regHalt.getbit32(bceNum)
+                            if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
                                 # BCE busy or halted - set status bit 13, program exception
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 13))  # bit 13
                                 t.ls.MST().set32(st)
                                 pe = t.regProgExcept.get32()
-                                pe = pe & ~1 # clear MSC bit (0 = error)
+                                pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO (error)
                                 t.regProgExcept.set32(pe)
                             else
                                 savedPage = t.ls.curPage
@@ -519,9 +588,9 @@ export class MSCInstruction
                             st = st | (1 << (17 - 13))
                             t.ls.MST().set32(st)
                             pe = t.regProgExcept.get32()
-                            pe = pe & ~1
+                            pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                             t.regProgExcept.set32(pe)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # LOAD BCE BASE REGISTER (indirect)
         '@LBB@':   {
@@ -535,12 +604,12 @@ export class MSCInstruction
                         if bceNum == 0
                             bceNum = t.ls.getACC() & 0x1f
                         if bceNum > 0 and bceNum <= 24
-                            if t.regBusyWait.getbit32(bceNum) or t.regHalt.getbit32(bceNum)
+                            if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 13))
                                 t.ls.MST().set32(st)
                                 pe = t.regProgExcept.get32()
-                                pe = pe & ~1
+                                pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                                 t.regProgExcept.set32(pe)
                             else
                                 savedPage = t.ls.curPage
@@ -552,9 +621,9 @@ export class MSCInstruction
                             st = st | (1 << (17 - 13))
                             t.ls.MST().set32(st)
                             pe = t.regProgExcept.get32()
-                            pe = pe & ~1
+                            pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                             t.regProgExcept.set32(pe)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # LOAD BCE PROGRAM COUNTER (direct)
         '@LBP':   {
@@ -566,12 +635,12 @@ export class MSCInstruction
                         if bceNum == 0
                             bceNum = t.ls.getACC() & 0x1f
                         if bceNum > 0 and bceNum <= 24
-                            if t.regBusyWait.getbit32(bceNum) or t.regHalt.getbit32(bceNum)
+                            if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 12))  # bit 12
                                 t.ls.MST().set32(st)
                                 pe = t.regProgExcept.get32()
-                                pe = pe & ~1
+                                pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                                 t.regProgExcept.set32(pe)
                             else
                                 savedPage = t.ls.curPage
@@ -583,9 +652,9 @@ export class MSCInstruction
                             st = st | (1 << (17 - 12))
                             t.ls.MST().set32(st)
                             pe = t.regProgExcept.get32()
-                            pe = pe & ~1
+                            pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                             t.regProgExcept.set32(pe)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # LOAD BCE PROGRAM COUNTER (indirect)
         '@LBP@':   {
@@ -599,12 +668,12 @@ export class MSCInstruction
                         if bceNum == 0
                             bceNum = t.ls.getACC() & 0x1f
                         if bceNum > 0 and bceNum <= 24
-                            if t.regBusyWait.getbit32(bceNum) or t.regHalt.getbit32(bceNum)
+                            if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 12))
                                 t.ls.MST().set32(st)
                                 pe = t.regProgExcept.get32()
-                                pe = pe & ~1
+                                pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                                 t.regProgExcept.set32(pe)
                             else
                                 savedPage = t.ls.curPage
@@ -616,9 +685,9 @@ export class MSCInstruction
                             st = st | (1 << (17 - 12))
                             t.ls.MST().set32(st)
                             pe = t.regProgExcept.get32()
-                            pe = pe & ~1
+                            pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO
                             t.regProgExcept.set32(pe)
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
 
         #
@@ -643,7 +712,7 @@ export class MSCInstruction
                                 t.ls.setACC(t.msc.regFailDisc.get32())
                             when 3 # STAT4 - Busy/Wait
                                 t.ls.setACC(t.regBusyWait.get32())
-                        t.incrNIA(1)
+                        t.incrNIA(2)
                 }
         # SET FAIL DISCRETES
         # OPX=1: OR ACC bits 0-4 into fail discrete register
@@ -676,8 +745,7 @@ export class MSCInstruction
                     f:['@LMS']
                     d:'1110001100000000'
                     e:(t,v)->
-                        st = t.ls.MST().get32()
-                        t.ls.setACC(st)
+                        t.ls.setACC(t.ls.MST().get32())
                         t.incrNIA(1)
                 }
         # START I/O
@@ -689,13 +757,13 @@ export class MSCInstruction
                         acc = t.ls.getACC()
                         bw = t.regBusyWait.get32()
                         # Check for busy conflict on BCE bits 1-24
-                        conflict = acc & bw & 0x01fffffe
+                        conflict = acc & bw & t.PROC_ALL_BCE
                         if conflict
                             st = t.ls.MST().get32()
                             st = st | (1 << (17 - 11)) | (1 << (17 - 16))  # bits 11, 16
                             t.ls.MST().set32(st)
                             pe = t.regProgExcept.get32()
-                            pe = pe & ~1  # MSC error
+                            pe = (pe & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to NO-GO (error)
                             t.regProgExcept.set32(pe)
                         bw = bw | acc
                         t.regBusyWait.set32(bw)
@@ -739,13 +807,13 @@ export class MSCInstruction
                             t.s_EAF(ecr + 6, pc + 1)
                             # ECR+8: Status + ProgException bit
                             st = t.ls.MST().get32()
-                            peBit = t.regProgExcept.getbit32(0)
+                            peBit = t.procGet(t.regProgExcept, t.PROC_MSC)
                             st = st | (peBit << 16)
                             t.s_EAF(ecr + 8, st)
                             # Clear status and program exception
                             t.ls.MST().set32(0)
                             pe = t.regProgExcept.get32()
-                            pe = pe | 1  # set MSC bit to 1 (no error)
+                            pe = (pe | t.procBit(t.PROC_MSC)) >>> 0   # MSC to GO (no error)
                             t.regProgExcept.set32(pe)
                             # Clear ECR
                             t.ls.ECR().set32(0)
@@ -753,12 +821,13 @@ export class MSCInstruction
                             t.setNIA(ecr + 8)
                 }
         # RESET BCE INDICATOR
-        # OPX=7: Reset the indicator bit of the BCE named in bits 8-12.
+        # OPX=7: Reset the indicator bit of one BCE.
         '@RBI':   {
                     f:['@RBI BCE']
                     d:'11100111bbbbb000'
                     e:(t,v)->
-                        t.regIndicator.setbit32(v.b, 0)
+                        p = (v.b + (t.ls.getACC() & 0x1f)) & 0x1f
+                        t.procSet(t.regIndicator, p, 0)
                         t.incrNIA(1)
                 }
 
@@ -881,84 +950,55 @@ export class MSCInstruction
         # REPEAT INSTRUCTIONS
         #
         # Short format 2: OP=1101, I bit (bit4), OPX=selector (bits5-7),
-        # DATA=count (bits8-15). 
+        # DATA=count (bits8-15).
         # OPX selector is:
         #   000 (@RAW): Repeat until ALL specified BCEs are waiting
         #   001 (@RNW): Repeat until ANY specified BCE is waiting
         #   100 (@RAI): Repeat until ALL specified BCE indicators set
         #   101 (@RNI): Repeat until ANY specified BCE indicator set
         #
-        # In all cases:
-        #   - BCEs to test are specified by ACC (bit i = BCE i)
-        #   - The I bit extends the count (index mode); in this simplified
-        #     simulator the count/timeout loop is not modeled, so I is unused.
-        #   - If condition met: skip 1 instruction (NIA+2)
-        #   - If timeout: NIA+1 (next sequential instruction)
+        # The BCEs to test are named by the accumulator, one bit each.
         #
-
+        # These instructions wait: "they wait until a set of BCEs specified
+        # by the ACC reach some condition ... A time out value of zero will
+        # cause the Repeat instruction to test once, and only once ... A
+        # non-zero time out value will cause the specified test to be
+        # tried three times every 33 usec ... Every 33 usec the time out
+        # value is decremented, and the test is repeated until either the
+        # time out value reaches zero or the desired condition is
+        # reached."
+        #
         # REPEAT UNTIL ALL INDICATORS
         '@RAI':   {
                     f:['@RAI COUNT']
                     d:'1101i100dddddddd'
                     e:(t,v)->
-                        acc = t.ls.getACC()
-                        bceMask = acc & 0x01fffffe  # BCE bits 1-24
-                        ind = t.regIndicator.get32()
-                        if (ind & bceMask) == bceMask
-                            t.incrNIA(2)  # condition met, skip 1
-                        else
-                            # In simulator, don't actually loop - just check once
-                            # If count is 0, check once. Otherwise simulate timeout.
-                            if v.d == 0
-                                t.incrNIA(1)  # timeout
-                            else
-                                # Check once more (simulator simplification)
-                                if (ind & bceMask) == bceMask
-                                    t.incrNIA(2)
-                                else
-                                    t.incrNIA(1)
+                        m = t.ls.getACC() & t.PROC_ALL_BCE
+                        t.mscRepeat(v, (t.regIndicator.get32() & m) == m)
                 }
         # REPEAT UNTIL ALL WAITING
         '@RAW':   {
                     f:['@RAW COUNT']
                     d:'1101i000dddddddd'
                     e:(t,v)->
-                        acc = t.ls.getACC()
-                        bceMask = acc & 0x01fffffe
-                        bw = t.regBusyWait.get32()
-                        # "Waiting" means bit is 0 (not busy)
-                        # All waiting = none of the selected bits are set
-                        if (bw & bceMask) == 0
-                            t.incrNIA(2)  # condition met
-                        else
-                            t.incrNIA(1)  # timeout
+                        m = t.ls.getACC() & t.PROC_ALL_BCE
+                        t.mscRepeat(v, (t.regBusyWait.get32() & m) == 0)
                 }
         # REPEAT UNTIL ANY INDICATOR
         '@RNI':   {
                     f:['@RNI COUNT']
                     d:'1101i101dddddddd'
                     e:(t,v)->
-                        acc = t.ls.getACC()
-                        bceMask = acc & 0x01fffffe
-                        ind = t.regIndicator.get32()
-                        if (ind & bceMask) != 0
-                            t.incrNIA(2)  # any indicator set
-                        else
-                            t.incrNIA(1)  # timeout
+                        m = t.ls.getACC() & t.PROC_ALL_BCE
+                        t.mscRepeat(v, (t.regIndicator.get32() & m) != 0)
                 }
         # REPEAT UNTIL ANY WAITING
         '@RNW':   {
                     f:['@RNW COUNT']
                     d:'1101i001dddddddd'
                     e:(t,v)->
-                        acc = t.ls.getACC()
-                        bceMask = acc & 0x01fffffe
-                        bw = t.regBusyWait.get32()
-                        # Any waiting = any selected bit is 0
-                        if (~bw & bceMask) != 0
-                            t.incrNIA(2)  # at least one waiting
-                        else
-                            t.incrNIA(1)  # timeout
+                        m = t.ls.getACC() & t.PROC_ALL_BCE
+                        t.mscRepeat(v, ((~t.regBusyWait.get32()) & m) != 0)
                 }
 
         #
@@ -974,7 +1014,7 @@ export class MSCInstruction
                     e:(t,v)->
                         # Set MSC busy/wait bit 0 to WAIT (0)
                         bw = t.regBusyWait.get32()
-                        bw = bw & ~1  # clear bit 0
+                        bw = (bw & ~t.procBit(t.PROC_MSC)) >>> 0  # MSC to WAIT
                         t.regBusyWait.set32(bw)
                         # Update MSC status register bit 17 (busy/wait copy)
                         st = t.ls.MST().get32()
@@ -1001,27 +1041,88 @@ export class MSCInstruction
                     e:(t,v)->
                         il = v.l & 0xfff
                         if v.I
-                            # OR with X register
-                            xval = t.ls.X().get32()
-                            il = il | (xval & 0xfff)
-                        # Load into IOP Programmable Interrupt Register
+                            # "EIL = X 'OR' IL" -- the index register ORed
+                            # with the instruction's list, right justified.
+                            il = il | (t.ls.X().get32() & 0xfff)
+                        # "This instruction loads the 12 bit IOP Interrupt
+                        # Register C and causes an interrupt to the GPC to
+                        # be set if at least one of the bits is a 1." 
+                        t.setIntReg(2, (t.intReg(2) | (il << 20)) >>> 0)
                         t.msc.regIntProg.set32(il)
-                        # Signal CPU interrupt if any bits are set
+                        # ...and the interrupt: the POO's External 2, "IOP
+                        # Programmed Interrupts (1-12)" (Figure 2-20), PSA
+                        # 0088/008C, mask bit 37.
                         if il != 0 and t.cpu?
-                            t.cpu.intPending.iopProg = true
+                            t.cpu.raiseInterrupt('ext2')
                         t.incrNIA(1)
                 }
         # SELF TEST - MSC
-        # OP=0001, I=0
+        #
+        # OP=0001, I=0, OPX in bits 5-7, COUNT in bits 8-15.  "Use of the
+        # OPX field selects one of three tests as follows:  OPX = 000
+        # Normal STP sequence,  OPX = 001 Queue-overflow test,  OPX = 010
+        # ROS parity error test,  OPX = 011 Diagnostic Data Flow error
+        # test.  The COUNT field is at a don't care state unless the OPX
+        # field equals 001."
+        #
         '@STP':   {
-                    f:['@STP']
-                    d:'0001000000000000'
+                    f:['@STP OPX', '@STP OPX,COUNT']
+                    d:'00010cccdddddddd'
                     e:(t,v)->
-                        # Self-test is a no-op in the simulator
-                        # Set GO result (no error detected)
+                        switch v.c
+                            when 1
+                                # "Performs a queue-overflow test by placing
+                                # the number of memory requests specified by
+                                # the COUNT field in the queue.  If the queue
+                                # overflows, the channel interrupts the CPU
+                                # and the request is lost.  The program loops
+                                # on this instruction." 
+                                t.setIntReg(1, (t.intReg(1) | t.INTB_QUEUE_OVF) >>> 0)
+                                t.cpu.raiseInterrupt('ext1', {code: 0x0000})
+                                return
+                            when 2
+                                # "The instruction attempts to execute a bad
+                                # parity microword.  This sets the HALT bit of
+                                # all processors and sets BUSY/WAIT to WAIT."
+                                t.regProcEnable.set32(0x00000000)
+                                t.regBusyWait.set32(0x00000000)
+                                t.signalGroup1(t.INTA_ROS_PAR)
+                                t.incrNIA(1)
+                                return
+                            when 3
+                                # "The Diagnostic 25 Error Latch is set,
+                                # causing an External 1 Interrupt to the CPU,
+                                # with the appropriate interrupt code in the
+                                # Group 2 Interrupt Register"
+                                t.signalDataFlowParity(t.INTB_DIAG25)
+                                t.incrNIA(1)
+                                return
+                        # OPX = 000.  "If any faults are detected, the MSC
+                        # Program Exception bit is set to 0 and the MSC status
+                        # register bit 8 is set to 1 (Self Test failure)."  The
+                        # modelled hardware has no faults, so the MSC goes to
+                        # GO and status bit 8 stays clear.
                         pe = t.regProgExcept.get32()
-                        pe = pe | 1  # bit 0 = MSC, 1 = GO
+                        pe = (pe | t.procBit(t.PROC_MSC)) >>> 0  # MSC to GO
                         t.regProgExcept.set32(pe)
+                        # "MSC Local Store Registers" is the first thing the
+                        # micro program checks, and the status register is
+                        # one of them: the test writes it, and on a machine
+                        # with no faults what it leaves behind is zero.
+                        t.ls.MST().set32(0)
+                        # One of the five things the self-test micro program
+                        # checks is "ability of MSC to read and write from
+                        # memory", and it does that against a FIXED pair of
+                        # PSA fullwords: it reads STP_MSC_READ and writes what
+                        # it read to STP_MSC_WRITE.
+                        t.s_EAF(STP_MSC_WRITE, t.g_EAF(STP_MSC_READ))
+                        # "MSC self-test modifies Proc 25's locations in local
+                        # store which results in IOP diagnostic errors"
+                        page = t.ls.storePage[PROC_SELFTEST]
+                        if page?
+                            page.r(0 * 4 + 0).set32(STP_P25_A0)
+                            page.r(1 * 4 + 1).set32(STP_P25_B1)
+                            page.r(2 * 4 + 1).set32(STP_P25_C1)
                         t.incrNIA(1)
                 }
     }

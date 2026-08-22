@@ -1,5 +1,5 @@
 
-# GPC — Unified CLI for the AP-101 GPC Simulator
+# GPC: Unified CLI for the AP-101 GPC Simulator
 #
 # Each subcommand lives in its own gpc/cmd_*.coffee file and exports an
 # addCommand(program) function that registers itself.  Adding a new

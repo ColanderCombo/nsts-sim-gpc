@@ -1,16 +1,20 @@
 import {LitElement, html, css} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
 import 'gpc/gui/gpc-register';
+import 'cde/bit-field';
+
+const PSW1_LEGEND = 'p=NIA c=CC r=carry v=ovf f=fixovf mask u=expundf mask s=signif mask b=BSR d=DSR';
+const PSW2_LEGEND = 'm=ext int mask (1=allowed) e=reserved r=reg set c=mach chk mask w=wait (1=wait) p=problem state (1=problem) i=int code';
 
 /**
- * <gpc-regview> — Displays AP-101 register file, PSW, NIA, and CC.
+ * <gpc-regview>: Displays AP-101 register file, PSW, NIA, and CC.
  *
  * Properties (set via JS):
- *   cpu — CPU instance (reads regFiles, psw)
+ *   cpu -- CPU instance (reads regFiles, psw)
  *
  * Public methods:
- *   refresh() — re-read registers and re-render with change highlighting
- *   resetTracking() — clear change tracking (call on simulator reset)
+ *   refresh() -- re-read registers and re-render with change highlighting
+ *   resetTracking() -- clear change tracking (call on simulator reset)
  */
 @customElement('gpc-regview')
 export class GpcRegview extends LitElement {
@@ -20,7 +24,7 @@ export class GpcRegview extends LitElement {
   // When true, double-clicking any register / field opens an inline hex editor.
   @property({ type: Boolean }) declare editable: boolean;
 
-  // Step number of last refresh — registers written after this are "changed"
+  // Step number of last refresh: registers written after this are "changed"
   private _lastRefreshStep: number = 0;
   private _editingSpan: HTMLElement | null = null;
 
@@ -93,6 +97,10 @@ export class GpcRegview extends LitElement {
     input.addEventListener('blur', () => finish(false));
   }
 
+  firstUpdated(): void {
+    this.refresh();
+  }
+
   refresh(): void {
     if (!this.cpu) return;
     // Don't blow away an in-progress inline edit (commit clears _editingSpan
@@ -157,8 +165,7 @@ export class GpcRegview extends LitElement {
 
       row.appendChild(r1Value);
 
-      // DSE (rows 0-3 only)
-      if (i < 4) {
+      {
         for (let bank = 0; bank < 2; bank++) {
           const dseVal = this.cpu.regFiles[bank].getDSE(i);
           const dseChanged = dseWasWritten(this.cpu.regFiles[bank], i);
@@ -171,12 +178,6 @@ export class GpcRegview extends LitElement {
           this._enableEdit(dseSpan, dseVal.toString(16),
             ((b: number, base: number) => (v: number) => this.cpu.regFiles[b].setDSE(base, v))(bank, i));
           row.appendChild(dseSpan);
-        }
-      } else {
-        for (let bank = 0; bank < 2; bank++) {
-          const spacer = document.createElement('span');
-          spacer.className = 'dse-spacer';
-          row.appendChild(spacer);
         }
       }
 
@@ -230,10 +231,27 @@ export class GpcRegview extends LitElement {
       pswEl.appendChild(row);
     };
 
+    const addPswBits = (pattern: string, value: number, legend: string) => {
+      if (!pattern) return;
+      const bf = document.createElement('bit-field') as any;
+      bf.pattern = pattern;
+      bf.value = value >>> 0;
+      bf.bits = 32;
+      bf.label = legend;
+      bf.className = 'psw-bits';
+      pswEl.appendChild(bf);
+    };
+    // Prefer the live PackedBits descriptors over a copy of the layout.
+    const pswClass: any = this.cpu.psw.constructor;
+    const desc1 = this.cpu.psw.pack1?.descStr ?? pswClass.DESC1;
+    const desc2 = this.cpu.psw.pack2?.descStr ?? pswClass.DESC2;
+
     addPswRow('P1', fmtHex32(psw1Val), psw1Changed ? CHANGED : ACTIVE, '#77f',
       { initial: (psw1Val >>> 0).toString(16).padStart(8, '0'), write: (v) => this.cpu.psw.psw1.set32(v) });
+    addPswBits(desc1, psw1Val, PSW1_LEGEND);
     addPswRow('P2', fmtHex32(psw2Val), psw2Changed ? CHANGED : ACTIVE, '#77f',
       { initial: (psw2Val >>> 0).toString(16).padStart(8, '0'), write: (v) => this.cpu.psw.psw2.set32(v) });
+    addPswBits(desc2, psw2Val, PSW2_LEGEND);
     addPswRow('NIA', this.cpu.psw.getNIA().toString(16).padStart(5, '0'), ACTIVE, '#f80',
       { initial: this.cpu.psw.getNIA().toString(16), write: (v) => this.cpu.psw.setNIA(v) });
     addPswRow('CC', this.cpu.psw.getCC().toString(2).padStart(2, '0'), ACTIVE, '#77f',
@@ -316,6 +334,12 @@ export class GpcRegview extends LitElement {
 
     .fp-reg {
       margin-left: 8px;
+    }
+
+    .psw-bits {
+      margin: 2px 0 6px 24px;
+      overflow-x: auto;
+      --bf-label-color: #666;
     }
   `;
 }

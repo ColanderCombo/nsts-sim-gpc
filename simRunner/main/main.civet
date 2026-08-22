@@ -154,6 +154,17 @@ createWindow := async () : Promise<void> =>
   }
   win.webContents.on 'did-finish-load', () =>
     win.webContents.send 'set-config', config
+    // dev/test hook: NSTS_EXEC runs in the debugger window once it has
+    // loaded:
+    //   NSTS_EXEC="window.lru.run()" gpc gui image.fcm --real-time
+    if process.env.NSTS_EXEC
+      win.webContents.on 'console-message', (e, level, message) =>
+        console.log "[renderer]", message
+      setTimeout (() =>
+        win.webContents.executeJavaScript(process.env.NSTS_EXEC)
+          .then (v) => console.log "[gpc] NSTS_EXEC ->", v
+          .catch (e) => console.error "[gpc] NSTS_EXEC failed:", e
+      ), 2000
 
   rendererIndex := path.join(__dirname, '../renderer/index.html')
   if fs.existsSync rendererIndex

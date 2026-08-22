@@ -7,13 +7,15 @@ import {interpretHalfwords} from 'gpc/gui/memformat';
 @customElement('gpc-memory')
 export class GpcMemory extends LitElement {
 
-  // --- Properties set by host via JS ---
+  // Properties set by host via JS
+  //
   cpu: any = null;
   sym: any = null;
   selectedSection: string | null = null;
   watchAddresses: Set<number> | null = null;
 
-  // --- Internal state ---
+  // Internal state
+  //
   private _viewStart: number = 0;
   private _wordsPerRow: number = 16;
   private _rowCount: number = 8;
@@ -29,7 +31,8 @@ export class GpcMemory extends LitElement {
   private _toolbarEl: HTMLElement | null = null;
   private _rangeText: string = '';
 
-  // --- Lit lifecycle ---
+  // Lit lifecycle
+  //
 
   // Re-observe on every (re)connection: the dock recreates panes when the
   // layout restructures, which disconnects/reconnects this element.
@@ -50,7 +53,8 @@ export class GpcMemory extends LitElement {
     this._resizeObserver?.disconnect();
   }
 
-  // --- Public methods ---
+  // Public methods
+  //
 
   refresh(): void {
     const contentEl = this._contentEl;
@@ -58,7 +62,8 @@ export class GpcMemory extends LitElement {
 
     this._hideTooltip();
 
-    // --- Layout calculation ---
+    // Layout calculation
+    //
     const containerWidth = contentEl.clientWidth || 800;
     const addrWidth = 58;
     const chunkWidth = 16 * 28 + 15 * 7; // 553px per 16-word chunk
@@ -73,12 +78,14 @@ export class GpcMemory extends LitElement {
     const availHeight = hostHeight - 8;
     this._rowCount = Math.max(2, Math.floor(availHeight / lineHeight));
 
-    // --- Build row data ---
+    // Build row data
+    //
     const nia = this.cpu.psw.getNIA();
     const wordCount = this._wordsPerRow * this._rowCount;
     const rows = this._formatMemory(this._viewStart, wordCount, nia);
 
-    // --- Render rows ---
+    // Render rows
+    //
     contentEl.innerHTML = '';
     contentEl.onmousedown = (e: MouseEvent) => {
       if (e.target === contentEl || (e.target as HTMLElement).tagName === 'DIV') {
@@ -233,7 +240,8 @@ export class GpcMemory extends LitElement {
     if (this._toolbarEl) render(this._toolbarTemplate(), this._toolbarEl, { host: this });
   }
 
-  // --- Memory data formatting (ported from ap101.coffee formatMemory) ---
+  // Memory data formatting (ported from ap101.coffee formatMemory)
+  //
 
   private _formatMemory(startAddr: number, count: number, nia: number): Array<{addr: number; addrStr: string; words: Array<any>}> {
     const rows: Array<{addr: number; addrStr: string; words: Array<any>}> = [];
@@ -271,7 +279,8 @@ export class GpcMemory extends LitElement {
     return rows;
   }
 
-  // --- Selection ---
+  // Selection
+  //
 
   private _selectWord(addr: number, extend: boolean): void {
     if (extend && this._selStart != null) {
@@ -290,7 +299,8 @@ export class GpcMemory extends LitElement {
     return { lo, hi, count: hi - lo + 1 };
   }
 
-  // --- Tooltip ---
+  // Tooltip
+  //
 
   private _interpretSelection(): string[] | null {
     const sel = this._selRange();
@@ -341,7 +351,8 @@ export class GpcMemory extends LitElement {
     }
   }
 
-  // --- Navigation ---
+  // Navigation
+  //
 
   private _scrollUp(): void {
     this._viewStart = Math.max(0, this._viewStart - this._wordsPerRow * 4);
@@ -390,7 +401,8 @@ export class GpcMemory extends LitElement {
     this.refresh(); // re-renders data (underlines + bits block) and the toolbar
   }
 
-  // --- Template ---
+  // Template
+  //
 
   render() {
     return html`<div id="content" @wheel="${this._onWheel}"></div>`;
@@ -424,7 +436,8 @@ export class GpcMemory extends LitElement {
     `;
   }
 
-  // --- Styles ---
+  // Styles
+  //
 
   static styles = css`
     :host {

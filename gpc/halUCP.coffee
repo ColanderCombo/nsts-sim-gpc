@@ -31,7 +31,7 @@ SVC_ERROR_MESSAGES = {
     18: "BAD LENGTH IN LJUST OR RJUST"
     19: "MOD DOMAIN ERROR "
     20: "CHARACTER TO SCALAR CONVERSION"
-    22: "CHARACTER TO INTEGEgpc/halUCP.coffeegpc/halUCP.coffeeR CONVERSION"
+    22: "CHARACTER TO INTEGER CONVERSION"
     24: "NEGATIVE BASE IN EXPONENTIATION"
     25: "VECTOR/MATRIX DIVISION BY ZERO"
     27: "ARGUMENT OF INVERSE IS A SINGULAR MATRIX"
@@ -167,6 +167,7 @@ export class HalUCP
   # whose first halfword is 0x0014, second is (group<<8 | num).
   handleSVC: (ea, r1) ->
     return false unless @trapSvcError
+    return false unless @active
 
     # Debug: dump EA, R1, and memory at EA
     hw0 = if ea >= 0 then @cpu.mainStorage.get16(ea) else 0
@@ -182,7 +183,7 @@ export class HalUCP
     svcCode = if ea >= 0 then @cpu.mainStorage.get16(ea) else 0
 
     if svcCode == 0x0015
-      # Program halt — %SVCI(0) generates SVC D(R1) where D varies by
+      # Program halt -- %SVCI(0) generates SVC D(R1) where D varies by
       # program; the halt is identified by the code 0x0015 at the EA.
       # (An unconsumed tail of the current input record is normal in
       # record-oriented input; no warning.)
@@ -201,7 +202,7 @@ export class HalUCP
       return true
 
     if svcCode == 0x0014
-      # SEND ERROR — ERRPARMS block at EA: second halfword is descriptor
+      # SEND ERROR -- ERRPARMS block at EA: second halfword is descriptor
       errDesc = @cpu.mainStorage.get16(ea + 1)
       errGroup = (errDesc >>> 8) & 0xff
       errNum = errDesc & 0xff
@@ -220,7 +221,7 @@ export class HalUCP
       @_tryOnErrorDispatch(errGroup, errNum)
       # Whether or not dispatch succeeded, we've handled the SVC.
       # On success: PSW now points to the handler.
-      # On failure: NIA still points past the SVC → standard fixup runs.
+      # On failure: the NIA still points past the SVC -> standard fixup runs.
       return true
 
     # Unknown SVC
@@ -490,7 +491,7 @@ export class HalUCP
     switch iocode
       when 8  # BOUT - bit string
         len = @cpu.mainStorage.get16(@iobufAddr)
-        bits = @get32(@iobufAddr + 2)  # ST R5,IOBUF+2 → IOBUF + 2 halfwords
+        bits = @get32(@iobufAddr + 2)  # ST R5,IOBUF+2, -> IOBUF + 2 halfwords
         # Format as binary string of specified length
         bitStr = (bits >>> 0).toString(2).padStart(32, '0').substring(32 - len)
         # Insert blank after every 4th digit
@@ -572,12 +573,12 @@ export class HalUCP
           @readToCol = 1            # default: leftmost column
         else
           @readMode = null
-          # WRITE/PRINT — set up output positioning.
+          # WRITE/PRINT -- set up output positioning.
           # Empty WRITE handling: flush any unflushed deferred from
           # a previous WRITE (12.2: "the device merely performs its
           # initial positioning" for empty WRITEs).
           @_flushPositioning(ch) if @deferred[ch]?
-          # 12.2 — If the WRITE statement is the first to be executed
+          # 12.2 -- If the WRITE statement is the first to be executed
           # for the specified device, the device mechanism positions
           # itself at column 1 of line 1.  Otherwise, the device
           # mechanism moves down one line from its current position,
@@ -603,27 +604,27 @@ export class HalUCP
         @lineNumber[ch] ?= 1
         curLine = @lineNumber[ch]
         if @isPaged(ch)
-          # 10.1.3 rule 5 — Paged: if K >= current line, stay on current page;
+          # 10.1.3 rule 5 -- Paged: if K >= current line, stay on current page;
           # if K < current line, advance to line K of the next page.
           if param >= curLine
             delta = param - curLine
           else
             delta = (@linesPerPage - curLine) + param
         else
-          # 10.1.3 rule 5 — Unpaged: absolute line positioning; backward illegal.
+          # 10.1.3 rule 5 -- Unpaged: absolute line positioning; backward illegal.
           delta = param - curLine
           if delta < 0
             @_log "HalUCP: LINE(#{param}) cannot move upward from line #{curLine}\n"
             delta = 0
         if @deferred[ch]?
-          # 12.4 — overrides default downward movement at start of WRITE
+          # 12.4 -- overrides default downward movement at start of WRITE
           @deferred[ch].downLines = delta
         else
           for _ in [0...delta]
             @_newline(ch)
       when 5  # COLUMN - position at absolute column number
         if @readMode?
-          # 10.1.1 rule 3 — COLUMN overrides the automatic column position;
+          # 10.1.1 rule 3 -- COLUMN overrides the automatic column position;
           # applied when the next field is read.
           if param < 1
             @_log "HalUCP: COLUMN(#{param}) below column 1\n"
@@ -634,7 +635,7 @@ export class HalUCP
         if param < 1
           @_log "HalUCP: COLUMN(#{param}) below column 1\n"
         else if @deferred[ch]?
-          # 12.4 — overrides default positioning at column 1 at start of WRITE
+          # 12.4 -- overrides default positioning at column 1 at start of WRITE
           @deferred[ch].toCol = param
         else
           @column[ch] ?= 1
@@ -643,7 +644,7 @@ export class HalUCP
             @column[ch] = param
           else
             @_log "HalUCP: COLUMN(#{param}); CUR=#{@column[ch]} backwards, umimplemented.\n"
-        # 12.4 — TAB or COLUMN between two expressions overrides the
+        # 12.4 -- TAB or COLUMN between two expressions overrides the
         # standard data field separation.
         @suppressNextSep[ch] = true
       when 6  # TAB - relative column movement (signed)
@@ -679,7 +680,7 @@ export class HalUCP
           @_log "HalUCP: PAGE(#{param}) on input channel #{@channel} — unsupported, ignored\n"
           return
         ch = @channel
-        # 10.1.3 rule 6 — PAGE(K) specifies page movement relative to
+        # 10.1.3 rule 6 -- PAGE(K) specifies page movement relative to
         # current page.  K=0 is a no-op.
         #   - emit pagefeed ctrl char?
         if param > 0
@@ -694,7 +695,7 @@ export class HalUCP
           if param < 0
             @_log "HalUCP: SKIP(#{param}) negative count not allowed\n"
           else if @readDefaultAdvance
-            # 10.1.1 rule 3 — a leading SKIP overrides the automatic
+            # 10.1.1 rule 3 -- a leading SKIP overrides the automatic
             # advance to the next record; SKIP(0) retains the current
             # record (the READALL + READ SKIP(0) re-read idiom).
             @readAdvance = param
@@ -704,10 +705,10 @@ export class HalUCP
           return
         ch = @channel
         if param < 0
-          # 12.4 — alpha may not be negative
+          # 12.4 -- alpha may not be negative
           @_log "HalUCP: SKIP(#{param}) negative count not allowed\n"
         else if @deferred[ch]?
-          # 12.4 — overrides default downward movement; SKIP(0) suppresses it.
+          # 12.4 -- overrides default downward movement; SKIP(0) suppresses it.
           @deferred[ch].downLines = param
         else
           for _ in [0...param]
@@ -715,9 +716,7 @@ export class HalUCP
       else
         @_log "HalUCP: Unknown control IOCODE=#{iocode}\n"
 
-
-
-  # ---------------------------------------------------------------------------
+  #
   # Input field extraction (10.1.1 rules 4-6)
   #
   # Fields are separated by commas, semicolons, or blanks.
@@ -725,8 +724,7 @@ export class HalUCP
   #   - Semicolons terminate the READ statement (rule 5).
   #   - Blanks separate fields but do not create null fields.
   #   - Character and bit strings are enclosed in apostrophes (Appendix E).
-  # ---------------------------------------------------------------------------
-
+  #
   # Resolve pending record-advance / column positioning for input.
   # Returns true when the current record is positioned and ready;
   # false when a (new) record must be requested from the host
@@ -748,7 +746,7 @@ export class HalUCP
     return null unless @_resolveInputPos()
     @readDefaultAdvance = false  # first item consumed the default advance
     if @readMode == 'readall' and iocode == 13
-      # 10.1.2 — READALL transfers characters without conversion:
+      # 10.1.2 -- READALL transfers characters without conversion:
       # fill the CHARACTER variable with up to maxlen columns from the
       # current position, advancing the device by what was transferred.
       maxLen = (@cpu.mainStorage.get16(@iobufAddr) >> 8) & 0xFF
@@ -760,39 +758,39 @@ export class HalUCP
 
   # Extract the next field from the current input record for the given
   # iocode.  Returns:
-  #   { value: string }     — a normal field
-  #   { isNull: true }      — a null field (variable left unchanged)
-  #   { terminated: true }  — semicolon terminated the READ
-  #   null                  — record exhausted, need the next record
+  #   { value: string }     -- a normal field
+  #   { isNull: true }      -- a null field (variable left unchanged)
+  #   { terminated: true }  -- semicolon terminated the READ
+  #   null                  -- record exhausted, need the next record
   _extractNextField: (iocode) ->
     buf = @inputRecord
     i = Math.max(0, @inputCol - 1)
 
-    # Skip leading whitespace (not commas/semicolons — those are significant)
+    # Skip leading whitespace (not commas or semicolons, which are significant)
     i++ while i < buf.length and (buf[i] == ' ' or buf[i] == '\t')
 
     if i >= buf.length
-      # 10.1.1 — record exhausted; data continues on the next record.
+      # 10.1.1 -- record exhausted; data continues on the next record.
       @inputRecord = null
       return null
 
     c = buf[i]
 
     if c == ';'
-      # 10.1.1 rule 5 — semicolon terminates the READ statement.
+      # 10.1.1 rule 5 -- semicolon terminates the READ statement.
       @inputCol = i + 2
       return { terminated: true }
 
     if c == ','
-      # 10.1.1 rule 6 — comma when data expected: null field.
+      # 10.1.1 rule 6 -- comma when data expected: null field.
       # The comma is consumed; the data after it (if any) is for the NEXT field.
       @inputCol = i + 2
       return { isNull: true }
 
-    # --- Extract an actual field value ---
-
+    # Extract an actual field value
+    #
     if c == "'" and (iocode == 13 or iocode == 8)
-      # Appendix E — character/bit strings are enclosed in apostrophes.
+      # Appendix E -- character/bit strings are enclosed in apostrophes.
       result = @_parseQuotedString(buf, i)
       @inputCol = buf.length - result.rest.length + 1
       @_consumeTrailingSeparator()
@@ -810,7 +808,7 @@ export class HalUCP
   # After extracting a field, consume the trailing separator so the next
   # call starts clean.  Whitespace is always consumed.  A single comma is
   # consumed (it separated this field from the next).  Semicolons are NOT
-  # consumed — they must be seen by the next call to trigger termination.
+  # consumed -- they must be seen by the next call to trigger termination.
   _consumeTrailingSeparator: () ->
     buf = @inputRecord
     i = @inputCol - 1
@@ -844,7 +842,7 @@ export class HalUCP
     unless @channelMode[@channel]?
       @channelMode[@channel] = 'unpaged'
 
-    # 10.1.1 rule 5 — semicolon terminated a previous field in this READ;
+    # 10.1.1 rule 5 -- semicolon terminated a previous field in this READ;
     # all remaining variables are left unchanged.
     if @readTerminated
       @_log "HalUCP: Input IOCODE=#{iocode} skipped (READ terminated by semicolon)\n"
@@ -861,7 +859,7 @@ export class HalUCP
         @skipTrap = true
         return 'continue'
       if field.isNull
-        # 10.1.1 rule 6 — null field: variable left unchanged
+        # 10.1.1 rule 6 -- null field: variable left unchanged
         @_log "HalUCP: Input IOCODE=#{iocode} — null field (unchanged)\n"
         @skipTrap = true
         return 'continue'
@@ -873,7 +871,7 @@ export class HalUCP
       @skipTrap = true
       return 'continue'
 
-    # Buffer exhausted — request more input
+    # Buffer exhausted -- request more input
     @waitingForInput = true
     @pendingIocode = iocode
     @_log "HalUCP: Input requested, IOCODE=#{iocode}\n"
@@ -892,7 +890,7 @@ export class HalUCP
     field = @_nextInputItem(iocode)
     unless field?
       # Need another record (multi-record SKIP, or a blank/exhausted
-      # record for READ) — request it.  In batch mode the host callback
+      # record for READ) -- request it.  In batch mode the host callback
       # calls provideInput synchronously (bounded recursion, one level
       # per record); in debug mode the 'block' path re-drives us.
       @_log "HalUCP: provideInput — record consumed, requesting next\n"
@@ -917,7 +915,7 @@ export class HalUCP
   # in a READ. HAL/S programs can install an ON ERROR$(IO:5) handler to
   # catch this; if one is present we unwind the one-deep SCAL frame and
   # branch to the handler. If not, the program is stuck in a READ that
-  # can never complete — halt cleanly so it's obvious.
+  # can never complete -- halt cleanly so it's obvious.
   provideEof: () ->
     return unless @waitingForInput
     # IO = 10, EOF = 5.
@@ -941,7 +939,7 @@ export class HalUCP
   # Simplified ON ERROR handler
   #
   # walks exactly one SCAL frame and checks the single error cell pair
-  # at `caller_stack_base + {18,19}` — i.e. immediately after the 18-hw
+  # at `caller_stack_base + {18,19}`, immediately after the 18-hw
   # SCAL save area (2 hw PSW1 + 8 regs x 2 hw).  PASS2 arms the handler
   # with `STH Rx,18(R0)` (FIXV) / `STH Rx,19(R0)` (handler address), so
   # the cells are at a fixed offset from the stack base regardless of
@@ -953,7 +951,7 @@ export class HalUCP
   #   FIXV    = SHL(TAG, 12) + VAL(LEFTOP)         -- (line 4145)
   #   i.e. FIXV = (TAG << 12) | ((num & 0x3F) << 6) | (group & 0x3F)
   #   TAG = 0 user DO block / 1 SYSTEM / 3 IGNORE
-  #   Bare `ON ERROR` → VAL(OP) = "3F" (63, catch-all sentinel)
+  #   Bare `ON ERROR` -> VAL(OP) = "3F" (63, catch-all sentinel)
   _tryOnErrorDispatch: (errGroup, errNum) ->
     # Current R0 points into the RTL routine's SCAL save area (SA).
     # SCAL layout (cpu_instr.coffee:4971): SA..SA+1 = saved PSW1, then
@@ -1094,7 +1092,7 @@ export class HalUCP
     @cpu.mainStorage.set16(@iobufAddr, (maxLen << 8) | (len & 0xFF))
     for i in [0...len] by 2
       if @iobufEncoding == 'ascii'
-        # DEU encoding: '"' → 0x00, '_' → 0x16
+        # DEU encoding: '"' -> 0x00, '_' -> 0x16
         hiByte = if text[i] == '"' then 0x00 else if text[i] == '_' then 0x16 else text.charCodeAt(i) & 0xFF
         loByte = if i + 1 >= len then 0x20 else if text[i+1] == '"' then 0x00 else if text[i+1] == '_' then 0x16 else text.charCodeAt(i + 1) & 0xFF
       else

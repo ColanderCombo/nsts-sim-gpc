@@ -7,6 +7,7 @@ fs = require 'fs'
 
 require 'com/util'
 import {AGEHarness} from 'gpc/ageharness'
+import {DEFAULT_MACHINE, parseMachineOption, checkFCMFits} from 'gpc/machine'
 import Instruction from 'gpc/cpu_instr'
 
 export class FCMDumper
@@ -16,7 +17,7 @@ export class FCMDumper
     @outputPath = opts.outputPath ? null
     @columns = opts.columns ? 7
 
-    @age = new AGEHarness()
+    @age = new AGEHarness(machine: opts.machine)
 
     @lines = []
     @sortedSymbols = []
@@ -33,7 +34,7 @@ export class FCMDumper
       fs.writeFileSync @outputPath, @lines.join("\n") + "\n"
 
   load: ->
-    # Resolve symbols path — use explicit option, or AGE auto-detect
+    # Resolve symbols path: use explicit option, or AGE auto-detect
     symbolsPath = @opts.symbols or @age.autoDetectSymbols(@fcmPath)
 
     if not symbolsPath?
@@ -357,12 +358,15 @@ export addCommand = (program) ->
     .option('--no-symbols', 'allow running without symbol file')
     .option('--output <file>', 'write output to file instead of stdout')
     .option('--columns <n>', 'columns in symbol table grid', '7')
+    .option('--machine <model>', 'ap101s or ap101b', parseMachineOption, DEFAULT_MACHINE)
     .action (fcmPath, o) ->
+      checkFCMFits(fcmPath, o.machine)
       dumper = new FCMDumper(fcmPath, {
         symbols: o.symbols or null
         requireSymbols: o.symbols != false
         outputPath: o.output or null
         columns: parseInt(o.columns, 10)
+        machine: o.machine
       })
       dumper.run()
       process.exit(0) # force electron exit

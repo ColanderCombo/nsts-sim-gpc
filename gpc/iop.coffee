@@ -5,9 +5,155 @@ import {MSC} from 'gpc/iop_msc'
 import {BCE} from 'gpc/iop_bce'
 import {MCM} from 'gpc/mcm'
 
+# The per-processor status registers
+#
+# STAT1 (GO/NO-GO), STAT4 (BUSY/WAIT), STAT5 (halt/enable), the program
+# exception register and the BCE indicator register carry one bit per
+# processor:
+#
+#   bit 0      MSC                   0x80000000
+#   bits 1-24  BCE 1 through BCE 24  (BCE 1 = 0x40000000, BCE 24 = 0x80)
+#   bit 25     self-test processor   0x00000040
+#   bits 26-31 unused
+#
+# The registers are declared 32 bits wide because that is their width on
+# the interface.  Register's width argument only rounds the backing store
+# up to whole halfwords and never masks.
+PROC_MSC = 0                   # processor number of the MSC
+PROC_SELFTEST = 25             # ...and of the self-test processor
+PROC_ALL = 0xffffff80          # MSC + BCE 1-24
+PROC_ALL_BCE = 0x7fffff80      # BCE 1-24, no MSC
+PROC_ALL_WITH_SELFTEST = 0xffffffc0
+
+# IOP interrupt register A (Group 1)
+#
+# The five sources that share External 0 (Figure 2-20 priority 50, PSA
+# 0078/007C, mask bit 35, code 0000, held pending when masked).  The CPU's
+# handler reads this register with PCI 08000000 to find out which of them
+# it was, and the read clears it; so does an ICR channel reset.  Bit
+# numbering is IBM's, bit 0 the most significant bit of the 32-bit data
+# word (POO Appendix I, "READ INTERRUPT REGISTER A/GROUP 1").
+INTA_GO_NOGO   = 0x80000000   # 0  GO/NO-GO (watchdog) timer timed out
+INTA_IOP_FAIL  = 0x40000000   # 1  IOP fail latch, from the RM voter logic
+INTA_CM_IDLE   = 0x20000000   # 2  C/M logic idle and available again
+INTA_ROS_PAR   = 0x10000000   # 3  ROS parity error
+INTA_IOP_FAULT = 0x08000000   # 4  IOP timing fault
+                              # 5  spare
+
+# IOP interrupt register B (Group 2)
+#
+# External 1's register.  Bits 1-3 are a priority-encoded error code:
+# "if multiple errors occur, only the highest priority event will be
+# annunciated", ordered numerically with 001 lowest and 110 highest (POO
+# Appendix I, "READ INTERRUPT REGISTER B/GROUP 2"). 
+INTB_CODE_MASK = 0x70000000   # bits 1-3
+INTB_CODE_SHIFT = 28
+INTB_DEV_OUT   = 1            # 001  device out data parity error
+INTB_R123      = 2            # 010  R1, R2, R3 parity error
+INTB_DMA       = 3            # 011  flow bottom DMA address or data parity
+INTB_QUEUE     = 4            # 100  MC queue control parity error
+INTB_MIA       = 5            # 101  MIA parity error
+INTB_DIAG25    = 6            # 110  diagnostic processor 25 error
+INTB_QUEUE_OVF = 0x08000000   # 4    queue overflow (>64 requests queued)
+INTB_DMA_TMOUT = 0x04000000   # 5    DMA in process for more than 8 us
+
+# The MIA enable registers' two bit numberings
+#
+# The transmitter and receiver enable registers are stored in PROCESSOR
+# numbering, like every other per-processor register here: bit n is BCE n,
+# and bit 0 (the MSC's) is unused because the MSC has no MIA.  That is the
+# numbering the ENABLE/DISABLE PCO data word uses -- "BIT 0 NOT USED ...
+# BIT 1 CHANNEL NO. 1 MIA TRANSMITTER ... BIT 24 CHANNEL NO. 24 ... BITS
+# 25-31 NOT USED".  A 1 in bit 0 is not a command to do anything: "the
+# hardware does not respond".
+#
+# The READ PCIs, though, report in CHANNEL numbering -- "BIT 0 CHANNEL NO.
+# 1 MIA TRANSMITTER ... BIT 23 CHANNEL NO. 24, BITS 24-31 NOT USED" -- so
+# the word that comes back is the mask that went out shifted one place
+# left. 
+MIA_WRITE_MASK = 0x7fffff80    # BCE 1-24 in processor numbering
+MIA_READ_MASK  = 0xffffff00    # channels 1-24 in channel numbering
+
+# Discrete inputs
+#
+# The two discrete input registers carry the switch positions and vehicle
+# signals the software configures itself from (POO Appendix I, READ
+# DISCRETE INPUT A / READ DISCRETE INPUTS B).  IBM bit numbering:
+#
+#   A   0-3   HALT / STANDBY / RUN / IPL crew panel switches
+#       4,5   MM1 / MM2 selected as the IPL source
+#       6,7   MM1 / MM2 READY -- the MMU's own signal, not a switch
+#      12,13  IOP terminate A / B
+#   B   0-2   this GPC's own ID (1-5; 0 is not a legal ID)
+#       3-5   BFS engage 1/2/3
+#       6,7   CRT (display) select -- +5 gives the BCE, so 1 is DK1/BCE 6
+#
+# Nothing drives these yet: They come up as GPC 1, IPL source MM1, MM1 
+# ready, display CRT 1
+#
+DISCRETE_IN_A_DEFAULT = 0x0a000000    # bit 4 = MM1 is the IPL source,
+                                      # bit 6 = MM1 ready
+DISCRETE_IN_B_DEFAULT = 0x21000000    # bits 0-2 = GPC 1, bits 6-7 = CRT 1
+
+# A local store word is 18 bits.  Register(18) backs that with two
+# halfwords, and the model keeps the value as a plain integer through
+# get32/set32 -- the paired registers (IH/IL, AH/AL, DH/DL, BSTH/BSTL) are
+# the exception, being two 16-bit halves of a 32-bit quantity.
+LS_WORD_MASK = 0x3ffff
+
+# NSTS_RECV_TRACE prints every halfword a bus control element takes off its
+# bus and the main-storage address it lands at: 1 for the whole IOP, or a
+# processor number to follow one bus. 
+RECV_TRACE = do ->
+  v = process?.env?.NSTS_RECV_TRACE
+  return false unless v
+  if /^\d+$/.test(v) and +v > 1 then +v else true
+
+# NSTS_BUS_TIMEOUT_TRACE prints every BCE receive time out with how long it
+# waited on BOTH clocks -- the machine's own (simulated) and the host's
+# (wall).  
+TIMEOUT_TRACE = process?.env?.NSTS_BUS_TIMEOUT_TRACE?
+
+# GO/NO-GO timer resolution: "bit 31 (LSB) = 0.768 msec", 12 bits, so
+# 3.145728 s at a full count (POO Appendix I, LOAD GO/NO-GO TIMER).
+WD_TICK_NS = 768000
+WD_COUNT_MASK = 0xfff
+
+# Maximum time out register resolution: "The resolution of this timeout
+# count is 16.5 microseconds", which the two ranges the POO quotes agree
+# with -- 2047 counts to 33.78 ms, 262143 to 4.325 s.
+MTO_TICK_NS = 16500
+
+# How long one count of an MSC repeat instruction lasts.  Two of the IOP's
+# 16.5 us resolution -- see the note on IOP.mscRepeat for the two flight
+# constants that fix it.
+MSC_REPEAT_TICK_NS = 2 * 16500
+
+# The shortest a receive time out is allowed to be, in simulated time.
+#
+# This is not part of the machine.  A subsystem here is a model in
+# another process reached over a socket, and the host delivers its answer
+# when it next gets round to it -- which for a simulation running near
+# real time is a millisecond or two of simulated time, and for one
+# running from a loop that only yields every few thousand instructions is
+# more.  Software loads time outs as short as fifteen counts (247
+# us) before a two-word status read, and nothing out of process can be
+# held to that
+#
+# So a floor, well under the seconds-long time outs that bound a tape
+# transfer and well over the host's own latency.  Set it to 0 for exact 
+# hardware behaviour when the subsystem is in this process.
+RECV_TIMEOUT_FLOOR_NS = 20000000      # 20 ms
+
 class IOPLocalStore
   constructor: () ->
-    @storePage = (new RegisterFile(x,16,18) for x in [0..24])
+    # 0 = MSC, 1-24 = the BCEs, 25 = the diagnostic / self-test
+    # processor.  25 has no program of its own, but it HAS a local store
+    # page: the MSC and BCE self-test micro programs leave their
+    # signature in it (POO: "MSC self-test modifies Proc 25's locations
+    # in Local Store"), and software reads it back through READ LOCAL
+    # STORE region 25 to confirm the test ran.
+    @storePage = (new RegisterFile(x,16,18) for x in [0..25])
 
     @slice = 0
     @curBCE = 0
@@ -51,7 +197,16 @@ class IOPLocalStore
 
   cp: () -> @storePage[@curPage]
 
-  ls: (bank,word) -> @cp.r(bank*4+word)
+  # Bank A and B hold four words each and bank C eight, which is the 16
+  # registers a page has: A = 0-3, B = 4-7, C = 8-15.
+  ls: (bank,word) -> @cp().r(bank*4+word)
+
+  # Local store as the CPU addresses it (LOAD/READ LOCAL STORE): region 0 is
+  # the MSC, 1-24 are BCE 1-24, 25 is the self-test processor.
+  at: (region, bank, word) ->
+    page = @storePage[region]
+    return null unless page?
+    return page.r(bank*4 + word)
 
   # COMMON:
   PC: () -> @ls(0,2)
@@ -96,11 +251,14 @@ class IOPLocalStore
     @BSTL().set16(v&0xffff)
 
 export class IOP
-  constructor: (@cpu) ->
-    @mainStorage = new MCM(24*1024)
+  # opts.iopWords sizes the share of main storage packaged in this LRU
+  # (fullwords, 0 on the AP-101S where the store is one unit in the CPU LRU);
+  # see gpc/machine.coffee.  Defaults to the AP-101B IOP LRU's 24K.
+  constructor: (@cpu, opts = {}) ->
+    @mainStorage = new MCM(opts.iopWords ? 24*1024)
 
     @msc = new MSC()
-    @bce = (new BCE(x) for x in [1..24])
+    @bce = (new BCE(x, @) for x in [1..24])
 
     @curPE = 0  # MSC = 0, BCE = 1-24
 
@@ -108,22 +266,71 @@ export class IOP
     @dmaForceBadParity = false
     @dataForceBadParity = false
 
+    # Data flow parity (POO Appendix I, DATA FLOW PARITY CHECK)
+    #
+    # "Parity is generated in four locations in the IOP in order to detect
+    # single bit errors.  Each of the four generators has its
+    # corresponding checker...  All four checkers can be individually
+    # checked with the PCO commands to force bad parity."  The four are
+    # the H-Bus receive path (checked twice -- once off the device-out
+    # data bus, and again, indirectly, when registers R1/R2/R3 are used),
+    # the DMA address/data path out to the CPU, the bus to the octal MIAs,
+    # and the local store address plus queue control bits.
+    #
+    # Checking starts disabled: "events that disable parity checking
+    # include Power On, System Reset, and Disable Flow Parity Check".
+    @parityEnabled = false
+    @forceHBusParity = false      # C102: H-Bus received data
+    @forceQueueParity = false     # C108: local store address / queue control
+    @forceDMAParity = false       # C140: DMA address and data
+    @forceMIAParity = false       # C180: octal MIA pages
 
-    @regXmitEna = new Register("xmitEnable", 24)
-    @regRecvEna = new Register("resvEnable", 24)
+    # Data that reached local store over a poisoned H-Bus carries the bad
+    # parity with it: the device-out checker catches the transfer as it
+    # arrives, and the IB page catches it AGAIN -- later -- when the owning
+    # processor uses that register.  One tag set per local store page,
+    # holding the indices of the registers written badly.
+    @lsBadParity = ({} for x in [0..PROC_SELFTEST])
 
-    @regProgExcept = new Register("GO_NOGO", 25) # STAT1 (GO/NOGO)
-    @regBusyWait = new Register("BUSY_WAIT", 25) # STAT4 (BUSY/WAIT)
-    @regHalt = new Register("HALT", 25) # STAT5 (HALT/NO HALT)
-    @regIndicator = new Register("Indicator", 25)
+
+    # One bit per processor, laid out as the hardware lays them out (see
+    # the comment above PROC_MSC).
+    @regXmitEna = new Register("xmitEnable", 32)   # MIA transmitter enables
+    @regRecvEna = new Register("resvEnable", 32)   # MIA receiver enables
+
+    @regProgExcept = new Register("GO_NOGO", 32)   # STAT1: 1 = GO, 0 = error
+    @regBusyWait = new Register("BUSY_WAIT", 32)   # STAT4: 1 = BUSY, 0 = WAIT
+    # STAT5, "the Halt Register", read by READ PROCESSOR HALT STATUS --
+    # whose data word is documented the enable way round: "0 = Processor
+    # (MSC or BCE) Disabled, 1 = Processor Enabled".
+    @regProcEnable = new Register("PROC_ENABLE", 32)
+    @regIndicator = new Register("Indicator", 32)  # BCE indicator bits
 
     @regDiscreteOut = new Register("discreteOut", 32)
     @regDiscreteInA = new Register("discreteInA", 32)
     @regDiscreteInB = new Register("discreteInB", 32)
+    @resetDiscreteInputs()
     @regRMStatus = new Register("RMStatus", 32)
 
     @regInterrupts = new RegisterFile("int",5,32) # Interrupt Regs A-E
     @intForceTest = false
+
+    # GO/NO-GO (watchdog) timer: a 12-bit count-UP device ticking every
+    # 0.768 ms.  Software loads the two's complement of the interval it
+    # wants, so the count reaching zero again is the timeout.  It does not
+    # run until a LOAD GO/NO-GO TIMER PCO starts it -- "once the timer has
+    # been reset, the counter will not operate until loaded via this PCO".
+    @wdCount = 0
+    @wdRunning = false
+    @wdTimeout = false           # timeout latch (RM status bit 16)
+    @wdAccumNs = 0
+    @wdLastNs = 0
+
+    # Redundancy management's voter, in the only mode a single simulated
+    # GPC can be in: self test.  See loadVoterTest.
+    @rmVoterInhibit = false
+    @rmTestInputs = 0
+    @rmVoterFail = false
 
     @regCCData = new Register("CCData",32)
 
@@ -132,13 +339,39 @@ export class IOP
     @dmaQueue = []
     @clockCycleCount = 0
 
-  _bitPE: (w) -> (w >>> @curPE) & 1 # return value of bit in word for curPE
+    # See RECV_TIMEOUT_FLOOR_NS.  A property rather than a constant so a
+    # harness with everything in one process can turn it off.
+    @recvTimeoutFloorNs = RECV_TIMEOUT_FLOOR_NS
 
-  _setBitPE: (w,v) -> 
-    shifted = (v << @curPE)
-    mask = 0xffffffff - shifted
-    w = (w & mask) | shifted
-    return w
+    # State of an MSC Repeat instruction in progress -- see mscRepeat.
+    @mscRepeatPC = null
+    @mscRepeatLeft = 0
+    @mscRepeatUntilNs = 0
+
+  # Per-processor register access
+  #
+  # Processor p's bit, and reading/writing it in one of the status
+  # registers.  
+  PROC_MSC: PROC_MSC
+  PROC_SELFTEST: PROC_SELFTEST
+  PROC_ALL: PROC_ALL
+  PROC_ALL_BCE: PROC_ALL_BCE
+
+  # The two interrupt registers' bit names, for the instruction
+  # bodies that raise them (the MSC's self test reaches three of these).
+  INTA_ROS_PAR: INTA_ROS_PAR
+  INTB_DIAG25: INTB_DIAG25
+  INTB_QUEUE_OVF: INTB_QUEUE_OVF
+
+  procBit: (p) -> (0x80000000 >>> p) >>> 0
+
+  procGet: (reg, p) -> if (reg.get32() & @procBit(p)) != 0 then 1 else 0
+
+  procSet: (reg, p, v) ->
+    m = @procBit(p)
+    cur = reg.get32()
+    reg.set32(if v then (cur | m) >>> 0 else (cur & ~m) >>> 0)
+    return
 
   exec: () ->
     @execChannelControl()
@@ -149,60 +382,83 @@ export class IOP
   execChannelControl: () ->
 
 
+  # How many transfers may sit queued waiting for words that have not
+  # arrived.  A receive DMA WAITS for its word (see below), so a bus with
+  # nothing on it would otherwise pile up requests forever as the BCE
+  # program loops.
+  DMA_QUEUE_MAX: 4096
+
   execDMAQueue: () ->
     # Process one DMA request per cycle
     if @dmaQueue? and @dmaQueue.length > 0
-      req = @dmaQueue.shift()
+      req = @dmaQueue[0]
       if req.direction == 'read'  # IOP reading from main memory (transmit to bus)
+        @dmaQueue.shift()
         data = @cpu.mainStorage.get16(req.addr)
         @ls.setD(data)
         if req.bce?
           req.bce.mia.xmitWord(data)
       else  # IOP writing to main memory (receive from bus)
-        if req.bce? and req.bce.mia.dataAvailable()
-          data = req.bce.mia.getData()
-          @ls.setD(data)
-        else
-          data = @ls.getD()
-        @cpu.mainStorage.set16(req.addr, data, false)  # bypass protection
+        return unless req.bce? and req.bce.mia.dataAvailable()
+        @dmaQueue.shift()
+        data = req.bce.mia.getData()
+        @ls.setD(data)
+        @writeMain16(req.addr, data)
 
       if @dmaBurst and @dmaQueue.length > 0
         @execDMAQueue()  # Burst mode: continue processing
+
+  queueDMATrim: () ->
+    @dmaQueue.shift() while @dmaQueue.length > @DMA_QUEUE_MAX
+    return
 
   execProcessors: () ->
     @ls.nextSlice()
     page = @ls.curPage
 
+    @curPE = page
+
     # Check halt state for current processor
     if page == 0  # MSC
-      if @regHalt.getbit32(0)
+      if not @procGet(@regProcEnable, PROC_MSC)   # halted
         return
-      if not (@regBusyWait.getbit32(0))  # Not busy = waiting
+      if not @procGet(@regBusyWait, PROC_MSC)     # not busy = waiting
         return
-    else  # BCE
+    else  # BCE 1-24, whose processor number is the local store page
       bceIdx = page
-      if @regHalt.getbit32(bceIdx)
+      if not @procGet(@regProcEnable, bceIdx)     # halted
         return
-      if not (@regBusyWait.getbit32(bceIdx))
+      if not @procGet(@regBusyWait, bceIdx)       # not busy = waiting 
+        @clearBCETransfer(bceIdx)
         return
 
+    # A slice is where the three data flow parity checkers that watch a
+    # running processor get their chance, in the register's priority order
+    # Any of them halts every processor, so the slice ends.
+    return if @checkQueueParity()
+    return if @checkDMAParity()
+    return if @checkLocalStoreParity(page)
+
     # Fetch instruction
-    pc = @ls.PC().get16()
+    pc = @ls.PC().get32() & LS_WORD_MASK
     hw1 = @cpu.mainStorage.get16(pc)
     hw2 = @cpu.mainStorage.get16(pc + 1)
     @ls.IH().set16(hw1)
     @ls.IL().set16(hw2)
 
-    # Decode and execute
+    @onProcStep?(page, pc, hw1, hw2) if @traceProcs?[page]
+
+    # Decode and execute - procs manage their own NIA
     if page == 0  # MSC
       @msc.exec(@, hw1, hw2)
-      # MSC instructions manage their own NIA via incrNIA/setNIA
     else  # BCE
       bce = @bce[page - 1]
       bce.exec(@, hw1, hw2)
-      @ls.PC().set16(pc + 1)  # Default NIA increment for BCE
 
+  # Redundancy management: the GO/NO-GO timer is RM's, and this is where
+  # it advances.  Called once per CPU instruction
   execRM: () ->
+    @tickWatchdog()
 
 
   curBCE: () ->
@@ -212,18 +468,181 @@ export class IOP
 
   queueDMA: (addr, direction, bce=null) ->
     @dmaQueue.push({addr: addr, direction: direction, bce: bce})
+    @queueDMATrim()
 
-  # MSC short-format effective address: PC-relative with optional indexing
-  # disp = 11-bit displacement (needs sign extension), indexed = index flag
+  # Receiving, and the maximum time out register
+  #
+  # A BCE receive instruction WAITS.  It does not hand its word count to
+  # the DMA machinery and run on to the next instruction: the BCE sits
+  # there until the subsystem has sent every word. 
+  #
+  # Returns true when the transfer is complete, and the caller advances
+  # the program counter; false while it is still waiting
+  #
+  bceReceive: (addr, count) ->
+    bce = @curBCE()
+    return true unless bce?
+    p = @curPE
+    pc = @ls.PC().get32() & LS_WORD_MASK
+    st = bce.recv
+    unless st? and st.pc == pc
+      st = bce.recv = {pc: pc, addr: addr & LS_WORD_MASK, left: count,
+                       sinceNs: @cpu?.timeNs ? 0, gotAny: false,
+                       sinceWall: if TIMEOUT_TRACE then Date.now() else 0}
+
+    while st.left > 0 and bce.mia.dataAvailable()
+      data = bce.mia.getData()
+      @ls.setD(data)
+      ok = @writeMain16(st.addr, data)
+      if RECV_TRACE == true or RECV_TRACE == p
+        process.stderr.write "RECV BCE#{p} #{st.addr.toString(16)} <- " +
+          "#{data.toString(16).padStart(4,'0')}#{if ok then '' else '  REJECTED'}\n"
+      st.addr = (st.addr + 1) & LS_WORD_MASK
+      st.left -= 1
+      st.gotAny = true
+      st.sinceNs = @cpu?.timeNs ? 0
+      st.sinceWall = Date.now() if TIMEOUT_TRACE
+
+    if st.left == 0
+      bce.recv = null
+      # A real receiver is inhibited except while a commanded transfer is
+      # running, so surplus words a subsystem put on the bus would not be
+      # captured, and keeping them makes them the leading words of the next
+      # transaction.  Flushing them here is arguably right, and is
+      # deliberately not done: it breaks the mass memory path,
+      # where a block arrives as one datagram of 512 halfwords and a bus
+      # program that took a block in more than one receive would lose the
+      # rest of it.
+      #
+      return true
+
+    if ((@cpu?.timeNs ? 0) - st.sinceNs) >= @recvTimeoutNs(p)
+      if TIMEOUT_TRACE
+        simMs = ((@cpu?.timeNs ? 0) - st.sinceNs) / 1e6
+        wallMs = Date.now() - st.sinceWall
+        process.stderr.write "BCE#{p} RECV TIMEOUT pc=#{pc.toString(16)} " +
+          "left=#{st.left} gotAny=#{st.gotAny} " +
+          "sim=#{simMs.toFixed(2)}ms wall=#{wallMs}ms " +
+          "mto=#{(@recvTimeoutNs(p)/1e6).toFixed(2)}ms\n"
+      @bceErrorTerminate(p)
+    return false
+
+  # A delay instruction holds the BCE at the instruction for 
+  # count x 16.5 us.
+  # Returns true when the delay is up and the caller may advance.
+  bceDelay: (count) ->
+    bce = @curBCE()
+    return true unless bce?
+    pc = @ls.PC().get32() & LS_WORD_MASK
+    now = @cpu?.timeNs ? 0
+    st = bce.delay
+    unless st? and st.pc == pc
+      st = bce.delay = {pc: pc, untilNs: now + count * MTO_TICK_NS}
+    return false if now < st.untilNs
+    bce.delay = null
+    true
+
+  # The command half of a #MOUT / #MIN.
+  #
+  # Those are four-halfword instructions: the transfer word, then a
+  # companion fullword carrying eight zero bits, the 5-bit interface unit
+  # address and the 19-bit command
+  #
+  # Returns the 24-bit command, or null if the transmitter is disabled.
+  bceCompanionCommand: () ->
+    bce = @curBCE()
+    return null unless bce?
+    return null unless @procGet(@regXmitEna, @curPE)
+    addr = (@ls.PC().get32() + 2) & LS_WORD_MASK
+    cmd = @g_EAF(addr) & 0x00ffffff
+    @ls.IUAR().set32((cmd >>> 19) & 0x1f)
+    bce.mia.xmitCmd(cmd)
+    cmd
+
+  # True the first time a BCE reaches the receive at the current program
+  # counter -- a receive re-fetches its instruction until the count is
+  # met, and the command that asked for the data must go out once only.
+  bceReceiveStarting: () ->
+    bce = @curBCE()
+    return true unless bce?
+    pc = @ls.PC().get32() & LS_WORD_MASK
+    not (bce.recv? and bce.recv.pc == pc)
+
+  # Abandon whatever a BCE had in flight: the receive it was part way
+  # through and anything its MIA had taken off the bus but not yet moved.
+  clearBCETransfer: (p) ->
+    bce = @bce[p - 1]
+    return unless bce?
+    bce.recv = null if bce.recv?
+    bce.mia.flushRecv() if bce.mia?.recvQueue?.length
+    return
+
+  # Is anything in the IOP actually running -- enabled and busy?  
+  processorsRunning: () ->
+    ((@regBusyWait.get32() & @regProcEnable.get32()) >>> 0) != 0
+
+  # One IOP step taken while the CPU is idle: the processors and their
+  # transfers run, but redundancy management does not, because the caller
+  # is already ticking the GO/NO-GO timer on its own schedule.
+  execIdle: () ->
+    @execDMAQueue()
+    @execProcessors()
+    return
+
+  # The maximum time out register in nanoseconds.  "The resolution of this
+  # timeout count is 16.5 microseconds", over "0 and 2047 ... 0 to 33.78
+  # millisec" immediate or "0 and 262143, or 0 to 4.325 sec" from storage.
+  #
+  # The POO scopes the register to "how long a BCE will wait for the FIRST
+  # input word to arrive from a previously commanded subsystem"; it says
+  # nothing about the gap between word two and word three.  Something must
+  # bound that as well,so the same register stands in for it, measured
+  # from the last word that arrived.
+  recvTimeoutNs: (p) ->
+    mto = (@ls.at(p, 1, 3)?.get32() ? 0) & LS_WORD_MASK
+    Math.max(mto * MTO_TICK_NS, @recvTimeoutFloorNs)
+
+  # An error termination: the BCE stops where it is.  Its program
+  # exception bit goes to 0 (NO-GO in STAT1), it leaves the busy state, 
+  # and its indicator bit is set
+  #
+  # Anything the MIA had received is dropped with it..
+  # The BCE's status register is left alone
+  bceErrorTerminate: (p) ->
+    @procSet(@regProgExcept, p, 0)
+    @procSet(@regBusyWait, p, 0)
+    @procSet(@regIndicator, p, 1)
+    bce = @bce[p - 1]
+    return unless bce?
+    bce.recv = null
+    bce.mia?.flushRecv()
+    @dmaQueue = @dmaQueue.filter (r) -> r.bce != bce
+    return
+
+  # MSC short-format effective address: PC-relative with optional indexing.
+  # "PC refers to the updated program counter value i.e., the address of
+  # the next instruction" , and the short formats are one halfword, so the 
+  # base is the instruction's own address plus one.  
+  # The displacement is two's complement, range -1024 to +1023 halfwords.
   mscEA: (disp, indexed) ->
-    # Sign-extend 11-bit displacement
     if disp & 0x400
       disp = disp | 0xfffff800
-    pc = @ls.PC().get32()
+    pc = (@ls.PC().get32() + 1) & LS_WORD_MASK
     ea = (pc + disp) & 0x3ffff
     if indexed
       x = @ls.X().get32()
       ea = (ea + x) & 0x3ffff
+    ea
+
+  # BCE short-format effective address: "PC + DISP", or with M=1
+  # "PC + DISP + 2 x BCENO", where "PC is the updated Bus Control Element
+  # Program Counter, i.e. the address of the next sequential instruction"
+  # (IOP POO, #SSC/#SST).  Displacement is two's complement, -1024 to 
+  # +1023 halfwords.
+  bceEA: (disp, m) ->
+    disp = disp | 0xfffff800 if disp & 0x400
+    ea = ((@ls.PC().get32() + 1) + disp) & LS_WORD_MASK
+    ea = (ea + 2 * @curPE) & LS_WORD_MASK if m
     ea
 
   # MSC long-format effective address: absolute 18-bit with optional indexing
@@ -234,28 +653,481 @@ export class IOP
       ea = (ea + x) & 0x3ffff
     ea
 
+  # A processor's operand accesses to CPU main storage.  Each is a DMA
+  # transfer and so passes the address and data through the R4/R5/R6
+  # generator that C140 poisons; a caught error kills the access.
   g_EAF: (addr) ->
+    return 0 if @checkDMAParity()
     return @cpu.mainStorage.get32(addr)
 
   g_EAH: (addr) ->
+    return 0 if @checkDMAParity()
     return @cpu.mainStorage.get16(addr)
 
   s_EAF: (addr, value) ->
-    @cpu.mainStorage.set32(addr, value, false)
+    return false if @checkDMAParity()
+    return false if not @writeMain16(addr, (value >>> 16) & 0xffff)
+    @writeMain16(addr + 1, value & 0xffff)
 
   s_EAH: (addr, value) ->
-    @cpu.mainStorage.set16(addr, value, false)
+    return false if @checkDMAParity()
+    @writeMain16(addr, value)
 
-  setNIA: (x) -> @ls.PC().set32(x)
+  # The IOP's registers
+  #
+  globalRegs: () ->
+    [
+      { name: 'STAT1',   value: @regProgExcept.get32() >>> 0, note: 'GO/NO-GO, 1 = GO' }
+      { name: 'STAT4',   value: @regBusyWait.get32() >>> 0,   note: 'BUSY/WAIT, 1 = busy' }
+      { name: 'STAT5',   value: @regProcEnable.get32() >>> 0, note: 'halt/enable, 1 = enabled' }
+      { name: 'INDIC',   value: @regIndicator.get32() >>> 0,  note: 'BCE indicator bits' }
+      { name: 'XMITENA', value: @regXmitEna.get32() >>> 0,    note: 'MIA transmitter enables' }
+      { name: 'RECVENA', value: @regRecvEna.get32() >>> 0,    note: 'MIA receiver enables' }
+      { name: 'RMSTAT',  value: @rmStatus(),                  note: 'RM status as READ RM STATUS returns it' }
+      { name: 'RMLTCH',  value: @regRMStatus.get32() >>> 0,   note: 'the latch word behind it (termination control, voter test)' }
+      { name: 'INTREGA', value: @intReg(0), note: 'Group 1 - External 0' }
+      { name: 'INTREGB', value: @intReg(1), note: 'Group 2 - External 1' }
+      { name: 'INTREGC', value: @intReg(2), note: 'Group 3 - External 2' }
+      { name: 'INTREGD', value: @intReg(3), note: 'Group 4 - External 3' }
+      { name: 'INTREGE', value: @intReg(4), note: 'Group 5 - External 4' }
+      { name: 'DISCOUT', value: @regDiscreteOut.get32() >>> 0, note: 'discrete outputs' }
+      { name: 'DISCINA', value: @regDiscreteInA.get32() >>> 0, note: 'discrete inputs 1-32' }
+      { name: 'DISCINB', value: @regDiscreteInB.get32() >>> 0, note: 'discrete inputs 33-40' }
+      { name: 'CCDATA',  value: @regCCData.get32() >>> 0,      note: 'data word of the last PCI/PCO' }
+      { name: 'WDOG',    value: @wdCount & WD_COUNT_MASK
+        note: "GO/NO-GO timer count - #{if @wdTimeout then 'TIMED OUT' else if @wdRunning then 'running' else 'stopped'}" }
+      { name: 'FAILDSC', value: @msc.regFailDisc.get32() >>> 0, note: 'MSC fail discrete' }
+      { name: 'INTPROG', value: @msc.regIntProg.get32() >>> 0,  note: 'MSC programmed interrupts' }
+    ]
+
+  # Processor state
+  #
+  # One snapshot per processor for a display (the GUI's IOP pane): its
+  # status bits, the local store registers that belong to its kind, and
+  # the bus traffic its MIA has seen.  The pane reads this rather than the
+  # local store geometry, the way the interrupt pane reads intStatus().
+  #
+  # Register names follow IOPLocalStore's accessors: the MSC has PC, I
+  # (the instruction it fetched), X, ACC, ECR and its status register; a
+  # BCE has PC, I, D, ID, MTO, BASE, IUAR and its two status halfwords.
+  PROC_REGS_MSC: [
+    ['PC',  0, 2], ['IH',  1, 2], ['IL',  2, 2]
+    ['X',   0, 3], ['AH',  1, 3], ['AL',  2, 3]
+    ['ECR', 2, 6], ['MST', 2, 7]
+  ]
+  PROC_REGS_BCE: [
+    ['PC',  0, 2], ['IH',  1, 2], ['IL',  2, 2]
+    ['DH',  1, 0], ['DL',  2, 0], ['ID',  0, 3]
+    ['MTO', 1, 3], ['BASE', 2, 3], ['IUAR', 2, 5]
+    ['BSTH', 2, 6], ['BSTL', 2, 7]
+  ]
+
+  # Snapshot of processor p (0 = MSC, 1-24 = BCE n).
+  procState: (p) ->
+    page = @ls.storePage[p]
+    return null unless page?
+    isMSC = (p == PROC_MSC)
+    regs = for [name, bank, word] in (if isMSC then @PROC_REGS_MSC else @PROC_REGS_BCE)
+      { name: name, value: page.r(bank * 4 + word).get32() >>> 0 }
+    pc = page.r(0 * 4 + 2).get32() & LS_WORD_MASK
+    # Only the BCEs have a MIA, so the MSC's traffic fields stay empty.
+    mia = @bce[p - 1]?.mia
+    {
+      num: p
+      name: if isMSC then 'MSC' else "BCE #{p}"
+      kind: if isMSC then 'MSC' else 'BCE'
+      enabled: @procGet(@regProcEnable, p) == 1
+      busy:    @procGet(@regBusyWait, p) == 1
+      go:      @procGet(@regProgExcept, p) == 1
+      indicator: @procGet(@regIndicator, p) == 1
+      xmitEna: @procGet(@regXmitEna, p) == 1
+      recvEna: @procGet(@regRecvEna, p) == 1
+      current: @ls.curPage == p        # the page the IOP is slicing now
+      pc: pc
+      regs: regs
+      tx: mia?.txLog ? []
+      rx: mia?.rxLog ? []
+      rxPending: mia?.recvQueue?.length ? 0
+    }
+
+  procStates: () -> (@procState(p) for p in [0..24])
+
+  # Disassemble `count` instructions of a processor's program starting at
+  # `addr` (defaulting to its PC).  
+  # Returns rows of { addr, hw1, hw2, len, text }.
+  procDisasm: (p, count = 4, addr = null) ->
+    st = @procState(p)
+    return [] unless st?
+    decoder = if p == PROC_MSC then @msc.instr else @bce[p - 1]?.instr
+    return [] unless decoder?.toStr?
+    a = (addr ? st.pc) & LS_WORD_MASK
+    rows = []
+    for i in [0...count]
+      hw1 = @cpu.mainStorage.get16(a, false)
+      hw2 = @cpu.mainStorage.get16(a + 1, false)
+      d = decoder.toStr(hw1, hw2)
+      rows.push({ addr: a, hw1: hw1, hw2: hw2, len: d.len, text: d.text })
+      a = (a + d.len) & LS_WORD_MASK
+    return rows
+
+  # Interrupt registers A-E are a RegisterFile, whose elements are reached
+  # with r(i):
+  intReg: (i) -> @regInterrupts.r(i).get32() >>> 0
+  setIntReg: (i, v) -> @regInterrupts.r(i).set32(v >>> 0)
+
+  # External 0 / interrupt register A
+  #
+  # Set one of the Group 1 bits and interrupt the CPU on External 0.  The
+  # five conditions are grouped onto the one level, so this is a pulse to
+  # the CPU's pending latch and not a level: the register is cleared by
+  # the handler's own read, which can leave the CPU with an External 0
+  # pending and the register already zero:
+  signalGroup1: (bit) ->
+    @setIntReg(0, (@intReg(0) | bit) >>> 0)
+    @cpu.raiseInterrupt('ext0')
+    return
+
+  # The Group 1 sources currently set in register A, by name -- what the
+  # handler would learn by reading it, for ground equipment that wants to
+  # say which of the five an External 0 was without consuming the read.
+  group1Sources: () ->
+    v = @intReg(0)
+    names = []
+    names.push 'GO/NO-GO timer timeout' if v & INTA_GO_NOGO
+    names.push 'IOP fail latch (RM voter)' if v & INTA_IOP_FAIL
+    names.push 'C/M idle' if v & INTA_CM_IDLE
+    names.push 'ROS parity error' if v & INTA_ROS_PAR
+    names.push 'IOP fault' if v & INTA_IOP_FAULT
+    return names
+
+  resetDiscreteInputs: () ->
+    @regDiscreteInA.set32(DISCRETE_IN_A_DEFAULT)
+    @regDiscreteInB.set32(DISCRETE_IN_B_DEFAULT)
+    return
+
+  # An MIA enable register as its READ PCI reports it: channel numbering,
+  # one place left of the processor numbering it is stored in, with
+  # nothing above channel 24.  See MIA_WRITE_MASK above.
+  miaReadBack: (reg) -> ((reg.get32() << 1) & MIA_READ_MASK) >>> 0
+
+  # Data flow parity
+  #
+  # Reset the four bad-parity generators.  "The Disable Flow Parity Check
+  # PCO command disables the parity checkers.  It also resets any parity
+  # generator which is forcing bad parity in response to one of the 'force
+  # bad parity' PCOs."  Power on does the same.
+  resetParityGenerators: () ->
+    @forceHBusParity = false
+    @forceQueueParity = false
+    @forceDMAParity = false
+    @forceMIAParity = false
+    return
+
+  # A checker caught bad parity: (POO Appendix I, DATA FLOW PARITY CHECK): 
+  # "an external 1 interrupt is issued to the CPU and all BCE's and the 
+  # MSC are halted, all transmitter and receiver enables are disabled and 
+  # the discrete outputs are reset.  The cause of this interrupt can be 
+  # determined by reading the IOP interrupt register B."
+  #
+  # The error leaves checking DISABLED and the generators reset, which is
+  # why software that walks the four checkers re-issues ENABLE FLOW PARITY
+  # CHECK before every one of them.  Nothing happens at all while checking
+  # is disabled: "if parity is disabled no error indication is made".
+  signalDataFlowParity: (code) ->
+    return false unless @parityEnabled
+    cur = (@intReg(1) & INTB_CODE_MASK) >>> INTB_CODE_SHIFT
+    code = cur if cur > code
+    @setIntReg(1, ((@intReg(1) & ~INTB_CODE_MASK) | (code << INTB_CODE_SHIFT)) >>> 0)
+
+    @regProcEnable.set32(0x00000000)     # MSC and every BCE halted
+    @regXmitEna.set32(0x00000000)
+    @regRecvEna.set32(0x00000000)
+    @regDiscreteOut.set32(0x00000000)
+
+    @parityEnabled = false
+    @resetParityGenerators()
+
+    # External 1 with interrupt code 0000 -- IOP data flow error
+    @cpu.raiseInterrupt('ext1', {code: 0x0000})
+    return true
+
+  # Every IOP access to CPU main storage goes over the DMA path.
+  # Returns true when the access was killed by a parity error.
+  checkDMAParity: () ->
+    return false unless @parityEnabled and @forceDMAParity
+    return @signalDataFlowParity(INTB_DMA)
+
+  # The local store address lines and the queue control bits.
+  # Used by both the CPU's local store PCI/PCO and by a 
+  # processor's own instruction fetch (the queue is what an
+  # instruction is fetched into).
+  checkQueueParity: () ->
+    return false unless @parityEnabled and @forceQueueParity
+    return @signalDataFlowParity(INTB_QUEUE)
+
+  # The bus out to the octal MIA pages:
+  # "on the IB page parity is generated for all data and command words
+  # being sent to the octal MIA.  Parity for this bus is then checked on
+  # the MIA's, which sends an error message back to the IOP if any errors
+  # are detected."  Called by anything that puts a word on that bus.
+  checkMIAParity: () ->
+    return false unless @parityEnabled and @forceMIAParity
+    return @signalDataFlowParity(INTB_MIA)
+
+  # The IB page's second look at H-Bus data: it "indirectly checks the
+  # H-BUS parity when it checks parity for registers R1, R2, R3".  A
+  # processor slice touches those registers, so a page holding a word that
+  # arrived over a poisoned H-Bus reports here rather than at the
+  # transfer.  The tags are consumed: the bad word has been seen.
+  checkLocalStoreParity: (page) ->
+    # With checking disabled the bad word is read anyway and nothing is
+    # said -- "if parity is disabled no error indication is made" -- so the
+    # tag has to SURVIVE those reads.  The bad parity is in the stored
+    # word, not in the act of looking at it; only a rewrite clears it.
+    return false unless @parityEnabled
+    tags = @lsBadParity[page]
+    return false unless tags? and Object.keys(tags).length > 0
+    @lsBadParity[page] = {}
+    return @signalDataFlowParity(INTB_R123)
+
+  # C/M Master Reset (PCO 84400000).  Per the master reset table (POO
+  # Appendix I): interrupt registers B-E are cleared; in register A the
+  # ROS parity and IOP fault bits are reset while the fail and timeout
+  # latches are left alone; the watchdog counter is zeroed and inhibited;
+  # and C/M IDLE is SET -- the C/M announcing that it has finished and is
+  # available for further operations. 
+  masterResetCM: () ->
+    @setIntReg(1, 0)
+    @setIntReg(2, 0)
+    @setIntReg(3, 0)
+    @setIntReg(4, 0)
+    kept = @intReg(0) & (INTA_GO_NOGO | INTA_IOP_FAIL)
+    @setIntReg(0, kept >>> 0)
+    @wdCount = 0
+    @wdRunning = false
+    @wdAccumNs = 0
+    @signalGroup1(INTA_CM_IDLE)
+    return
+
+  # ICR channel reset (POO sect.10): "The channel reset operation issues a
+  # reset to the IO.  The IO and CPU uses the signal to reset the IO/CPU
+  # interface logic."  It also zeroes the interrupt registers, which is
+  # why the programming note says it "must not be executed until IOP level
+  # A interrupt register has been read" when an External 0 has occurred.
+  channelReset: () ->
+    @setIntReg(i, 0) for i in [0..4]
+    return
+
+  # Return the IOP to the state it powers up in: local store cleared, every
+  # status and interrupt register zero, the watchdog stopped, and nothing
+  # queued in the DMA path or the MIAs. 
+  reset: () ->
+    for page in @ls.storePage
+      page.r(i).set32(0) for i in [0..16]
+    @ls.slice = 0
+    @ls.curBCE = 0
+    @ls.curPage = 0
+    @curPE = 0
+
+    for reg in [@regXmitEna, @regRecvEna, @regProgExcept, @regBusyWait,
+                @regProcEnable, @regIndicator, @regDiscreteOut,
+                @regRMStatus, @regCCData]
+      reg.set32(0)
+    @resetDiscreteInputs()
+    @setIntReg(i, 0) for i in [0..4]
+    @intForceTest = false
+
+    @msc.regFailDisc.set32(0)
+    @msc.regIntProg.set32(0)
+
+    @wdCount = 0
+    @wdRunning = false
+    @wdTimeout = false
+    @wdAccumNs = 0
+    @wdLastNs = 0
+
+    @rmVoterInhibit = false
+    @rmTestInputs = 0
+    @rmVoterFail = false
+
+    @dmaQueue = []
+    @dmaBurst = true
+    @dmaForceBadParity = false
+    @dataForceBadParity = false
+    @mscRepeatPC = null
+    @mscRepeatLeft = 0
+
+    # "Events that disable parity checking include Power On, System Reset"
+    # -- and a reset also resets the four bad-parity generators.
+    @parityEnabled = false
+    @resetParityGenerators()
+    @lsBadParity = ({} for x in [0..PROC_SELFTEST])
+
+    # The MIAs keep their bus connections -- tearing those down and
+    # rebuilding them would leave the old listeners attached -- but
+    # everything in flight goes, including any half-finished receive.
+    for b in @bce
+      b.mia.clearState()
+      b.recv = null
+    return
+
+  # LOAD GO/NO-GO TIMER (PCO 88040000) and its test form.  The data word's
+  # low 12 bits are the count; the PCO starts the counter and resets the
+  # timeout latch.
+  loadWatchdog: (value) ->
+    @wdCount = value & WD_COUNT_MASK
+    @wdRunning = true
+    @wdTimeout = false
+    @wdAccumNs = 0
+    @wdLastNs = @cpu.timeNs
+    return
+
+  # The test form of the load: the same load, plus the single increment
+  # the hardware injects.  A wrap past a full count latches the timeout
+  # the way any other full count does -- which is why STM1 resets the
+  # latch with another load once it has read the count back.
+  loadWatchdogTest: (value) ->
+    @loadWatchdog(value)
+    @wdRunning = false
+    @wdCount = (@wdCount + 1) & WD_COUNT_MASK
+    if @wdCount == 0
+      @wdTimeout = true
+      @signalGroup1(INTA_GO_NOGO)
+    return
+
+  # LOAD TEST REGISTER (PCO 88100000): redundancy management's voter, in
+  # the only mode a single simulated GPC can exercise -- self test.
+  #
+  # Bit 27 is VOTER TEST CONTROL, which "inhibits the normal voter inputs
+  # (when set) from the other IOP's and inhibits driving of the Computer
+  # Fail latch and IOP Transmissions Termination logic", so a test cannot
+  # be mistaken for a real failure.  Bits 28-31 are the four test inputs,
+  # which the hardware ORs with the operational ones.
+  #
+  loadVoterTest: (data) ->
+    @rmVoterInhibit = (data & 0x10) != 0
+    @rmTestInputs = data & 0xf
+    votes = 0
+    votes += 1 for b in [0x8, 0x4, 0x2, 0x1] when (@rmTestInputs & b) != 0
+    @rmVoterFail = votes >= 2
+    return
+
+  # Carry the watchdog forward to the CPU's clock.  A full count (the
+  # counter wrapping back to zero) is the timeout: it sets the timeout
+  # latch, which on a real vehicle drives the Computer Fail output, and
+  # raises External 0 through Group 1 bit 0. 
+  tickWatchdog: () ->
+    return unless @wdRunning
+    now = @cpu.timeNs
+    @wdAccumNs += now - @wdLastNs
+    @wdLastNs = now
+    while @wdAccumNs >= WD_TICK_NS
+      @wdAccumNs -= WD_TICK_NS
+      @wdCount = (@wdCount + 1) & WD_COUNT_MASK
+      if @wdCount == 0
+        @wdTimeout = true
+        @wdRunning = false
+        @wdAccumNs = 0
+        @signalGroup1(INTA_GO_NOGO)
+        return
+    return
+
+  # The RM status register as the CPU reads it (POO Appendix I, READ RM
+  # STATUS REGISTER), IBM bit numbering:
+  #   0     fail or timeout latch (the voter's failure, or a timeout)
+  #   1     PCO inhibiting the fail vote inputs for test
+  #   3-6   failure votes in from the other IOPs
+  #   7-10  failure votes out to them (set by the MSC; not modeled)
+  #   11-14 the voter's four test inputs
+  #   15    voter fail latch
+  #   16    timeout latch
+  #   17    voter termination control latch
+  #   18    timer termination control latch
+  #   20-31 GO/NO-GO timer count, bit 31 = 0.768 ms
+  rmStatus: () ->
+    v = @regRMStatus.get32() & 0x00006000        # bits 17-18
+    v |= 0x40000000 if @rmVoterInhibit           # bit 1
+    v |= (@rmTestInputs & 0xf) << 17             # bits 11-14, test inputs
+    v |= 0x00010000 if @rmVoterFail              # bit 15, voter fail latch
+    v |= 0x00008000 if @wdTimeout                # bit 16, timeout latch
+    # Bit 0 is the two of them together: "RM has detected a failure and
+    # set the failure latch or ... the watchdog timer has timed out
+    # forcing the fail latch."
+    v |= 0x80000000 if @rmVoterFail or @wdTimeout
+    v |= @wdCount & WD_COUNT_MASK                # bits 20-31
+    return v >>> 0
+
+  writeMain16: (addr, value) ->
+    return true if @cpu.mainStorage.set16(addr, value)
+    @cpu.signalDMAProtectViolation()
+    return false
+
+  # One step of an MSC Repeat instruction (@RAI/@RAW/@RNI/@RNW).  `met` is
+  # the condition this repeat waits for, already evaluated against the
+  # accumulator's BCE mask; `v` carries the count field and the I bit.
+  #
+  #   condition met      -> skip the next halfword (PC + 2)
+  #   count exhausted    -> fall through to it (PC + 1)
+  #   otherwise          -> leave the PC where it is and go round again
+  #
+  # Leaving the PC alone is the wait: the MSC re-fetches this instruction
+  # on its next slice, and the BCEs it is waiting for get their slices in
+  # between.  "A time out value of zero will cause the Repeat instruction
+  # to test once, and only once."
+  # A repeat instruction's count is a count of time, not of re-fetches.
+  # Software's own waits pin the rate down: a table of counts to wait for a
+  # bus control element to finish holds 0x350 where its comment says 31 ms
+  # and 157 where it says 5.2 ms, which is 36.6 and 33.1 us a count, or two
+  # of the 16.5 us resolution the IOP's delays and time outs are quoted in.
+  # Counted against the clock, an 0x350 wait is 28 ms and a BCE's 10.7 ms
+  # #DLYI fits inside it.
+  mscRepeat: (v, met) ->
+    pc = @ls.PC().get32() & LS_WORD_MASK
+    now = @cpu?.timeNs ? 0
+    if @mscRepeatPC != pc
+      @mscRepeatPC = pc
+      # "The lower 8-bits, bits 8 through 15, and the I-bit are used to
+      # compute a count": the I bit adds the index register's count above
+      # the instruction's own eight, the way it extends a displacement.
+      count = v.d
+      count += (@ls.X().get32() & LS_WORD_MASK) if v.i
+      @mscRepeatLeft = count
+      @mscRepeatUntilNs = now + count * MSC_REPEAT_TICK_NS
+    if met
+      @mscRepeatPC = null
+      @incrNIA(2)
+    else if now >= @mscRepeatUntilNs
+      @mscRepeatPC = null
+      @incrNIA(1)
+    return
+
+  setNIA: (x) -> @ls.PC().set32(x & LS_WORD_MASK)
 
   incrNIA: (incr=1) -> @setNIA(@ls.PC().get32()+incr)
 
   recvFromCPU: (cmd,data) ->
+    # Command word (POO Appendix I, PCI/PCO COMMAND WORD FORMAT):
+    #   bit 0      1 = PCO (CPU output), 0 = PCI (CPU input)
+    #   bits 1-5   subsystem select: 00001 C/M, 00010 RM, 00100 DF,
+    #              01000 LS (local store), 10000 CC (channel control)
+    #   bit 6      handshake control
+    #   bits 7-16  data select
+    #   bits 17-31 ignored
+    # Those are IBM bit numbers, so the subsystem select is bits 26-30 of
+    # the word here and the data select bits 15-24. 
     isOutput = cmd >>> 31
-    devSelect = (cmd >>> 25) & 0x1f
-    dataSelect = (cmd >>> 14) & 0x3ff
+    devSelect = (cmd >>> 26) & 0x1f
+    handshake = (cmd >>> 25) & 0x1
+    dataSelect = (cmd >>> 15) & 0x3ff
 
     @regCCData.set32(data)
+
+    # Was a bad-parity generator already armed when this transfer arrived?
+    # Sampled BEFORE the command runs so that the "force bad parity" PCO
+    # which arms a generator is not itself caught by it: the generator
+    # poisons what comes after it, not the command word that set it.
+    hbusPoisoned = @parityEnabled and @forceHBusParity
+    queuePoisoned = @parityEnabled and @forceQueueParity
 
     switch cmd
       when 0xc0030000 # DMA BURST INHIBIT
@@ -270,24 +1142,40 @@ export class IOP
         @dataForceBadParity = true
       when 0xc0200000 # BAD PARITY DATA INPUT DISABLE
         @dataForceBadParity = false
+      when 0xc1010000 # ENABLE FLOW PARITY CHECK
+        # "necessary to start the parity checking in the data flow
+        # following any event that disables parity checking."
+        @parityEnabled = true
+      when 0xc0010000 # DISABLE FLOW PARITY CHECK
+        @parityEnabled = false
+        @resetParityGenerators()
+      when 0xc1020000 # FORCE IOP H-BUS BAD PARITY
+        # "forces bad parity on all data coming to the IOP via the H-Bus
+        # (PCO's or DMA's)."
+        @forceHBusParity = true
+      when 0xc1080000 # FORCE QUEUE CONTROL BAD PARITY
+        # "forces bad parity on the local store address and queue control
+        # bits."
+        @forceQueueParity = true
+      when 0xc1400000 # FORCE DMA ADDRESS/DATA BAD PARITY
+        # One generator covers both: which of the two checkers sees it
+        # depends on the bit parity of the address against the data word.
+        # Register B reports the pair under one code, so the distinction
+        # is invisible to software and is not modelled.
+        @forceDMAParity = true
+      when 0xc1800000 # FORCE OCTAL MIA BAD PARITY
+        # "forces bad parity on all data transmitted from the IOP to the
+        # OCTAL MIA pages.  The MIA page checks parity on all incoming
+        # command and data words."
+        @forceMIAParity = true
       when 0x84040000 # MIA TRANSMITTER DISABLE
-        r1 = @regXmitEna.get32()
-        r2 = r1 & data
-        r1 = r1 ^ r2
-        @regXmitEna.set32(r1)
+        @regXmitEna.set32((@regXmitEna.get32() & ~(data & MIA_WRITE_MASK)) >>> 0)
       when 0x85040000 # MIA TRANSMITTER ENABLE
-        r1 = @regXmitEna.get32()
-        r1 = r1 | data
-        @regXmitEna.set32(r1)
+        @regXmitEna.set32((@regXmitEna.get32() | (data & MIA_WRITE_MASK)) >>> 0)
       when 0x84080000 # MIA RECEIVER DISABLE
-        r1 = @regRecvEna.get32()
-        r2 = r1 & data
-        r1 = r1 ^ r2
-        @regRecvEna.set32(r1)
+        @regRecvEna.set32((@regRecvEna.get32() & ~(data & MIA_WRITE_MASK)) >>> 0)
       when 0x85080000 # MIA RECEIVER ENABLE
-        r1 = @regRecvEna.get32()
-        r1 = r1 | data
-        @regRecvEna.set32(r1)
+        @regRecvEna.set32((@regRecvEna.get32() | (data & MIA_WRITE_MASK)) >>> 0)
       when 0x84100000 # DISCRETE OUTPUT RESET
         r1 = @regDiscreteOut.get32()
         r2 = r1 & data
@@ -298,98 +1186,128 @@ export class IOP
         r1 = r1 | data
         @regDiscreteOut.set32(r1)
       when 0x86200000 # CONFIGURE PROCESSORS HALT
-        r1 = @regHalt.get32()
-        r1 = r1 | data
-        @regHalt.set32(r1)
+        # "The data word is used as a mask ... 0 = No change, 1 = HALT if
+        # accompanied by the HALT command word."  STAT5 is an enable
+        # register, so halting is clearing the named bits.
+        @regProcEnable.set32((@regProcEnable.get32() & ~data) >>> 0)
       when 0x87200000 # CONFIGURE PROCESSORS ENABLE
-        r1 = @regHalt.get32()
-        r2 = r1 & data
-        r1 = r1 ^ r2
-        @regHalt.set32(r1)
+        # And "1 = ENABLE if accompanied by the ENABLE command word".
+        @regProcEnable.set32((@regProcEnable.get32() | data) >>> 0)
       when 0x84400000 # MASTER RESET
-        @regProgExcept.set32(0xfffff800)
+        # The master reset table (POO Appendix I): STAT1 = GO, STAT4 =
+        # WAIT, STAT5 = HALT for the MSC and every BCE, transmitters and
+        # receivers disabled, discrete outputs inactive.  GO is 1 and
+        # enabled is 1, so "all GO" is every processor bit set and "all
+        # halted" is none of them -- 0xffffff80 and 0, not the 0xfffff800
+        # that used to be here (that constant is the sign-extension mask
+        # from mscEA below, and it is four processors short either way).
+        @regProgExcept.set32(PROC_ALL)
         @regBusyWait.set32(0x00000000)
-        @regHalt.set32(0xfffff800)
+        @regProcEnable.set32(0x00000000)
         @regXmitEna.set32(0x00000000)
         @regRecvEna.set32(0x00000000)
 
         @regDiscreteOut.set32(0x00000000)
+        # And the interrupt side of the reset, which ends with the C/M
+        # announcing itself idle on External 0.
+        @masterResetCM()
       when 0x88040000 # LOAD GO/NO-GO TIMER
-          r1 = @regRMStatus.get32()
-          timerVal = data & 0x00000fff
-          r1 = (r1 & 0xf000ffff) | (timerVal << 16)
-          @regRMStatus.set32(r1)
+          # The count is the data word's low 12 bits (IBM bits 20-31), and
+          # the load is what starts the counter.
+          @loadWatchdog(data)
       when 0x88048000 # LOAD GO/NO-GO TIMER TEST
-          r1 = @regRMStatus.get32()
-          timerVal = data & 0x00000fff
-          r1 = (r1 & 0xf000ffff) | (timerVal << 16)
-          @regRMStatus.set32(r1)
+          # "This PCO is used to load the Go/No-Go Timer with any chosen
+          # value which is incremented by one low order bit and read with
+          # a PCI (READ STATUS REGISTER) to determine the operating status
+          # of the timer." 
+          @loadWatchdogTest(data)
       when 0x88080000 # CONFIGURE TERMINATION CONTROL LATCHES
+          # Data word bit 30 = timeout termination latch, bit 31 = voter
+          # termination control latch.  They land in RM status IBM bits 18
+          # and 17 
           timerLatch = (data >>> 1) & 0x1
           voterLatch = (data      ) & 0x1
           r1 = @regRMStatus.get32()
-          r1 = (r1 & 0xffffafff) | (timerLatch << 12 ) | (voterLatch << 14)
+          r1 = (r1 & ~0x6000) | (timerLatch << 13) | (voterLatch << 14)
           @regRMStatus.set32(r1)
       when 0x88100000 # LOAD TEST REGISTER
-        return # no-op
+          @loadVoterTest(data)
       when 0x88180000 # TEST INTERRUPTS
+          # "The TEST command word forces interrupt Registers A, B, D and E
+          # to set all interrupts as follows: REG A bits 0-5 (FC000000),
+          # REG B bits 4&5 (0C000000), REG D bit 0, REG E bit 0.  The
+          # interrupts will stay set until [ENABLE is issued].  This
+          # permits self-testing of the interrupt detection circuitry.  The
+          # interrupt registers will not be reset by reading of the
+          # registers as in normal operation."
           @intForceTest = true
-          @regInterrupts.set32(0,0xffffffff)
-          @regInterrupts.set32(1,0xffffffff)
-          @regInterrupts.set32(3,0xffffffff)
-          @regInterrupts.set32(4,0xffffffff)
+          @setIntReg(0, 0xfc000000)
+          @setIntReg(1, 0x0c000000)
+          @setIntReg(3, 0x80000000)
+          @setIntReg(4, 0x80000000)
+          @cpu.raiseInterrupt(key) for key in ['ext0', 'ext1', 'ext3', 'ext4']
       when 0x88140000 # ENABLE INTERRUPTS
+          # "The ENABLE command must be issued after the TEST command word
+          # to remove the test interrupt.  After issuing this PCO, each of
+          # the four registers must be read to reset them and to permit
+          # normal operation."
           @intForceTest = false
       when 0x92000000 # RESET STATUS1(GO/NO-GO)
-        return # no-op
+        # "These PCO's provide the capability (data word is used as mask)
+        # to reset Status Register 1 to the normal or GO indicator": 1 in
+        # the mask puts that processor back to GO, 0 leaves it alone.
+        @regProgExcept.set32((@regProgExcept.get32() | data) >>> 0)
       when 0x92040000 # LOAD MSC BUSY
-        r1 = @regBusyWait.get32()
-        r1 |= (1 << 0)
-        @regBusyWait.set32(r1)
+        # The MSC's own bit in STAT4, which is the top bit of the word
+        @procSet(@regBusyWait, PROC_MSC, 1)
+        # And the copy of it the MSC reads back with @LMS: bit 17 of
+        # the 18-bit MSC status register, "the Busy/Wait bit for the MSC".
+        # Software checks the copy against X'00000001' exactly, so nothing
+        # else in the register may be disturbed here.  Reached by region,
+        # not through @ls.MST(): that accessor reads whichever page the IOP
+        # happens to be slicing, which for a CPU-side PCO is any of the 25.
+        mst = @ls.at(PROC_MSC, 2, 7)
+        mst.set32((mst.get32() | 1) >>> 0)
       when 0xc1008000 # INHIBIT COMPLETION OF A DMA CYCLE
         return # no-op
       when 0x04000000 # READ MIA TRANSMITTER STATUS
-        r1 = @regXmitEna.get32()
-        @regCCData.set32(r1)
-      when 0x40400000 # READ MIA RECEIVER STATUS
-        r1 = @regRecvEna.get32()
-        @regCCData.set32(r1)
+        @regCCData.set32(@miaReadBack(@regXmitEna))
+      when 0x04040000 # READ MIA RECEIVER STATUS
+        @regCCData.set32(@miaReadBack(@regRecvEna))
       when 0x04080000 # READ DISCRETE OUTPUT STATUS
         r1 = @regDiscreteOut.get32()
         @regCCData.set32(r1)
       when 0x040c0000 # READ PROCESSOR HALT STATUS
-        r1 = @regHalt.get32()
-        @regCCData.set32(r1)
+        # "The PCI provides access to Status Register 5 (The Halt
+        # Register)": 0 = disabled, 1 = enabled, one bit per processor.
+        @regCCData.set32(@regProcEnable.get32())
       when 0x08000000 # READ INTERRUPT REGISTER A
-        r1 = @regInterrupts.get32(0)
+        r1 = @intReg(0)
         @regCCData.set32(r1)
-        @regInterrupts.set32(0,0x0)
+        @setIntReg(0, 0x0) unless @intForceTest
       when 0x08040000 # READ INTERRUPT REGISTER B
-        r1 = @regInterrupts.get32(1)
+        r1 = @intReg(1)
         @regCCData.set32(r1)
-        @regInterrupts.set32(1,0x0)
+        @setIntReg(1, 0x0) unless @intForceTest
       when 0x08080000 # READ INTERRUPT REGISTER C
-        r1 = @regInterrupts.get32(2)
+        r1 = @intReg(2)
         @regCCData.set32(r1)
-        @regInterrupts.set32(2,0x0)
+        @setIntReg(2, 0x0) unless @intForceTest
       when 0x080c0000 # READ INTERRUPT REGISTER D
-        r1 = @regInterrupts.get32(3)
+        r1 = @intReg(3)
         @regCCData.set32(r1)
-        @regInterrupts.set32(3,0x0)
+        @setIntReg(3, 0x0) unless @intForceTest
       when 0x08100000 # READ INTERRUPT REGISTER E
-        r1 = @regInterrupts.get32(4)
+        r1 = @intReg(4)
         @regCCData.set32(r1)
-        @regInterrupts.set32(4,0x0)
+        @setIntReg(4, 0x0) unless @intForceTest
       when 0x08140000 # READ RM STATUS REGISTERS
-        r1 = @regRMStatus.get32()
-        @regCCData.set32(r1)
-        @regInterrupts.set32(5,0x0)
+        @regCCData.set32(@rmStatus())
       when 0x08180000 # READ DISCRETE INPUT A (1-32)
         r1 = @regDiscreteInA.get32()
         @regCCData.set32(r1)
-      when 0x081c0000 # READ DISCRETE INPUTS (33-40)
-        r1 = @regDiscreteInA.get32()
-        @regCCData.set32(r1)
+      when 0x081c0000 # READ DISCRETE INPUTS B (33-40)
+        @regCCData.set32(@regDiscreteInB.get32())
       when 0x10000000 # READ STATUS1(GO/NO-GO)
         r1 = @regProgExcept.get32()
         @regCCData.set32(r1)
@@ -399,13 +1317,36 @@ export class IOP
 
 
     if devSelect == 0x8 # Local Store
+        # Data select: bits 7-11 the region (MSC, BCE 1-24, self test),
+        # bits 12-13 the bank, bits 14-16 the word.
         region = dataSelect >>> 5
         bank = (dataSelect >>> 3) & 0x3
         word = (dataSelect) & 0x7
+        reg = @ls.at(region, bank, word)
+        if reg?
+          # A local store word is 18 bits, "scaled to the LSB portion of the
+          # 32-bit data word". 
+          if isOutput
+            reg.set32(data & 0x3ffff)
+            # The word is in local store now, but with the parity the
+            # poisoned H-Bus generated for it.  Tag it so the IB page can
+            # catch it when the owning processor next uses the register --
+            # a clean write to the same register clears the tag, because
+            # the good parity overwrites the bad.
+            if hbusPoisoned
+              @lsBadParity[region][bank * 4 + word] = true
+            else
+              delete @lsBadParity[region][bank * 4 + word]
+          else
+            @regCCData.set32(((0xfffc0000 | (reg.get32() & 0x3ffff)) >>> 0))
+        # The local store address lines and queue control bits carried this
+        # transfer, so the C108 generator poisons it.
+        return if queuePoisoned and @checkQueueParity()
 
-        if isOutput
-          r1 = @ls.ls(bank,word).get32()
-          @regCCData.set32(r1)
-        else
-          @ls.ls(bank,word).set32(data)
+    # The device-out data bus checker sees every H-Bus transfer as it
+    # arrives -- "the SI page checks the data for correct parity directly
+    # off the 'DEV OUT DATA BUS'" -- so a poisoned PCI or PCO reports here
+    # and now, whatever it was addressed to.
+    @signalDataFlowParity(INTB_DEV_OUT) if hbusPoisoned
+    return
 

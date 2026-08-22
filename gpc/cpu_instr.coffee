@@ -1,6 +1,7 @@
 import {PackedBits} from 'gpc/util'
-import {FloatIBM,addE,subE,compE,compE_anomalous,mulE,mulQeE,divE,cvfx,cvfl} from 'gpc/floatIBM'
+import {FloatIBM,addE,subE,compE,compE_anomalous,mulE,mulQeE,mulQeS,divE,divQeE,cvfx,cvfl} from 'gpc/floatIBM'
 import {q31_mul32, q15_mul, q31_div} from 'gpc/q31'
+import {MC_MICROSTORE_PARITY} from 'gpc/cpu_intr'
 
 ADDR_HALFWORD = 1
 ADDR_FULLWORD = 2
@@ -9,6 +10,31 @@ ADDR_DBLEWORD = 3
 OPTYPE_DATA = 1
 OPTYPE_BRCH = 2
 OPTYPE_SHFT = 4
+
+stxaWord = (src, dst, dse) ->
+    ((0x80000000 |               # bit 0, always set
+      (src & 0x7fff0000) |       # bits 1-15, the address
+                                 # bits 16-19 zeroed by omission
+      (dst & 0x00000ff0) |       # bits 20-27, the destination's own
+      (dse & 0xf)) >>> 0)        # bits 28-31, R1's DSE
+
+
+DIAG_PASS = 0
+DIAG_FAIL = 3
+
+
+DIAG_SELFTEST = [
+    0x0000, 0x0100, 0x0200, 0x0300, 0x0400, 0x0401,   # CPU hardcore 0-4, 8
+    0x0500, 0x0600, 0x0700,                           # constant PROM, memory, RTCC
+    0x2000, 0x2001,                                   # local store CPU / constant sector
+    0x3000, 0x4000, 0x4100,                           # (reserved-adjacent self-tests)
+    0x8000, 0x8100, 0x8200, 0x8400, 0x8500,           # interrupt page command PLA 0-4
+    0x9000,                                           # interrupt page arithmetic capture
+    0xA000,                                           # EU ROS parity check circuit
+    0xC200, 0xC201, 0xC202,                           # monolithic memory read/write
+    0xD000, 0xD001, 0xD010, 0xD011,                   # EDAC soft / hard error
+    0xF100,                                           # ENDOP timer
+]
 
 
 class Instruction extends PackedBits
@@ -81,6 +107,7 @@ class Instruction extends PackedBits
                 desc.len = 2
 
         d.addrWidth = desc.addrWidth
+        d.indexWidth = desc.indexWidth
         d.opType = desc.opType
 
         return [desc,d]
@@ -253,20 +280,49 @@ class Instruction extends PackedBits
         if v.I? and d.type =='RI'
             s += "X'"+v.I.asHex()+"'"
         if v.d?
-            # s += "#{v.d}"
+            s += @extAddrPrefix(v)
             s += "X'"+v.d.asHex()+"'"
         if v.b?
-            if v.i? and v.i != 0
-                s +="(#{v.i},"
-                if v.b? and not (v.extended and v.b == 3)
-                  s += "#{v.b}"
-                s += ")"
-            #else if not v.a? or v.a != 0
-            else if v.b? and not (v.extended and v.b == 3)
-              s +="(#{v.b})"
+            parts = []
+            parts.push "#{v.i}" if v.i? and v.i != 0
+            parts.push "#{v.b}" unless v.extended and v.b == 3
+            s += "(" + parts.join(",") + ")" if parts.length > 0
+        s += @extAddrSuffix(v) if v.d?
         if v.I? and d.type == 'SI'
             s += ",X'"+v.I.asHex()+"'"
-        return s 
+        return s
+
+    # Mode marker that precedes the displacement of an extended-form operand.
+    extAddrPrefix: (v) ->
+        #   *+d / *-d   IC-relative forward / backward  (X2=0, A=0)
+        #   @d          indirect through d              (A=1)
+        #   @@d(x)      ZCON fullword pointer, double   (A=1, I=1, X2/=0)
+        #   ...+        auto-modification writes back   (I=1)
+
+        return "" unless v.ia?
+        if v.i == 0 and v.ia == 0
+            # Steps 3/4: IC-relative, forward (I=0) or backward (I=1).
+            return if v.ii == 1 then "*-" else "*+"
+        if v.ia == 1
+            # Step 10 is a fullword pointer that is itself indirected through.
+            return if v.ii == 1 and v.i != 0 then "@@" else "@"
+        return ""
+
+    # Trailing marker for the extended forms that write a modified address
+    # back to the pointer (step 6) or to the index register (step 8).
+    extAddrSuffix: (v) ->
+        return "" unless v.ia? and v.ii == 1
+        return "+" if v.i == 0 and v.ia == 1     # step 6: indirect fw + modify
+        return "+" if v.i != 0 and v.ia == 0     # step 8: indexed + modify
+        return ""
+
+    # Resolved 16-bit target of the IC-relative extended forms, given the
+    # address the instruction was fetched from. 
+    icRelTarget: (d, v, addr) ->
+        return null unless d? and v?.ia? and v.d?
+        return null unless v.i == 0 and v.ia == 0
+        ic = (addr + (d.len ? 1)) & 0xffff
+        if v.ii == 1 then (ic - v.d) & 0xffff else (ic + v.d) & 0xffff
 
     execInstr: (hw1, hw2) ->
         [d,v] = @decode(hw1,hw2)
@@ -289,6 +345,7 @@ class Instruction extends PackedBits
                 desc.addrWidth = v.a
             else
                 desc.addrWidth = ADDR_FULLWORD
+            desc.indexWidth = v.xa ? desc.addrWidth
             if v.t?
                 desc.opType = v.t
             else
@@ -339,10 +396,18 @@ class Instruction extends PackedBits
                 @orderedMasks.push desc.mask
                 @opByMask[desc.mask] = {}
             @opByMask[desc.mask][desc.maskedVal] = desc
-        # when matching a hw to an instruction, we
-        # search from more to less specific, so order
-        # masks from largest to smallest:
-        @orderedMasks = @orderedMasks.sort().reverse()
+            
+        # When matching a halfword to an instruction we search from more to
+        # less specific. "<ore specific" is the number of bits a
+        # pattern pins down:
+        bitCount = (m) ->
+            n = 0
+            v = m >>> 0
+            while v != 0
+                n += v & 1
+                v = v >>> 1
+            n
+        @orderedMasks.sort (a, b) -> (bitCount(b) - bitCount(a)) or (b - a)
 
         @fmtTable = {}
         for format in @formats
@@ -446,12 +511,17 @@ class Instruction extends PackedBits
                     xtc:[4.4,4,4.4,4.5,4.6]   # NOTE 5: CPU not held by I/O
                     e:(t,v) ->
                         if not t.i_SUPER() then return
-                        cmd = t.r(v.x).get32()
-                        data = t.r(v.y).get32()
+                        # The Input/Output instruction transfers a fullword
+                        # to or from the general register specified by R1.
+                        # Direct I/O operations are defined by a control word
+                        # (CW) contained in the general register specified by
+                        # R2
+                        cmd = t.r(v.y).get32()
+                        data = t.r(v.x).get32()
                         t.sendToIOP(cmd, data)
                         isOutput = cmd >>> 31
                         if not isOutput
-                            t.r(v.y).set32(t.recvFromIOP())
+                            t.r(v.x).set32(t.recvFromIOP())
                         t.psw.setCC(0)
                 }
 
@@ -489,7 +559,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
-                        result = v1 + v2
+                        result = t.addFixed(v1, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -505,7 +575,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
-                        result = v1 + v2
+                        result = t.addFixed(v1, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -549,7 +619,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAH(v) << 16
-                        result = (v1 + v2) | 0
+                        result = t.addFixed(v1, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -590,7 +660,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = v.I << 16
                         v2 = t.r(v.y).get32()
-                        result = (v1 + v2)
+                        result = t.addFixed(v1, v2)
                         t.r(v.y).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -628,7 +698,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
-                        result = v1 + v2
+                        result = t.addFixed(v1, v2)
                         t.s_EAF(v,result)
                         t.computeCCarith(result,0)
                 }
@@ -913,7 +983,7 @@ class Instruction extends PackedBits
                         lo = if v.x % 2 then 0 else t.r(v.x+1).get32()
                         {quotient, overflow} = q31_div(hi, lo, t.r(v.y).get32())
                         t.r(v.x).set32(quotient)
-                        if overflow then t.psw.setOverflow(1)
+                        if overflow then t.signalFixedOverflow()
                 }
         D:      {
                     n:'Divide'
@@ -930,7 +1000,7 @@ class Instruction extends PackedBits
                         # R1-odd row (after g_EAF so xtCase is known)
                         if v.x % 2 then t.opExecT = t.xtPick([4.675,8.8,7.55,7.55,7.55,9.8,10.05])
                         t.r(v.x).set32(quotient)
-                        if overflow then t.psw.setOverflow(1)
+                        if overflow then t.signalFixedOverflow()
                 }
 
         # EXCHANGE UPPER AND LOWER HALFWORDS
@@ -950,22 +1020,23 @@ class Instruction extends PackedBits
         #   The overflow and carry indicators are not changed.
         #
         XUL:    {
-                    n:'Exclusive OR Upper and Lower'
+                    n:'Exchange Upper and Lower Halfwords'
                     f:['XUL R1,R2'],
                     d:'00000xxx11101yyy'
                     xts:[1]
                     xtc:[2.8,2.4,2.8,2.9,3]
                     e:(t,v) ->
-                        v1 = t.r(v.x).get32()
-                        v2 = t.r(v.y).get32()
-                        # XOR upper half of R1 with lower half of R2;
-                        # result is placed in both locations
-                        xorVal = (((v1 >>> 16) ^ v2) & 0xffff)
+                        v1 = t.r(v.x).get32() >>> 0
+                        v2 = t.r(v.y).get32() >>> 0
+                        hi1 = (v1 >>> 16) & 0xffff
+                        lo2 = v2 & 0xffff
+                        # "...while simultaneously...": naming one register
+                        # twice swaps its own halves.
                         if v.x == v.y
-                            t.r(v.x).set32((xorVal << 16) | xorVal)
+                            t.r(v.x).set32(((lo2 << 16) | hi1) >>> 0)
                         else
-                            t.r(v.x).set32((xorVal << 16) | (v1 & 0xffff))
-                            t.r(v.y).set32((v2 & 0xffff0000) | xorVal)
+                            t.r(v.x).set32(((lo2 << 16) | (v1 & 0xffff)) >>> 0)
+                            t.r(v.y).set32(((v2 & 0xffff0000) | hi1) >>> 0)
                 }
 
         # 11100xxx11110abb  BAL
@@ -1163,7 +1234,7 @@ class Instruction extends PackedBits
                     xtc:[1.4,1,1.4,1.5,1.6]
                     e:(t,v) ->
                         v2 = t.r(v.y).get32()
-                        result = ~v2 + 1
+                        result = t.subFixed(0, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -1265,6 +1336,7 @@ class Instruction extends PackedBits
                     f:['LM D2(B2)','LM D2(X2,B2)']
                     d:'1100110011111abb/X'
                     a:ADDR_FULLWORD
+                    xa:ADDR_HALFWORD    # POO 14.1: no automatic index alignment
                     xts:[8.5,12.25,13.25,12,13.25,14.5,16.25]
                     xtc:[10.6,10.8,11.6,11.6,12.6]
                     e:(t,v) ->
@@ -1350,12 +1422,14 @@ class Instruction extends PackedBits
                             {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.r(v.y).get32())
                             t.r(v.x).set32(hi)
                             t.r(v.x + 1).set32(lo)
-                            if overflow then t.psw.setOverflow(1)
+                            if overflow then t.signalFixedOverflow()
                         else
                             t.opExecT = 2.15
-                            {result, overflow} = q15_mul(t.r(v.x).get32() >> 16, t.r(v.y).get32() >> 16)
-                            t.r(v.x).set32(result)
-                            if overflow then t.psw.setOverflow(1)
+                            # An odd R1 keeps the most significant 32 bits of the
+                            # same 64-bit product.
+                            {hi, overflow} = q31_mul32(t.r(v.x).get32(), t.r(v.y).get32())
+                            t.r(v.x).set32(hi)
+                            if overflow then t.signalFixedOverflow()
                 }
         M:      {
                     n:'Multiply'
@@ -1370,13 +1444,15 @@ class Instruction extends PackedBits
                             {hi, lo, overflow} = q31_mul32(t.r(v.x).get32(), t.g_EAF(v))
                             t.r(v.x).set32(hi)
                             t.r(v.x + 1).set32(lo)
-                            if overflow then t.psw.setOverflow(1)
+                            if overflow then t.signalFixedOverflow()
                         else
-                            {result, overflow} = q15_mul(t.r(v.x).get32() >> 16, t.g_EAF(v) >> 16)
+                            # An odd R1 keeps the most significant 32 bits of the
+                            # same 64-bit product.
+                            {hi, overflow} = q31_mul32(t.r(v.x).get32(), t.g_EAF(v))
                             # R1-odd row (after g_EAF so xtCase is known)
                             t.opExecT = t.xtPick([2.15,6.28,7.28,6.03,7.28,8.53,10.28])
-                            t.r(v.x).set32(result)
-                            if overflow then t.psw.setOverflow(1)
+                            t.r(v.x).set32(hi)
+                            if overflow then t.signalFixedOverflow()
                 }
 
         # MULTIPLY HALFWORD
@@ -1413,7 +1489,7 @@ class Instruction extends PackedBits
                         if v2 & 0x8000 then v2 = v2 - 0x10000
                         {result, overflow} = q15_mul(v1, v2)
                         t.r(v.x).set32(result)
-                        if overflow then t.psw.setOverflow(1)
+                        if overflow then t.signalFixedOverflow()
                 }
 
         # MULTIPLY HALFWORD IMMEDIATE
@@ -1449,7 +1525,7 @@ class Instruction extends PackedBits
                         v2 = t.r(v.y).get32() >> 16
                         {result, overflow} = q15_mul(v1, v2)
                         t.r(v.y).set32(result)
-                        if overflow then t.psw.setOverflow(1)
+                        if overflow then t.signalFixedOverflow()
                 }
 
         # MULTIPLY INTEGER HALFWORD
@@ -1505,7 +1581,7 @@ class Instruction extends PackedBits
                         # Overflow if product doesn't fit in signed 16 bits
                         check = product >> 15
                         if check != 0 and check != -1
-                            t.psw.setOverflow(1)
+                            t.signalFixedOverflow()
                 }
 
         # STORE
@@ -1592,12 +1668,16 @@ class Instruction extends PackedBits
                     f:['STM D2(B2)','STM D2(X2,B2)']
                     d:'1100100011111abb/X'
                     a:ADDR_FULLWORD
+                    xa:ADDR_HALFWORD    # POO 14.1: no automatic index alignment
                     xts:[7.25,10.25,11.25,10,11.25,12.5,14.25]
                     xtc:[11.8,12,12.8,12.7,13.6]
                     e:(t,v) ->
                         v2ea = t.g_EA(v)
                         for i in [0..7]
-                            t.ram.set32(v2ea+(i*2),t.r(i).get32())
+                            # storeFW, not ram.set32: a protected location
+                            # takes the store protect violation and stops
+                            # the instruction there (POO 2.4).
+                            break if not t.storeFW(v2ea+(i*2), t.r(i).get32())
                 }
 
         # SUBTRACT
@@ -1639,7 +1719,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.r(v.y).get32()
-                        result = v1 + (~v2 + 1)
+                        result = t.subFixed(v1, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -1654,7 +1734,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
-                        result = v1 + (~v2 + 1)
+                        result = t.subFixed(v1, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -1692,7 +1772,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAF(v)
-                        result = (~v1+1) + v2
+                        result = t.subFixed(v2, v1)
                         t.s_EAF(v,result)
                         t.computeCCarith(result,0)
                 }
@@ -1739,7 +1819,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = t.r(v.x).get32()
                         v2 = t.g_EAH(v) << 16
-                        result = v1 + (~v2 + 1)
+                        result = t.subFixed(v1, v2)
                         t.r(v.x).set32(result)
                         t.computeCCarith(result,0)
                 }
@@ -1826,11 +1906,15 @@ class Instruction extends PackedBits
                     xtbs:[3.5,4.5]
                     xtc:[1.8,1.4,1.8,1.9,2]
                     e:(t,v) ->
+                        # First, the branch address is computed.  Then, the
+                        # first word of the current PSW is loaded into general
+                        # register R1:
+                        branch = if v.y != 0
+                            t.g_EXPAND(t.r(v.y).get32() >>> 16, OPTYPE_BRCH)
+                        else
+                            null
                         t.r(v.x).set32(t.psw.psw1.get32())
-                        # BALR R1, 0 -> no branch (R2 field must be nonzero)
-                        if v.y != 0
-                            branch = t.g_EXPAND(t.r(v.y).get32() >>> 16, OPTYPE_BRCH)
-                            t.psw.setNIA(branch)
+                        t.psw.setNIA(branch) if branch?
                 }
         BAL:    {
                     n:'Branch and Link'
@@ -2148,14 +2232,16 @@ class Instruction extends PackedBits
                     xtbs:[1.75,0.75]
                     xtc:[2.2,1.8,2.2,2.3,2.4]
                     e:(t,v) ->
+                        # "First, the branch address is computed ... Then, the
+                        # contents of bits 0 through 15 of general register R1
+                        # are reduced by one:
+                        branch = t.g_EXPAND(t.r(v.y).get32() >>> 16, OPTYPE_BRCH)
                         # Decrement bits 0-15 of R1
                         r1val = t.r(v.x).get32()
                         count = ((r1val >>> 16) - 1) & 0xffff
                         t.r(v.x).set32((count << 16) | (r1val & 0xffff))
                         # Branch if result is not zero
-                        if count != 0
-                            branch = t.g_EXPAND(t.r(v.y).get32() >>> 16, OPTYPE_BRCH)
-                            t.psw.setNIA(branch)
+                        t.psw.setNIA(branch) if count != 0
                 }
         BCT:    {
                     n:'Branch on Count'
@@ -2536,15 +2622,16 @@ class Instruction extends PackedBits
                     xtc:[2.8,2.4,2.8,2.9,3]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        pair = (v.x + 1) % 8
                         t.opExecT = 1.0 + 0.25*shiftCnt
                         hi = t.r(v.x).get32() >>> 0
-                        lo = t.r(v.x + 1).get32() >>> 0
+                        lo = t.r(pair).get32() >>> 0
                         if shiftCnt == 0
                             return
                         if shiftCnt >= 64
                             t.psw.setCarry(0)
                             t.r(v.x).set32(0)
-                            t.r(v.x + 1).set32(0)
+                            t.r(pair).set32(0)
                         else if shiftCnt >= 32
                             # Carry from last bit shifted out of hi
                             s = shiftCnt - 32
@@ -2554,14 +2641,14 @@ class Instruction extends PackedBits
                             else
                                 t.psw.setCarry(if lo & (1 << (32 - s)) then 1 else 0)
                                 t.r(v.x).set32((lo << s) >>> 0)
-                            t.r(v.x + 1).set32(0)
+                            t.r(pair).set32(0)
                         else
                             # Carry from last bit shifted out of hi position 0
                             t.psw.setCarry(if hi & (1 << (32 - shiftCnt)) then 1 else 0)
                             newHi = ((hi << shiftCnt) | (lo >>> (32 - shiftCnt))) >>> 0
                             newLo = (lo << shiftCnt) >>> 0
                             t.r(v.x).set32(newHi)
-                            t.r(v.x + 1).set32(newLo)
+                            t.r(pair).set32(newLo)
                 }
 
         # SHIFT RIGHT ARITHMETIC
@@ -2632,27 +2719,28 @@ class Instruction extends PackedBits
                     xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        pair = (v.x + 1) % 8
                         t.opExecT = 1.0 + 0.25*shiftCnt
                         if shiftCnt == 0 then return
                         hi = t.r(v.x).get32()
-                        lo = t.r(v.x + 1).get32() >>> 0
+                        lo = t.r(pair).get32() >>> 0
                         sign = if hi & 0x80000000 then 1 else 0
                         if shiftCnt >= 64
                             fill = if sign then 0xffffffff else 0
                             t.r(v.x).set32(fill)
-                            t.r(v.x + 1).set32(fill)
+                            t.r(pair).set32(fill)
                         else if shiftCnt >= 32
                             s = shiftCnt - 32
                             if s == 0
-                                t.r(v.x + 1).set32(hi)
+                                t.r(pair).set32(hi)
                             else
-                                t.r(v.x + 1).set32(hi >> s)
+                                t.r(pair).set32(hi >> s)
                             t.r(v.x).set32(if sign then 0xffffffff else 0)
                         else
                             newLo = ((lo >>> shiftCnt) | (hi << (32 - shiftCnt))) >>> 0
                             newHi = hi >> shiftCnt
                             t.r(v.x).set32(newHi)
-                            t.r(v.x + 1).set32(newLo)
+                            t.r(pair).set32(newLo)
                 }
 
         # SHIFT RIGHT DOUBLE LOGICAL
@@ -2681,25 +2769,26 @@ class Instruction extends PackedBits
                     xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1)
+                        pair = (v.x + 1) % 8
                         t.opExecT = 1.0 + 0.1*shiftCnt
                         if shiftCnt == 0 then return
                         hi = t.r(v.x).get32() >>> 0
-                        lo = t.r(v.x + 1).get32() >>> 0
+                        lo = t.r(pair).get32() >>> 0
                         if shiftCnt >= 64
                             t.r(v.x).set32(0)
-                            t.r(v.x + 1).set32(0)
+                            t.r(pair).set32(0)
                         else if shiftCnt >= 32
                             s = shiftCnt - 32
                             if s == 0
-                                t.r(v.x + 1).set32(hi)
+                                t.r(pair).set32(hi)
                             else
-                                t.r(v.x + 1).set32(hi >>> s)
+                                t.r(pair).set32(hi >>> s)
                             t.r(v.x).set32(0)
                         else
                             newLo = ((lo >>> shiftCnt) | (hi << (32 - shiftCnt))) >>> 0
                             newHi = hi >>> shiftCnt
                             t.r(v.x).set32(newHi)
-                            t.r(v.x + 1).set32(newLo)
+                            t.r(pair).set32(newLo)
                 }
 
         # SHIFT RIGHT LOGICAL
@@ -2802,26 +2891,27 @@ class Instruction extends PackedBits
                     xtc:[2.4,2,2.4,2.5,2.6]   # based on 3 shifts
                     e:(t,v) ->
                         shiftCnt = t.g_SHIFT_CNT(v.hw1) % 64
+                        pair = (v.x + 1) % 8
                         t.opExecT = 2.0 + 0.5*(if shiftCnt < 32 then shiftCnt else shiftCnt - 32)
                         if shiftCnt == 0 then return
                         hi = t.r(v.x).get32() >>> 0
-                        lo = t.r(v.x + 1).get32() >>> 0
+                        lo = t.r(pair).get32() >>> 0
                         if shiftCnt >= 32
                             s = shiftCnt - 32
                             if s == 0
                                 # Swap
                                 t.r(v.x).set32(lo)
-                                t.r(v.x + 1).set32(hi)
+                                t.r(pair).set32(hi)
                             else
                                 newHi = ((lo >>> s) | (hi << (32 - s))) >>> 0
                                 newLo = ((hi >>> s) | (lo << (32 - s))) >>> 0
                                 t.r(v.x).set32(newHi)
-                                t.r(v.x + 1).set32(newLo)
+                                t.r(pair).set32(newLo)
                         else
                             newHi = ((hi >>> shiftCnt) | (lo << (32 - shiftCnt))) >>> 0
                             newLo = ((lo >>> shiftCnt) | (hi << (32 - shiftCnt))) >>> 0
                             t.r(v.x).set32(newHi)
-                            t.r(v.x + 1).set32(newLo)
+                            t.r(pair).set32(newLo)
                 }
 
         # AND
@@ -3731,7 +3821,7 @@ class Instruction extends PackedBits
         # CER/CE: short compare.  Uses compE_anomalous for symmetry with
         # CEDR/CED.  POO 8.12 doesn't document the 8.11 false-equality
         # for short compare, and the DP threshold (|a-b|==0x8000000 in
-        # 60-bit form) doesn't naturally fire for SP-shaped operands —
+        # 60-bit form) doesn't naturally fire for SP-shaped operands;
         # so for SP this is effectively a standard compare.
         CER:    {
                     n:'Compare Short'
@@ -3817,7 +3907,7 @@ class Instruction extends PackedBits
         # Absolute difference of OP2 and OP1 is .00 0000 0080 0000
         # Returns CC of 00 (equal); correct CC is 01 (OP1 > OP2)
         #
-        # CEDR/CED: long compare.  See CER comment — compE_anomalous
+        # CEDR/CED: long compare.  See CER comment: compE_anomalous
         # reproduces the POO 8.11 false-equality.
         CEDR:   {
                     n:'Compare (Long Operands)'
@@ -4137,7 +4227,9 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        {result, exc} = divE(v1, v2)
+                        # Extended divide is quasi-extended on the C/M and
+                        # full 56-bit on the S: see divE in floatIBM.
+                        {result, exc} = (if t.fpModel == 'B' then divQeE else divE)(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
                         # DIV leaves CC unchanged per POO 8.7.
                         t.f(v.x).set32(result.to64x())
@@ -4156,7 +4248,7 @@ class Instruction extends PackedBits
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        {result, exc} = divE(v1, v2)
+                        {result, exc} = (if t.fpModel == 'B' then divQeE else divE)(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
@@ -4483,11 +4575,7 @@ class Instruction extends PackedBits
                         upper = FloatIBM.From32(t.f(v.x + 1).get32())
                         lower = FloatIBM.From32(t.g_EAF(v))
                         # POO 8.16: MVS compares input to limits at full
-                        # precision.  The earlier `toFloat()` path went
-                        # via JS double (53 bits) — for inputs near the
-                        # SP boundary this can give a different
-                        # comparison than IBM hex SP would.  Use the
-                        # IBM-precise compare via subE-based comparison.
+                        # precision.
                         cmpDiff = (a, b) ->
                             {result} = subE(a, b)
                             return 0 if result.gFracBits().isZero()
@@ -4575,7 +4663,7 @@ class Instruction extends PackedBits
         # gating all possible carries.) Note that exponent overflow will be
         # caused by rounding a floating point number like 7FFFFFFFFF000000.
         #
-        # AP-101S 8.17: MEDR/MED is "MULTIPLY (EXTENDED OPERANDS)" —
+        # AP-101S 8.17: MEDR/MED is "MULTIPLY (EXTENDED OPERANDS)",
         # quasi-extended.  Each operand's 56-bit fraction is truncated
         # to 31 bits with rounding into bit 31 from bit 32 BEFORE the
         # multiply.  We use mulQeE (not the full-precision mulE).
@@ -4588,7 +4676,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        {result, exc} = mulQeE(v1, v2)
+                        {result, exc} = (if t.fpModel == 'B' then mulQeE else mulQeS)(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
@@ -4606,7 +4694,7 @@ class Instruction extends PackedBits
                         v2hw1 = t.g_EAF(v)
                         v2hw2 = t.g_EAF(v, 2)
                         v2 = FloatIBM.From64(v2hw1, v2hw2)
-                        {result, exc} = mulQeE(v1, v2)
+                        {result, exc} = (if t.fpModel == 'B' then mulQeE else mulQeS)(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
                         t.f(v.x).set32(result.to64x())
                         t.f(v.x + 1).set32(result.to64y())
@@ -4616,6 +4704,12 @@ class Instruction extends PackedBits
         #
         #   The normalized product of multiplier (the short second operand) and
         # multiplicant (the short first operand) replaces the multiplicant.
+        #
+        #   For short operands (six-digit fractions), the product fraction has
+        # the full 14 digits of the long format with the two low-order fraction
+        # digits accordingly always zero. ... If R1 is even, the least
+        # significant part of the product fraction replaces the contents of
+        # floating point register R1+001.
         MER:    {
                     n:'Multiply Short'
                     f:['MER R1,R2'],
@@ -4628,7 +4722,8 @@ class Instruction extends PackedBits
                         v2 = FloatIBM.From32(t.f(v.y).get32())
                         {result, exc} = mulE(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
-                        t.f(v.x).set32(result.to32())
+                        t.f(v.x).set32(result.to64x())
+                        t.f(v.x + 1).set32(result.to64y()) unless v.x % 2
                 }
         ME:     {
                     n:'Multiply Short'
@@ -4650,7 +4745,8 @@ class Instruction extends PackedBits
                             t.opExecT = 5.75
                         {result, exc} = mulE(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
-                        t.f(v.x).set32(result.to32())
+                        t.f(v.x).set32(result.to64x())
+                        t.f(v.x + 1).set32(result.to64y()) unless v.x % 2
                 }
 
         # SUBTRACT (LONG OPERANDS)
@@ -4926,14 +5022,163 @@ class Instruction extends PackedBits
         # should be thoroughly familiar with the contents of the Diagnostic Function Appendix.
         # Unexpected results can occur if this instruction is improperly used.
         #
+        #
+        # Two kinds of entry:
+        #
+        #   * MICROCODE SELF-TESTS -- the hardcore tests, the local store and
+        #     constant-PROM RAM tests, the EU ROS parity check, the ENDOP
+        #     timer, the interrupt page's PLA and arithmetic-capture
+        #     tests.  Each exercises hardware this simulator does not model
+        #     and reports pass/fail in the condition code.  The modelled
+        #     machine has no faults, so they pass. 
+        #
+        #   * ASSISTS THAT RETURN DATA -- these must really do the work.
+        #
+        # 'Register R1' in the descriptions is the register the instruction's
+        # R1 field names; 'R1+1' is the next one.  Pass = CC 0, fail = CC 3
+        # (negative), per computeCCarith's encoding.
         DIAG:    {
                     n:'Diagnose'
                     f:['DIAG R1,D2(B20)', 'DIAG R1,D2(X2,B2)']
                     d:'11000xxx11111abb/X'
                     a:ADDR_HALFWORD
-                    xts:[1]   # placeholder; per-function estimates in POO sect.15, attach via opExecT when DIAG is implemented
+                    xts:[1]   # placeholder; per-function estimates in POO sect.15
                     e:(t,v) ->
-                        # XXX UNIMPL
+                        if not t.i_SUPER() then return
+                        cmd = t.g_EA_16(v) & 0xffff
+                        r1  = t.r(v.x)
+                        r1n = t.r((v.x + 1) & 7)
+
+                        if cmd in DIAG_SELFTEST
+                            t.psw.setCC(DIAG_PASS)
+                            return
+
+                        switch cmd
+                            when 0x1000
+                                # READ PROGRAM AND SYSTEM MASK: PSW bits 16-47
+                                # into R1 bits 0-31.  Bits 16-31 are PSW1's low
+                                # halfword, 32-47 PSW2's high halfword.  CC is
+                                # explicitly not altered.
+                                lo = t.psw.psw1.get32() & 0xffff
+                                hi = (t.psw.psw2.get32() >>> 16) & 0xffff
+                                r1.set32(((lo << 16) | hi) >>> 0)
+
+                            when 0x7000, 0x7001
+                                # H-BUS READ / WRITE: "allows any Internal
+                                # I/O (IIO) command to be written [read].
+                                # Bits 0-15 of register R1 shall contain
+                                # the Internal Bus command.  Bits 16-31 of
+                                # register R1 shall contain the data to be
+                                # written."  The command is what selects a
+                                # micro sequence, so it has to be decoded
+                                t.diagIIO((r1.get32() >>> 16) & 0xffff,
+                                          r1.get32() & 0xffff)
+                                t.psw.setCC(DIAG_PASS)
+
+                            when 0x7100, 0x7101
+                                # DETECT / DISREGARD STORES INTO IU FILE:
+                                # sets or resets B STAT bit 6.  Set is what
+                                # the machine does anyway -- a conflict
+                                # purges the file, and a model that always
+                                # refetches is indistinguishable from one
+                                # that purges.  Reset is not: the pipeline is
+                                # not purged and the stale halfword executes.
+                                # See cpu.coffee shadowIuStore.
+                                t.diagIuStoreDetect = (cmd == 0x7100)
+                                # Turning detection back on purges: "when
+                                # conflicts are detected, the file is
+                                # purged", and every conflict is detected
+                                # from here on.
+                                t.iuShadow = null if t.diagIuStoreDetect
+                                t.psw.setCC(DIAG_PASS)
+
+                            when 0x9100
+                                # INTERRUPT PAGE H-BUS WRAP ASSIST: the pattern
+                                # in R1 bits 0-15 goes out on the H-BUS; what
+                                # comes back on the H-BUS lands in R1 bits
+                                # 16-31 and what comes back on the INBUS in
+                                # R1+1 bits 0-15.  A good page wraps both.
+                                pattern = (r1.get32() >>> 16) & 0xffff
+                                r1.set32((((pattern << 16) | pattern) >>> 0))
+                                r1n.set32(((pattern << 16) | (r1n.get32() & 0xffff)) >>> 0)
+
+                            when 0xC000
+                                # MONOLITHIC CHECKSUM ASSIST: sum halfwords from
+                                # the 19-bit address in R1 through the one in
+                                # R1+1 inclusive, accumulating into R1+2 bits
+                                # 0-15.  R1 is left equal to the end address;
+                                # R1+1 is not altered.
+                                r1n2 = t.r((v.x + 2) & 7)
+                                start = r1.get32() & 0x7ffff
+                                end   = r1n.get32() & 0x7ffff
+                                sum   = (r1n2.get32() >>> 16) & 0xffff
+                                a = start
+                                while a <= end
+                                    sum = (sum + t.ram.get16(a)) & 0xffff
+                                    a++
+                                r1.set32(end >>> 0)
+                                r1n2.set32(((sum << 16) | (r1n2.get32() & 0xffff)) >>> 0)
+
+                            when 0xD100
+                                # READ MONOLITHIC STORE PROTECT BITS.  R1 holds
+                                # the 19-bit physical address, right-justified,
+                                # on an even fullword boundary.  R1+1 receives
+                                # the two halfwords' bits: 13-15 the redundant
+                                # triple for the even halfword, 22-24 the same
+                                # for the odd one, everything else undefined.
+                                # The triple is redundant because the hardware
+                                # stores three copies and votes; a healthy
+                                # machine reads all three alike.
+                                #
+                                # The bits read back active low: a protected
+                                # halfword reads 000, an unprotected one 111.
+                                #
+                                # "R1 holds the 19-bit physical address":
+                                addr = r1.get32() & 0x7fffe
+                                ev = if t.ram.getStoreProtect(addr)     then 0 else 7
+                                od = if t.ram.getStoreProtect(addr + 1) then 0 else 7
+                                r1n.set32((((ev << 16) | (od << 7)) >>> 0))
+
+                            when 0xE300, 0xE301
+                                # EA SCAN 5 ASSIST: read the interrupt page's
+                                # 32-bit scan register into R1, then clear it.
+                                # It doubles as the page's Diagnose Error
+                                # register, which is why the self-test reads it
+                                # once to clear before a page test and again
+                                # after to see what was caught.  No modelled
+                                # fault ever sets a bit in it.
+                                r1.set32(t.diagScanReg >>> 0)
+                                t.diagScanReg = 0
+
+                            when 0xF300
+                                # FORCE ROS PARITY ERROR ASSIST: "The ROS parity
+                                # error will only be forced if bits 0-15 of
+                                # register R1 contain X'0001'."  It reports as a
+                                # microstore parity machine check.  PSW bit 45
+                                # masks it, and a masked one "will not remain
+                                # pending" -- which is already how the machine
+                                # treats a masked machine check.  On real
+                                # hardware an unmasked, non-diagnose-mode ROS
+                                # parity error also RESETS the computer; that
+                                # part is deliberately not modelled, since the
+                                # point of the assist is to exercise the
+                                # interrupt path.
+                                if ((r1.get32() >>> 16) & 0xffff) == 0x0001
+                                    t.raiseInterrupt('machineCheck',
+                                                     {code: MC_MICROSTORE_PARITY})
+                                t.psw.setCC(DIAG_PASS)
+
+                            else
+                                # All effective addresses not described here
+                                # are reserved and shall not be used.  The
+                                # result of using a reserved effective address
+                                # is indeterminate:
+                                t.diagUnknown ?= {}
+                                unless t.diagUnknown[cmd]
+                                    t.diagUnknown[cmd] = true
+                                    console.error "DIAG: unimplemented command word " +
+                                        "0x#{cmd.toString(16)} at 0x#{t.psw.getNIA().toString(16)}"
+                                t.psw.setCC(DIAG_FAIL)
                 }
         # INSERT STORAGE PROTECT BITS
         #
@@ -5003,6 +5248,7 @@ class Instruction extends PackedBits
                     f:['ISPB M1,D2(B2)','ISPB M1,D2(X2,B2)']
                     d:'11101xxx11111abb/X',
                     a:ADDR_HALFWORD
+                    xa:ADDR_HALFWORD    # POO 14.1: no automatic index alignment
                     xts:[5.625,8,9,7.75,9,10.25,12]   # M1<=3; M1>3 override in e
                     xtc:[3.2,3.4,4.2,3.5,3.8]
                     e:(t,v) ->
@@ -5011,20 +5257,30 @@ class Instruction extends PackedBits
                         m1 = (v.hw1 >>> 8) & 0x7  # bits 5-7
                         switch m1
                             when 0b000  # Reset protect bit for halfword at EA
+                                t.storeProtectOverride = false
                                 t.ram.setStoreProtect(ea, false)
                             when 0b001  # Reset protect bits for both halfwords in fullword
-                                fwAddr = ea & 0xfffe
+                                t.storeProtectOverride = false
+                                # "When M1 is 001 or 011, the low-order bit of
+                                # the EA should be 0 and will be ignored" -- so
+                                # clear bit 0 and nothing else:
+                                fwAddr = ea & ~1
                                 t.ram.setStoreProtect(fwAddr, false)
                                 t.ram.setStoreProtect(fwAddr + 1, false)
                             when 0b010  # Set protect bit for halfword at EA
+                                t.storeProtectOverride = false
                                 t.ram.setStoreProtect(ea, true)
                             when 0b011  # Set protect bits for both halfwords in fullword
-                                fwAddr = ea & 0xfffe
+                                t.storeProtectOverride = false
+                                fwAddr = ea & ~1
                                 t.ram.setStoreProtect(fwAddr, true)
                                 t.ram.setStoreProtect(fwAddr + 1, true)
                             else
-                                # Illegal M1 (100-111): leaves store protect override set
-                                # Per docs, no illegal operation interrupt, just override
+                                # Illegal M1 (100-111): leaves the store protect
+                                # override on -- protected locations can then be
+                                # written without a violation until the next valid
+                                # ISPB clears it (the programming note above).  No
+                                # illegal operation interrupt.
                                 t.opExecT = 0.125   # sect.17: R1(M1) >= 5
                                 t.storeProtectOverride = true
                 }
@@ -5064,14 +5320,15 @@ class Instruction extends PackedBits
                     f:['LPS D2(B2)','LPS D2(X2,B2)']
                     d:'1100110111111abb/X'
                     a:ADDR_FULLWORD
+                    xa:ADDR_HALFWORD    # POO 14.1: no automatic index alignment
                     xts:[10.25,13.25,14.25,13,14.25,15.5,17.25]
                     xtc:[3.8,4,4.8,4,4.3]
                     e:(t,v) ->
                         if not t.i_SUPER() then return
                         eaw1 = t.g_EA(v)
                         eaw2 = eaw1 + 2
-                        t.psw.load(t.ram.get32(eaw1),
-                                   t.ram.get32(eaw2))
+                        t.loadPSW(t.ram.get32(eaw1),
+                                  t.ram.get32(eaw2))
                 }
 
         # MOVE HALFWORD OPERANDS
@@ -5195,7 +5452,9 @@ class Instruction extends PackedBits
                         while count > 0
                             count--
                             hw = t.ram.get16(srcAddr + count)
-                            t.ram.set16(destAddr + count, hw)
+                            # A violation terminates the instruction (Forced
+                            # ENDOP), so R1 is not updated either.
+                            return if not t.storeHW(destAddr + count, hw)
                         t.r(v.x).set32((destAddr << 16) | 0)
                 }
 
@@ -5249,6 +5508,9 @@ class Instruction extends PackedBits
                         # bit 2 reserved
                         t.psw.setExponentUnderflow((bits >>> 1) & 1)
                         t.psw.setSignificanceMask(bits & 1)
+                        # Setting the indicator and its mask together is the
+                        # Note 1 case: the interrupt occurs (POO 2.5.2.3).
+                        t.testFixedOverflow()
                 }
 
         # SET SYSTEM MASK
@@ -5275,6 +5537,7 @@ class Instruction extends PackedBits
                     n:'Set System Mask'
                     f:['SSM D2(B2)','SSM D2(X2,B2)']
                     d:'1000100011111abb/X',
+                    a:ADDR_HALFWORD
                     xts:[7.75,10.63,11.63,10.38,11.63,12.875,14.625]
                     xtc:[3.4,3.6,4.4,3.6,3.8]
                     e:(t,v) ->
@@ -5382,13 +5645,9 @@ class Instruction extends PackedBits
                         sa = (ptr + inc) & 0xffff
                         #console.log "SCAL SA=#{sa.asHex(8)}"
                         # Save PSW1 (first 2 halfwords) at SA
-                        t.ram.set16(sa, t.psw.psw1.get32() >>> 16)
-                        t.ram.set16(sa + 1, t.psw.psw1.get32() & 0xffff)
-                        # Save 8 GPRs at SA+2 through SA+17
+                        return if not t.storeFW(sa, t.psw.psw1.get32())
                         for i in [0..7]
-                            regVal = t.r(i).get32()
-                            t.ram.set16(sa + 2 + i * 2, regVal >>> 16)
-                            t.ram.set16(sa + 2 + i * 2 + 1, regVal & 0xffff)
+                            return if not t.storeFW(sa + 2 + i * 2, t.r(i).get32())
                         # Update SSD: PTR = SA, INC = 18
                         t.r(v.x).set32((sa << 16) | 18)
                         #console.log "SCAL UPDT R1=#{t.r(v.x).get32().asHex(8)}"
@@ -5553,11 +5812,14 @@ class Instruction extends PackedBits
                         ea = t.g_EA(v)
                         # Delegate to HalUCP for SVC interception (SEND ERROR, halt, etc.)
                         # Pass R1 (program data block pointer) so HalUCP can detect SVC 0
-                        # which is generated as SVC 0(R1) — i.e. EA == R1
+                        # which is generated as SVC 0(R1): i.e. EA == R1
                         r1 = t.r(1).get32()
                         if t.halUCP?.handleSVC(ea, r1)
                             return
-                        # Standard SVC: save PSW, load new PSW from interrupt vector
+                        # Standard SVC: save PSW, load new PSW from interrupt vector.
+                        # This swap is part of the instruction, not an end-of-instruction
+                        # acceptance, so it does not pass the stop-before-swap hold in
+                        # cpu.checkInterrupts
                         t.psw.setIntCode(ea)
                         t.ram.set32(0x58,t.psw.psw1.get32())
                         t.ram.set32(0x5a,t.psw.psw2.get32())
@@ -5608,6 +5870,7 @@ class Instruction extends PackedBits
                     n:'Test and Set'
                     f:['TS D2(B2)','TS D2(X2,B2)']
                     d:'1011100011111abb/X',
+                    a:ADDR_HALFWORD
                     xts:[3.75,6.5,6.25,6.25,6.25,7.5,9]
                     xtc:[3,3.2,4,3.2,3.4]
                     e:(t,v) ->
@@ -5621,7 +5884,7 @@ class Instruction extends PackedBits
                         else
                             t.psw.setCC(3)
                         # Set: store all ones
-                        t.ram.set16(ea, 0xffff)
+                        t.storeHW(ea, 0xffff)
                 }
 
         # TEST AND SET BITS
@@ -5681,7 +5944,7 @@ class Instruction extends PackedBits
                         else
                             t.psw.setCC(3)
                         # Set: OR mask with operand
-                        t.ram.set16(ea, value | mask)
+                        t.storeHW(ea, value | mask)
                 }
 
 
@@ -5711,10 +5974,11 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         fw = t.g_EAF(v)
                         regSet = t.psw.getRegSet()
-                        t.regFiles[regSet].setDSE(0, (fw >>> 28) & 0xf)
-                        t.regFiles[regSet].setDSE(1, (fw >>> 24) & 0xf)
-                        t.regFiles[regSet].setDSE(2, (fw >>> 20) & 0xf)
-                        t.regFiles[regSet].setDSE(3, (fw >>> 16) & 0xf)
+                        # One DSE per byte, in the low half of each: 
+                        t.regFiles[regSet].setDSE(0, (fw >>> 24) & 0xf)
+                        t.regFiles[regSet].setDSE(1, (fw >>> 16) & 0xf)
+                        t.regFiles[regSet].setDSE(2, (fw >>>  8) & 0xf)
+                        t.regFiles[regSet].setDSE(3, (fw       ) & 0xf)
                 }
         #
         # LOAD EXTENDED ADDRESS
@@ -5748,11 +6012,12 @@ class Instruction extends PackedBits
                         addrConst = t.r(v.y).get32()
                         addr = (addrConst >>> 16) & 0x7fff
                         dseVal = addrConst & 0xf
+                        regs = t.regFiles[t.psw.getRegSet()]
                         # POO: equal new/current DSE -> microcode early out
-                        if t.regFiles[t.psw.getRegSet()].getDSE(v.x) == dseVal
+                        if regs.getDSE(v.x) == dseVal
                             t.opExecT = 3.5 - 1.25
                         t.r(v.x).set32(addr << 16)
-                        t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
+                        regs.setDSE(v.x, dseVal)
                 }
 
         LXA:    {
@@ -5764,23 +6029,36 @@ class Instruction extends PackedBits
                         addrConst = t.g_EAF(v)
                         addr = (addrConst >>> 16) & 0x7fff
                         dseVal = addrConst & 0xf
+                        regs = t.regFiles[t.psw.getRegSet()]
                         # POO: equal new/current DSE -> microcode early out
                         # (-1.25 us, applied to the addressing-case time)
-                        if t.regFiles[t.psw.getRegSet()].getDSE(v.x) == dseVal
+                        if regs.getDSE(v.x) == dseVal
                             t.opExecT = t.xtPick([3.5,6.5,6.25,6.25,6.25,6.5,5.25]) - 1.25
                         t.r(v.x).set32(addr << 16)
-                        t.regFiles[t.psw.getRegSet()].setDSE(v.x, dseVal)
+                        regs.setDSE(v.x, dseVal)
                 }
         #
         # STORE EXTENDED ADDRESS
+        #   (AP-101S sect.9.14)
+        #   The extended data address contents of R1 plus R1 DSE are stored at
+        #   the fullword second operand location in fullword address constant
+        #   format.  Bit 0 of the second operand is set to one, bits 1 through
+        #   15 are replaced by bits 1 through 15 of R1, bits 28 through 31 are
+        #   replaced by the contents of R1 DSE, bits 16 through 19 are set to
+        #   zero, and bits 20 through 27 are unchanged and ignored.
+        #
+        # INDICATORS:
+        #   The condition code, overflow and carry indicators are not changed.
         #
         STXAR:   {
                     n: 'Store Extended Address Register'
                     f:['STXAR R1,R2']
                     d: '10100xxx11101yyy'
                     xts:[2.5]
-                    e:(t,v) =>
-                        return
+                    e:(t,v) ->
+                        dse = t.regFiles[t.psw.getRegSet()].getDSE(v.x)
+                        t.r(v.y).set32(stxaWord(t.r(v.x).get32(),
+                                                t.r(v.y).get32(), dse))
                 }
         STXA:   {
                     n: 'Store Extended Address'
@@ -5788,8 +6066,10 @@ class Instruction extends PackedBits
                     d: '10100xxx11111abb/X'
                     xts:[2.5,6.5,8,6.25,8,8.25,8.75]
                     e:(t,v) ->
-                        addrConst = t.g_EAF(v)
-                        addr = (addrConst >>> 16) & 0x7fff
+                        ea = t.g_EA(v)
+                        cur = ((t.ram.get16(ea) << 16) | t.ram.get16(ea + 1)) >>> 0
+                        dse = t.regFiles[t.psw.getRegSet()].getDSE(v.x)
+                        t.storeFW(ea, stxaWord(t.r(v.x).get32(), cur, dse))
                 }
         #
         # STORE DSE MULTIPLE
@@ -5816,10 +6096,10 @@ class Instruction extends PackedBits
                     xts:[2.25,5.25,6.75,5,5.25,7,7.5]
                     e:(t,v) ->
                         regSet = t.psw.getRegSet()
-                        fw = (t.regFiles[regSet].getDSE(0) << 28) |
-                             (t.regFiles[regSet].getDSE(1) << 24) |
-                             (t.regFiles[regSet].getDSE(2) << 20) |
-                             (t.regFiles[regSet].getDSE(3) << 16)
+                        fw = ((t.regFiles[regSet].getDSE(0) << 24) |
+                              (t.regFiles[regSet].getDSE(1) << 16) |
+                              (t.regFiles[regSet].getDSE(2) <<  8) |
+                              (t.regFiles[regSet].getDSE(3)      )) >>> 0
                         t.s_EAF(v, fw)
                 }
 
@@ -5903,26 +6183,52 @@ class Instruction extends PackedBits
         #
         # PROGRAM INTERRUPTIONS
         #
-        #   Illegal operation.
+        #   Illegal operation
+        #   Privileged instruction
+        #   Clears any pending counter interrupts when counter is loaded
         #
         # PROGRAMMING NOTES
         #
         #   This is a privileged operation and can only be executed when the
         # CPU is in the supervisors state.
         #
+        # AP-101-B: 
         #   The illegal operation program interruption will occur if the
         # following illegal commands are used: 00010, 00011, 00100, 00110, 
         # 00111, 01010, 01011, 01110, and 01111.
-        #
+        # 
+        # AP-101-B:
         #   Commands of the form 1XXXX other than 10000 are reserved and should
         # not be used. The illegal operation program interruption does not 
         # occur; instead a channel reset is performed.
+        #
+        # AP-101-S:
+        #   Command codes which are not defined in this document are illegal
+        #  and should not be used.  Unlike previous versions of this 
+        #  architecture, only the command 10000 causes a channel reset, not
+        #  the general case 1XXXX.
         #
         #   When using either Counter 1 of Counter 2 as a counter (rather than 
         # as an incremental timer), a possibility exists that the counter could
         # be in error during a single read by 65.536 microseconds (low order bit
         # of location 00B0 or 00B1). This problem can be avoided by doing two
         # consecutive reads and making comparisons to pick the correct reading.
+        # 
+        # AP-101-S:
+        #   To further insure that one of the readins is correct and as a 
+        #  compensation for interrupt processing overhead a value of two (2)
+        #  is added to the timer when it is read.  The write Counter n commands
+        #  reset the corresponding clock interrupt latch, clearing andy pending
+        #  interrupts.
+        #
+        # AP-101-S:
+        #   In addition to the normal shuttle ICR command codes, the following
+        #  *hardware dependant* ICR commands are defined for AP-101S series as
+        #  an aid for diagnostic coding.  General Use of these codes is not
+        #  encouraged.  If the timer is loaded with a value and read while in
+        #  the stop condition the value read will be *incremented* by a value
+        #  of two.
+        # 
         #
         ICR:    {
                     n:'Internal Control Register'
@@ -5937,15 +6243,18 @@ class Instruction extends PackedBits
                         cw = t.r(v.y).get32()
                         cmd = (cw >>> 27) & 0x1f  # bits 0-4 = D field
 
-                        # AP-101S per-command typical times (85-C67-001 p.10-3)
+                        # AP-101S per-command typical times (85-C67-001
+                        # p.10-3).  The read counter times are tuned so the
+                        # GPC self-test doesn't generate "CLOCK OUT OF
+                        # TOLERANCE" errors.
                         t.opExecT = switch cmd
                             when 0b00000 then 5.5     # read counter 1
                             when 0b00001 then 5.75    # read counter 2
-                            when 0b01000 then 5.5     # load counter 1
-                            when 0b01001 then 5.75    # load counter 2
+                            when 0b01000 then 3.5     # load counter 1
+                            when 0b01001 then 3.75    # load counter 2
                             when 0b00101 then 20.25   # read AGE
                             when 0b01101 then 20.0    # load AGE
-                            else t.opExecT            # others undocumented
+                            else t.opExecT            
 
                         # AP-101 C/M per-command times (75-A97-001 p.2-12)
                         t.xtcRow = switch cmd
@@ -5957,25 +6266,20 @@ class Instruction extends PackedBits
                             else t.xtcRow
 
                         switch cmd
+                            # A read returns the count plus two: "as a
+                            # compensation for interrupt processing overhead
+                            # a value of two (2) is added to the timer when
+                            # it is read" (POO sect.10, ICR programming
+                            # notes).  The counter itself is untouched.
                             when 0b00000  # Read Counter 1
-                                hi = t.ram.get16(0x00b0)
-                                lo = t.counter1 ? 0
-                                t.r(v.x).set32(((hi << 16) | (lo & 0xffff)) >>> 0)
+                                t.r(v.x).set32((t.timerValue(1) + 2) >>> 0)
                             when 0b00001  # Read Counter 2
-                                hi = t.ram.get16(0x00b1)
-                                lo = t.counter2 ? 0
-                                t.r(v.x).set32(((hi << 16) | (lo & 0xffff)) >>> 0)
+                                t.r(v.x).set32((t.timerValue(2) + 2) >>> 0)
                             when 0b01000  # Write Counter 1
-                                r1 = t.r(v.x).get32()
-                                t.ram.set16(0x00b0, (r1 >>> 16) & 0xffff)
-                                t.counter1 = r1 & 0xffff
-                                # Write resets the clock interrupt latch
-                                t.intPending.clk1 = false
+                                # loadTimer also resets the clock interrupt latch
+                                t.loadTimer(1, t.r(v.x).get32())
                             when 0b01001  # Write Counter 2
-                                r1 = t.r(v.x).get32()
-                                t.ram.set16(0x00b1, (r1 >>> 16) & 0xffff)
-                                t.counter2 = r1 & 0xffff
-                                t.intPending.clk2 = false
+                                t.loadTimer(2, t.r(v.x).get32())
                             when 0b00101  # Read AGE
                                 # AGE not simulated - return 0
                                 t.r(v.x).set32(0)
@@ -5987,17 +6291,23 @@ class Instruction extends PackedBits
                                 # AGE not simulated - no-op
                                 return
                             when 0b10000  # Channel Reset
-                                if t.iop?
-                                    t.iop.reset?()
+                                # "The channel reset operation issues a reset
+                                # to the IO.  The IO and CPU uses the signal
+                                # to reset the IO/CPU interface logic" (POO
+                                # sect.10), which zeroes the IOP's interrupt
+                                # registers -- hence the programming note that
+                                # this must not be issued until interrupt
+                                # register A has been read when an External 0
+                                # has occurred.
+                                t.iop?.channelReset?()
                             else
-                                # Check for illegal commands
-                                if (cmd & 0x10) == 0  # 0xxxx commands
-                                    # Illegal operation for undefined commands
-                                    t.i_ILLEGAL()
-                                # else: 1xxxx other than 10000 -> channel reset
-                                else
-                                    if t.iop?
-                                        t.iop.reset?()
+                                # "Command codes which are not defined in this
+                                # document are illegal and should not be used.
+                                # Unlike previous versions of this
+                                # architecture, only the command 10000 causes
+                                # a channel reset, not the general case
+                                # 1XXXX." (POO sect.10 programming notes)
+                                t.signalIllegalOp()
                 }
     }
 

@@ -55,7 +55,7 @@ busConfig := {
 }
 
 bceNumToBusConfig .= {}
-for [name,config] in busConfig
+for [name,config] of Object.entries(busConfig)
   if config.gpcBceNum?
     bceNumToBusConfig[config.gpcBceNum] = config
     bceNumToBusConfig[config.gpcBceNum].name = name
@@ -107,9 +107,11 @@ class Bus
   server : any = null
   recvCB : any = null
   cbObj : object = null
+  selfEcho : any[] = []
 
   @(@busID, @busDesc, @isShuttleBus=false, @iua=0x00)
     @sendBuffer = Buffer.alloc(16)
+    @selfEcho = []
     @_startMulticast()
 
   _startMulticast()
@@ -129,7 +131,22 @@ class Bus
   onReceive(@recvCB, @cbObj)
     return
 
+  @SELF_ECHO_MAX = 1024
+
+  _isSelfEcho(message)
+    for buf, i of @selfEcho
+      if buf.length == message.length and buf.equals(message)
+        @selfEcho.splice(i, 1)
+        return true
+    return false
+
+  _noteSent(buf, len)
+    @selfEcho.push Buffer.from(buf.subarray(0, len))
+    @selfEcho.shift() while @selfEcho.length > Bus.SELF_ECHO_MAX
+    return
+
   _recvMessage(message, remote)
+    return if @_isSelfEcho(message)
     if @isShuttleBus
       if message[0] != @iua
         return
@@ -143,21 +160,19 @@ class Bus
 
   send(data,len=undefined)
     len ?= data.length
+    @_noteSent data, len
     @server.send data, 0, len, @busDesc.port, "239.255.1.1"
 
   sendMsg(msg)
-    // send a message across a generic bus (16-bit big endian)
-    len .= msg.rawData.length
-    copyOffset .= 0
-    if @isShuttleBus == true
-      len += 2
-      copyOffset = 2
-    if @sendBuffer.length < len
-      @sendBuffer = Buffer.allocUnsafe(len)
-    msg.rawData.copy(@sendBuffer, copyOffset, 0, len)
-    @sendBuffer.swap16()
-    if @isShuttleBus
-      @sendBuffer[0] = @iua
-    @send @sendBuffer, len
+    body := msg.getBytes()
+    unless @isShuttleBus
+      @send body, body.length
+      return
+    // dgram.send() does not copy: the buffer must be left 
+    // alone until the datagram has actually gone out:
+    buf := Buffer.alloc(body.length + 2)
+    buf[0] = @iua
+    body.copy(buf, 2)
+    @send buf, buf.length
 
 export { Bus, BusMsg, busConfig, bceNumToBusConfig };

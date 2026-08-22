@@ -8,11 +8,23 @@ readline = require 'readline'
 
 require 'com/util'
 import {AGEHarness} from 'gpc/ageharness'
+import {checkFCMFits} from 'gpc/machine'
+import {CPU} from 'gpc/cpu'
+import {MSCInstruction} from 'gpc/iop_msc_instr'
+import {BCEInstruction} from 'gpc/iop_bce_instr'
 import {IOHost} from 'gpc/iohost'
 import Instruction from 'gpc/cpu_instr'
 import {HalUCP} from 'gpc/halUCP'
 import {RTPacer} from 'gpc/rtpacer'
 import {P as noColor, formatRegVal, formatTraceLine, formatRegDump} from 'gpc/trace'
+
+# NSTS_PC_TRACE: addresses to count arrivals at, as hex halfword addresses.
+PC_TRACE = do ->
+  v = process?.env?.NSTS_PC_TRACE
+  return null unless v
+  t = {}
+  t[parseInt(x.trim().replace(/^0x/i, ''), 16)] = 0 for x in v.split(',') when x.trim()
+  t
 
 export class BatchRunner
   constructor: (opts) ->
@@ -24,6 +36,7 @@ export class BatchRunner
     @rtFactor = opts.rtFactor ? 1.0
     @rtIdleTimeoutMs = (opts.rtIdleTimeout ? 10) * 1000
     @breakpoint = opts.breakpoint ? null
+    @pcTraceWall = Date.now()
     @memWatchpoints = opts.memWatchpoints ? []  # [{addr, count}]
     @watchLog = opts.watchLog ? false
     @outputPath = opts.outputPath ? null
@@ -31,6 +44,8 @@ export class BatchRunner
     @traceEnabled = opts.traceEnabled ? false
     @verbose = opts.verbose ? false
     @interactive = opts.interactive ? false
+    @breakOnInterrupt = opts.breakOnInterrupt ? false
+    @iopTrace = opts.iopTrace ? null       # [processor numbers] or null
 
     @age = new AGEHarness()
     if opts.cpuModel?
@@ -39,6 +54,27 @@ export class BatchRunner
         process.stderr.write "FATAL: --cpu-model must be 's' or 'c'\n"
         process.exit(1)
       @age.cpu.model = m
+    # Interrupts are invisible in a trace otherwise: an unexplained jump
+    # into a PSA handler.  Note every acceptance, and stop at one when
+    # asked to.
+    @intTaken = null
+    @age.cpu.onInterrupt = (entry) =>
+      @intTaken = entry
+      if @traceEnabled
+        codeLabel = @age.cpu.intCodeLabel(entry.key, entry.code)
+        codeStr =
+          if entry.code? and codeLabel? then " (code #{entry.code.asHex(4)}, #{codeLabel})"
+          else if entry.code? then " (code #{entry.code.asHex(4)})"
+          else ""
+        @write "*** #{entry.label}: #{entry.fromNIA.asHex(5)} -> #{entry.toNIA.asHex(5)}" +
+               codeStr + " at #{(entry.timeNs / 1e6).toFixed(3)} ms"
+
+    @age.cpu.setInterruptHold(opts.holdInterrupt ? false)
+    @age.cpu.onInterruptHold = (held) =>
+      if @traceEnabled
+        @write "*** #{held.label} HELD before PSW swap at #{held.fromNIA.asHex(5)}" +
+               " (would swap to #{held.toNIA.asHex(5)})"
+
     @age.halUCP.verbose = @verbose
     @age.halUCP.errorCallback = (msg) -> process.stderr.write "\n*** " + msg + "\n\n"
 
@@ -55,6 +91,51 @@ export class BatchRunner
   info: (s) ->
     @write(s) if @verbose
 
+  _startIOPTrace: () ->
+    iop = @age.gpc.iop
+    iop.traceProcs = {}
+    iop.traceProcs[p] = true for p in @iopTrace
+    msc = new MSCInstruction()
+    bce = new BCEInstruction()
+    last = {}
+    traceWall0 = Date.now()
+
+    regs = (page) ->
+      r16 = (bank, word) -> iop.ls.at(page, bank, word)?.get16() ? 0
+      r32 = (bank, word) -> iop.ls.at(page, bank, word)?.get32() ? 0
+      hex = (v, n) -> (v >>> 0).toString(16).padStart(n, '0')
+      if page == 0
+        "A=#{hex((r16(1,3) << 16 >>> 0) + r16(2,3), 8)} X=#{hex(r16(0,3), 4)}" +
+        " MST=#{hex(r16(2,7), 4)}"
+      else
+        "D=#{hex((r16(1,0) << 16 >>> 0) + r16(2,0), 8)} BASE=#{hex(r32(2,3), 5)}" +
+        " IUA=#{hex(r32(2,5), 2)} BST=#{hex((r16(2,6) << 16 >>> 0) + r16(2,7), 8)}"
+    iop.onProcStep = (page, pc, hw1, hw2) =>
+      d = if page == 0 then msc.toStr(hw1, hw2) else bce.toStr(hw1, hw2)
+      name = if page == 0 then 'MSC ' else "BCE#{page}"
+      # Collapse a processor sitting on one instruction into a count 
+      k = "#{page}:#{pc}"
+      if last.key == k
+        last.n += 1
+        return
+      if last.key? and last.n > 1
+        ms = (Date.now() - last.wall)
+        process.stderr.write "        #{last.name} #{last.pc}  " +
+          "... #{last.n} times (#{ms} ms wall)\n"
+      last = {key: k, n: 1, name: name, pc: pc.toString(16).padStart(5, '0'),
+              wall: Date.now()}
+      us = (@age.cpu.timeNs / 1000).toFixed(1).padStart(11)
+      w = ((Date.now() - traceWall0) / 1000).toFixed(3).padStart(8)
+      process.stderr.write "#{us} us #{w} w  #{name} #{pc.toString(16).padStart(5,'0')}  " +
+        "#{hw1.toString(16).padStart(4,'0')} #{hw2.toString(16).padStart(4,'0')}  " +
+        "#{@formatSectionOffset?(pc) ? ''}  #{d.text.padEnd(22)}  #{regs(page)}\n"
+      return
+
+  _heldStopReason: () ->
+    h = @age.cpu.heldInterrupt()
+    "interrupt held before PSW swap: #{h.label} at 0x#{h.fromNIA.asHex(5)}" +
+      " (would swap to 0x#{h.toNIA.asHex(5)})"
+
   flush: ->
     if @outputPath? and @lines.length > 0
       fs.writeFileSync @outputPath, @lines.join("\n") + "\n"
@@ -67,13 +148,23 @@ export class BatchRunner
 
   load: ->
     # Process options, load FCM and symbols
-    { byteCount, entryPoint, symbolsPath } = @age.configureFromOpts(@fcmPath, @opts)
+    { byteCount, entryPoint, entrySource, symbolsPath, entryWarning } =
+      @age.configureFromOpts(@fcmPath, @opts)
     @entryPoint = entryPoint
-    unless @entryPoint?
-      @fatal "No entry point: use --start=ADDR or provide a symbols file with a START symbol"
+    @entrySource = entrySource
+    if entrySource == 'power-on'
+      why = if @opts.powerOn then '--power-on' else 'no --start, no START symbol'
+      @info "Entry from power-on PSW at PSA 0x#{CPU.POWER_ON_PSW.asHex(4)} (#{why})"
+    process.stderr.write "Warning: #{entryWarning}\n" if entryWarning?
     if @age.sym.symbols?
       @info "Symbols: #{symbolsPath} (#{@age.sym.symbols.symbols?.length or 0} symbols, #{@age.sym.symbols.sections?.length or 0} sections)"
     return byteCount
+
+  icRelNote: (d, v, addr) ->
+    target = Instruction.icRelTarget(d, v, addr)
+    return "" unless target?
+    label = @age.sym.getLabelAt?(target)
+    "   ; -> X'#{target.asHex(4)}'" + (if label then " <#{label}>" else "")
 
   formatSectionOffset: (addr) ->
     sym = @age.sym
@@ -132,7 +223,7 @@ export class BatchRunner
 
   readInputLine: (channel, iocode) ->
     ch = channel.toString()
-    # No --infileN was provided at all — fatal.  (If a file was provided
+    # No --infileN was provided at all: fatal.  (If a file was provided
     # but is exhausted, return null and let HAL/S detect EOF via its
     # ON ERROR$(IO:N) handler.)
     if not @iohost.hasFileConfigured(channel)
@@ -183,7 +274,7 @@ export class BatchRunner
       [d, v] = Instruction.decode(hw1, hw2)
       if d?
         instrLen = d.len
-        disasmStr = Instruction.toStr(hw1, hw2)
+        disasmStr = Instruction.toStr(hw1, hw2) + @icRelNote(d, v, addr)
         hw1Str = hw1.asHex(4)
         if instrLen > 1
           hw2Str = hw2.asHex(4)
@@ -234,6 +325,7 @@ export class BatchRunner
     stopReason = null
     lastSection = null
     @pacer = if @realTime then new RTPacer(@age.cpu, @rtFactor, @rtIdleTimeoutMs) else null
+    @_startIOPTrace() if @iopTrace?
     # Build flat list of watched halfword addresses for fast checking
     watchAddrs = []
     for wp in @memWatchpoints
@@ -242,6 +334,7 @@ export class BatchRunner
     hasWatchpoints = watchAddrs.length > 0
 
     while step < @maxSteps
+      @age.cpu.releaseInterrupt() if @age.cpu.intArmed?
       before = if @traceEnabled then @age.snapshotRegs() else null
       nia = @age.cpu.psw.getNIA()
 
@@ -255,6 +348,14 @@ export class BatchRunner
       if @breakpoint? and nia == @breakpoint
         stopReason = "breakpoint at 0x#{nia.asHex(4)}"
         break
+
+      # NSTS_PC_TRACE=<hex>[,<hex>...] counts arrivals at chosen addresses
+      # and reports each with the simulated and wall time, without stopping.
+      if PC_TRACE? and PC_TRACE[nia]?
+        PC_TRACE[nia] += 1
+        process.stderr.write "PC #{nia.toString(16).padStart(5,'0')} hit " +
+          "##{PC_TRACE[nia]}  #{(@age.cpu.timeNs / 1e6).toFixed(1)} ms sim" +
+          "  #{((Date.now() - @pcTraceWall) / 1000).toFixed(1)} s wall\n"
 
       hw1 = @age.mainStorage.get16(nia)
       hw2 = @age.mainStorage.get16(nia + 1)
@@ -280,6 +381,7 @@ export class BatchRunner
       if @age.halUCP.active and @age.halUCP.isTrapAddr(nia)
         result = @age.halUCP.checkTrap(nia)
 
+      @intTaken = null
       @age.gpc.exec1()
 
       if @traceEnabled
@@ -289,6 +391,14 @@ export class BatchRunner
         @write @_formatTraceLine(step, nia, hw1, hw2, disasm, instrLen, changes)
 
       step++
+
+      if @age.cpu.intArmed?
+        stopReason = @_heldStopReason()
+        break
+
+      if @breakOnInterrupt and @intTaken?
+        stopReason = "interrupt: #{@intTaken.label} at 0x#{@intTaken.fromNIA.asHex(5)}"
+        break
 
       # Real-time pacing: sleep off any lead over the wall clock
       if @pacer? and (step & 255) == 0
@@ -333,6 +443,9 @@ export class BatchRunner
           # Real time keeps flowing in the wait state: advance simulated
           # time at the real-time rate until an interrupt wakes the CPU.
           why = await @pacer.idleWait()
+          if why == 'held'
+            stopReason = @_heldStopReason()
+            break
           if why != 'resumed'
             stopReason = "wait state (#{why})"
             break
@@ -432,6 +545,7 @@ export class BatchRunner
   execLoop: ->
     lastSection = @lastSection
     while @step < @maxSteps
+      @age.cpu.releaseInterrupt() if @age.cpu.intArmed?
       before = if @traceEnabled then @age.snapshotRegs() else null
       nia = @age.cpu.psw.getNIA()
 
@@ -458,16 +572,17 @@ export class BatchRunner
         @stopReason = "invalid instruction 0x#{hw1.asHex(4)} at 0x#{nia.asHex(4)}"
         break
 
-      # Check I/O trap — if input is needed from terminal, the callback
+      # Check I/O trap: if input is needed from terminal, the callback
       # will call promptInput which returns (async), breaking out of execLoop.
       if @age.halUCP.active and @age.halUCP.isTrapAddr(nia)
         result = @age.halUCP.checkTrap(nia)
         if @age.halUCP.waitingForInput
-          # Async input pending — save state and return.
+          # Async input pending: save state and return.
           # execLoop will be re-entered from promptInput callback.
           @lastSection = lastSection
           return
 
+      @intTaken = null
       @age.gpc.exec1()
 
       if @traceEnabled
@@ -477,6 +592,14 @@ export class BatchRunner
         @write @_formatTraceLine(@step, nia, hw1, hw2, disasm, instrLen, changes)
 
       @step++
+
+      if @age.cpu.intArmed?
+        @stopReason = @_heldStopReason()
+        break
+
+      if @breakOnInterrupt and @intTaken?
+        @stopReason = "interrupt: #{@intTaken.label} at 0x#{@intTaken.fromNIA.asHex(5)}"
+        break
 
       # Real-time pacing: sleep off any lead over the wall clock
       if @pacer? and (@step & 255) == 0
@@ -490,6 +613,9 @@ export class BatchRunner
       if @age.cpu.psw.getWaitState()
         if @pacer?
           why = await @pacer.idleWait()
+          if why == 'held'
+            @stopReason = @_heldStopReason()
+            break
           if why != 'resumed'
             @stopReason = "wait state (#{why})"
             break
@@ -521,9 +647,7 @@ export class BatchRunner
       process.exit(exitCode)
 
 
-# ---------------------------------------------------------------
 # `gpc run` subcommand registration
-# ---------------------------------------------------------------
 parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
 
 export addCommand = (program) ->
@@ -549,13 +673,17 @@ export addCommand = (program) ->
     )
     .option('--output <file>', 'write trace/verbose output to file instead of stdout')
     .option('--dump-interval <n>', 'register dump every N steps (default: 100)', '100')
+    .option('--break-on-interrupt', 'stop when an interrupt is accepted', false)
+    .option('--hold-interrupt', 'stop just before an interrupt swaps PSWs', false)
     .option('--trace', 'enable instruction trace', false)
     .option('--no-trace', 'disable instruction trace (default)')
     .option('--verbose', 'print informational messages', false)
     .option('--no-verbose', 'suppress informational messages (default)')
     .option('--interactive', 'interactive terminal I/O')
     .option('--watch-log', 'log every watchpoint change instead of breaking', false)
+    .option('--iop-trace <procs>', 'trace IOP processors: 0 = MSC, 1-24 = BCEs (e.g. 0,6)', ((v) -> (parseInt(x, 10) for x in v.split(',') when x.trim() != '')))
     .action (fcmPath, o) ->
+      checkFCMFits(fcmPath, o.machine)
       runner = new BatchRunner(Object.assign({}, o, {
         fcmPath
         maxSteps: parseInt(o.maxSteps, 10)
@@ -565,9 +693,12 @@ export addCommand = (program) ->
         breakpoint: if o.break then parseHex(o.break) else null
         memWatchpoints: o.watch or []
         watchLog: o.watchLog or false
+        iopTrace: o.iopTrace or null
         outputPath: o.output or null
         dumpInterval: parseInt(o.dumpInterval, 10)
         traceEnabled: o.trace
+        breakOnInterrupt: o.breakOnInterrupt or false
+        holdInterrupt: o.holdInterrupt or false
         interactive: o.interactive or false
       }))
       if o.interactive then runner.runInteractive() else runner.run()

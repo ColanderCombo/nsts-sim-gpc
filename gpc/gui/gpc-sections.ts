@@ -4,20 +4,24 @@ import {customElement} from 'lit/decorators.js';
 @customElement('gpc-sections')
 export class GpcSections extends LitElement {
 
-  // --- Properties set by host via JS ---
+  // Properties set by host via JS
+  //
   sym: any = null;
   selectedSection: string | null = null;
 
-  // --- Internal refs ---
+  // Internal refs
+  //
   private _contentEl: HTMLDivElement | null = null;
 
-  // --- Lit lifecycle ---
+  // Lit lifecycle
+  //
 
   firstUpdated(): void {
     this._contentEl = this.shadowRoot!.getElementById('content') as HTMLDivElement;
   }
 
-  // --- Public methods ---
+  // Public methods
+  //
 
   refresh(): void {
     const container = this._contentEl;
@@ -74,7 +78,8 @@ export class GpcSections extends LitElement {
     }
   }
 
-  // --- Template ---
+  // Template
+  //
 
   render() {
     return html`
@@ -83,7 +88,8 @@ export class GpcSections extends LitElement {
     `;
   }
 
-  // --- Styles ---
+  // Styles
+  //
 
   static styles = css`
     :host {

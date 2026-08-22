@@ -15,7 +15,8 @@ export class GpcTerminal extends LitElement {
   // Toolbar is hoisted into the dock tab strip (see getToolbar()).
   private _toolbarEl: HTMLElement | null = null;
 
-  // --- Public API (called by host) ---
+  // Public API (called by host)
+  //
 
   appendText(text: string): void {
     if (!this._outputEl) return;
@@ -45,7 +46,8 @@ export class GpcTerminal extends LitElement {
     this._inputEl.style.backgroundColor = '#111';
   }
 
-  // --- Internal ---
+  // Internal
+  //
 
   private _onKeyDown(e: KeyboardEvent): void {
     if (e.key !== 'Enter') return;
@@ -104,8 +106,8 @@ export class GpcTerminal extends LitElement {
     this._inputEl = this.shadowRoot!.getElementById('input') as HTMLInputElement;
   }
 
-  // Keep the hoisted toolbar in sync with reactive state (break toggle,
-  // copy-flash) since it no longer lives in this element's render().
+  // The toolbar is hoisted out of this element's render(), so reactive
+  // state (break toggle, copy-flash) has to be pushed into it here.
   updated(): void {
     if (this._toolbarEl) render(this._toolbarTemplate(), this._toolbarEl, { host: this });
   }

@@ -1,5 +1,5 @@
 
-# IOHost — File-backed I/O for CLI modes
+# IOHost: File-backed I/O for CLI modes
 #
 # Manages input file streams, output file streams, and HalUCP wiring
 # for the batch and debug CLI entry points. Handles encoding configuration,
@@ -13,20 +13,16 @@ import {HalUCP} from 'gpc/halUCP'
 
 export class IOHost
 
-  # ---------------------------------------------------------------
-  # CLI option registration — adds --infileN / --outfileN options.
+  # CLI option registration: adds --infileN / --outfileN options.
   # maxCh: highest channel number to generate options for (default 7)
-  # ---------------------------------------------------------------
   @addOptions: (cmd, maxCh = 7) ->
     for ch in [0..maxCh]
       cmd.option("--infile#{ch} <file>", "read input for channel #{ch}")
       cmd.option("--outfile#{ch} <file>", "write output for channel #{ch}")
     return cmd
 
-  # ---------------------------------------------------------------
   # Parse channel file options from commander opts object into
   # { inFiles, outFiles } maps suitable for the IOHost constructor.
-  # ---------------------------------------------------------------
   @parseChannelOpts: (opts, maxCh = 7) ->
     inFiles = {}
     outFiles = {}
@@ -35,9 +31,7 @@ export class IOHost
       outFiles[ch] = opts["outfile#{ch}"] if opts["outfile#{ch}"]
     return { inFiles, outFiles }
 
-  # ---------------------------------------------------------------
   # Create an IOHost directly from parsed CLI options.
-  # ---------------------------------------------------------------
   @fromOpts: (halUCP, opts, maxCh = 7) ->
     { inFiles, outFiles } = IOHost.parseChannelOpts(opts, maxCh)
     new IOHost(halUCP, {
@@ -56,9 +50,9 @@ export class IOHost
     @inStreams = {}      # channel -> array of remaining lines
     @outStreams = {}     # channel -> fs write stream
 
-    # Callbacks — set by the entry point to customize output behavior
-    # outputCallback(text, channel) — called for each output chunk
-    # errorCallback(msg) — called for fatal errors
+    # Callbacks: set by the entry point to customize output behavior
+    # outputCallback(text, channel)  called for each output chunk
+    # errorCallback(msg): called for fatal errors
     @outputCallback = null
     @errorCallback = null
 

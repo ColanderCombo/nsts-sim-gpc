@@ -16,7 +16,13 @@ import 'gpc/gui/gpc-watch'
 import 'gpc/gui/gpc-memory'
 import 'gpc/gui/gpc-sections'
 import 'gpc/gui/gpc-labels'
+import 'gpc/gui/gpc-interrupts'
+import 'gpc/gui/gpc-iop'
 import 'gpc/gui/gpc-terminal'
+
+# Speed multipliers offered by the toolbar's real-time selector.  A factor
+# the CLI asked for that isn't in this list is added to the menu at startup.
+RT_FACTORS = [0.1, 0.25, 0.5, 1, 2, 5, 10]
 
 
 export class DebugGUI extends GUIHarness
@@ -53,8 +59,10 @@ export class DebugGUI extends GUIHarness
 
     return { fcmPath: null }
 
-  # --- Editor lookups via the dock-root (editors live in shadow DOM, so a
-  # plain document.querySelector no longer finds them) ---
+  # Editor lookups via the dock-root
+  #
+  # Editors live in shadow DOM, where document.querySelector cannot reach
+  # them.
   _dock: () -> @dockRoot
   _editorsOf: (id) -> @dockRoot?.editorsOf(id) ? []
   _firstOf: (id) -> @_editorsOf(id)[0]
@@ -78,6 +86,8 @@ export class DebugGUI extends GUIHarness
       { id: 'breakpoints', title: 'Breakpoints', create: mk('gpc-breakpoints') }
       { id: 'sections',    title: 'Sections',    create: mk('gpc-sections') }
       { id: 'labels',      title: 'Labels',      create: mk('gpc-labels') }
+      { id: 'interrupts',  title: 'Interrupts',  create: mk('gpc-interrupts') }
+      { id: 'iop',         title: 'IOP',         create: mk('gpc-iop') }
       { id: 'terminal',    title: 'Terminal', singleton: true, create: mk('gpc-terminal') }
     ]
 
@@ -94,7 +104,7 @@ export class DebugGUI extends GUIHarness
       n += 1
       { type: 'split', id: "S#{n}", dir, size, a, b }
 
-    rightCol = split('h', 230, leaf('registers', 'instr'), leaf('watch', 'breakpoints'))
+    rightCol = split('h', 230, leaf('registers', 'instr'), leaf('watch', 'breakpoints', 'interrupts', 'iop'))
     topRow   = split('h', 470, leaf('disasm'), rightCol)
     bottomRow = split('h', 320, leaf('memory'), leaf('sections', 'labels'))
     mainArea = split('v', 230, topRow, bottomRow)
@@ -103,7 +113,7 @@ export class DebugGUI extends GUIHarness
 
   # Wire a freshly-created editor element to the live simulator objects.
   # Called by <dock-root> for every instance (startup restore, add-editor,
-  # float) — never assume a single instance of any editor type.
+  # float): never assume a single instance of any editor type.
   wireEditor: (el) ->
     return unless el
     switch el.tagName?.toLowerCase()
@@ -123,6 +133,10 @@ export class DebugGUI extends GUIHarness
         el.cpu = @cpu; el.breakpoints = @breakpoints
       when 'gpc-instr'
         el.cpu = @cpu
+      when 'gpc-interrupts'
+        el.cpu = @cpu; el.iop = @gpc.iop; el.harness = @
+      when 'gpc-iop'
+        el.iop = @gpc.iop
       when 'gpc-regview'
         el.cpu = @cpu
         el.editable = true
@@ -136,10 +150,15 @@ export class DebugGUI extends GUIHarness
     # Note: @CONFIG is already the gpc1 LRU config (passed from startup.civet)
     lruConf = @CONFIG.config or {}
     opts = @_resolveLoadOpts(lruConf)
+    @configureRunOpts(opts)
     if opts.fcmPath?
       console.log("DebugGUI load:", opts)
-      { byteCount, entryPoint } = @configureFromOpts(opts.fcmPath, opts)
-      console.log("DebugGUI loaded #{byteCount} bytes, entry=0x#{(entryPoint ? 0).toString(16)}")
+      { byteCount, entryPoint, entrySource, entryWarning } =
+        @configureFromOpts(opts.fcmPath, opts)
+      console.log("DebugGUI loaded #{byteCount} bytes, entry=0x#{(entryPoint ? 0).toString(16)} (#{entrySource})")
+      if entryWarning?
+        console.warn("DebugGUI: #{entryWarning}")
+        @notify("Warning: #{entryWarning}")
 
     # Wire HAL/S I/O trap callbacks to <gpc-terminal> component
     @halUCP.outputCallback = (text) => @_terminal()?.appendText(text)
@@ -188,6 +207,23 @@ export class DebugGUI extends GUIHarness
     document.addEventListener 'register-edited', (e) =>
       @updateDisplay()
 
+    document.addEventListener 'interrupt-raise', (e) =>
+      @raiseInterrupt(e.detail.key)
+    document.addEventListener 'interrupt-clear', (e) =>
+      @clearInterrupt(e.detail.key)
+    document.addEventListener 'interrupt-mask-toggle', (e) =>
+      @toggleInterruptMask(e.detail.maskBit)
+    document.addEventListener 'interrupt-log-clear', (e) =>
+      @clearInterruptLog()
+    document.addEventListener 'break-on-interrupt-changed', (e) =>
+      @setBreakOnInterrupt(e.detail.value)
+    document.addEventListener 'hold-interrupt-changed', (e) =>
+      @setHoldInterrupt(e.detail.value)
+    document.addEventListener 'timer-load', (e) =>
+      @loadTimer(e.detail.n, e.detail.value)
+    document.addEventListener 'system-reset', (e) =>
+      @systemReset()
+
     # Listen for watch selection
     document.addEventListener 'watch-selected', (e) =>
       @selectedWatch = e.detail.name
@@ -208,7 +244,7 @@ export class DebugGUI extends GUIHarness
           defaultLayout: () => @_defaultLayout()
           storageKey: 'gpc-dock-layout'
         }
-        # Initial display (twice — once now, once after layout settles)
+        # Initial display (twice: once now, once after layout settles)
         @updateDisplay()
         setTimeout(() =>
           @updateDisplay()
@@ -335,6 +371,20 @@ export class DebugGUI extends GUIHarness
 
     @updateToolbar()
 
+  _syncRTControls: () ->
+    chk = document.getElementById('gpc-rt-check')
+    chk.checked = @realTime if chk? and chk.checked != @realTime
+    sel = document.getElementById('gpc-rt-factor')
+    if sel?
+      want = String(@rtFactor)
+      if not (o for o in sel.options when o.value == want).length
+        opt = document.createElement('option')
+        opt.value = want
+        opt.textContent = "#{want}x"
+        sel.appendChild(opt)
+      sel.value = want if sel.value != want
+      sel.disabled = not @realTime
+
   updateToolbar: () ->
     nia = @cpu.psw.getNIA()
     niaEl = document.getElementById('gpc-nia-display')
@@ -343,16 +393,30 @@ export class DebugGUI extends GUIHarness
     stepsEl = document.getElementById('gpc-steps-display')
     if stepsEl
       stepsEl.textContent = "Steps: #{@stepCount}"
+    @_syncRTControls()
+    simEl = document.getElementById('gpc-simtime-display')
+    if simEl
+      txt = "Sim: #{@simTimeSec().toFixed(3)}s"
+      txt += " (#{@speedRatio.toFixed(2)}x)" if @running and @speedRatio?
+      simEl.textContent = txt
     statusEl = document.getElementById('gpc-status-display')
     if statusEl
       if @halUCP.waitingForInput
         statusEl.textContent = "INPUT WAIT"
+      else if @cpu.intArmed?
+        statusEl.textContent = "INT HELD"
       else if @cpu.psw.getWaitState()
-        statusEl.textContent = "WAIT"
+        statusEl.textContent = if @idling then "WAIT (idling)" else "WAIT"
       else if @running
-        statusEl.textContent = "RUNNING"
+        statusEl.textContent = if @realTime then "RUNNING (real-time)" else "RUNNING"
       else
         statusEl.textContent = "STOPPED"
+      if @statusNote
+        statusEl.textContent += " — #{@statusNote}"
+        statusEl.style.color = '#f80'
+      else
+        statusEl.style.color = ''
+      statusEl.title = @statusNote ? ''
 
   _uiGPCRegister: (id, bits, base, name, slice=-1, sliceend=-1) ->
     <gpc-register id={id} key={id} bits={bits} base={base} name={name} slice={slice} sliceend={sliceend} value={0}/>
@@ -360,10 +424,6 @@ export class DebugGUI extends GUIHarness
 
 
   initWindow: () ->
-    # The editor panes are managed entirely by <dock-root> (see start(),
-    # which hands it the editor registry + saved/default layout once React
-    # has committed this tree).
-
     mainStyle = {
       display: 'flex'
       flexDirection: 'column'
@@ -380,7 +440,17 @@ export class DebugGUI extends GUIHarness
           <button onClick={() => this.run()}>Run (F5)</button>
           <button onClick={() => this.stop()}>Stop (Esc)</button>
           <button onClick={() => this.reset()}>Reset (F9)</button>
+          <label id="gpc-rt-label" style={{marginLeft: '12px', display: 'inline-flex', alignItems: 'center', gap: '3px'}}
+                 title="Pace execution at AP-101S speed, and keep simulated time (and the interval timers) running through the wait state">
+            <input type="checkbox" id="gpc-rt-check" onChange={(e) => this.setRealTime(e.target.checked)}/>
+            Real-time
+          </label>
+          <select id="gpc-rt-factor" title="Real-time speed multiplier"
+                  onChange={(e) => this.setRTFactor(e.target.value)}>
+            {RT_FACTORS.map((f) => <option key={f} value={f}>{f}x</option>)}
+          </select>
           <span id="gpc-status-display" slot="status">STOPPED</span>
+          <span id="gpc-simtime-display" slot="status">Sim: 0.000s</span>
           <span id="gpc-steps-display" slot="status">Steps: 0</span>
           <span id="gpc-nia-display" slot="status">NIA: 000e</span>
           <button slot="status" style={{marginLeft: '20px'}} onClick={() => this.quit()}>Quit</button>

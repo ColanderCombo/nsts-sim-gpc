@@ -114,25 +114,53 @@ export interface MenuItem {
   separator?: boolean;
 }
 
-function showMenu(x: number, y: number, items: MenuItem[]): void {
-  document.getElementById('dock-context-menu')?.remove();
+interface MenuSession {
+  menus: HTMLElement[];
+  add(el: HTMLElement): void;
+  drop(el: HTMLElement): void;
+  contains(node: Node | null): boolean;
+  closeAll(): void;
+}
 
-  const menu = buildMenu(items);
+function newMenuSession(): MenuSession {
+  return {
+    menus: [],
+    add(el) { this.menus.push(el); },
+    drop(el) {
+      const i = this.menus.indexOf(el);
+      if (i >= 0) this.menus.splice(i, 1);
+      el.remove();
+    },
+    contains(node) {
+      return !!node && this.menus.some((m) => m.contains(node));
+    },
+    closeAll() {
+      for (const m of this.menus) m.remove();
+      this.menus.length = 0;
+    },
+  };
+}
+
+function showMenu(x: number, y: number, items: MenuItem[]): void {
+  for (const stale of Array.from(document.querySelectorAll('.dock-menu'))) stale.remove();
+
+  const session = newMenuSession();
+  const menu = buildMenu(items, session);
   menu.id = 'dock-context-menu';
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
   document.body.appendChild(menu);
+  session.add(menu);
 
   const close = (ev: MouseEvent) => {
-    if (!menu.contains(ev.target as Node)) {
-      menu.remove();
-      document.removeEventListener('mousedown', close, true);
-    }
+    if (session.contains(ev.target as Node)) return;
+    session.closeAll();
+    document.removeEventListener('mousedown', close, true);
   };
   setTimeout(() => document.addEventListener('mousedown', close, true), 0);
 }
 
-function buildMenu(items: MenuItem[]): HTMLDivElement {
+function buildMenu(items: MenuItem[], session: MenuSession): HTMLDivElement {
   const menu = document.createElement('div');
   menu.className = 'dock-menu';
   menu.style.cssText =
@@ -160,14 +188,18 @@ function buildMenu(items: MenuItem[]): HTMLDivElement {
       let sub: HTMLDivElement | null = null;
       const openSub = () => {
         if (!hasSub || sub) return;
-        sub = buildMenu(it.submenu!);
+        sub = buildMenu(it.submenu!, session);
         sub.style.position = 'fixed';
         const r = row.getBoundingClientRect();
         sub.style.left = `${r.right - 2}px`;
         sub.style.top = `${r.top}px`;
         document.body.appendChild(sub);
+        session.add(sub);
       };
-      const closeSub = () => { sub?.remove(); sub = null; };
+      const closeSub = () => {
+        if (sub) session.drop(sub);
+        sub = null;
+      };
 
       row.onmouseenter = () => {
         row.style.backgroundColor = '#1565a0';
@@ -182,8 +214,7 @@ function buildMenu(items: MenuItem[]): HTMLDivElement {
       if (!hasSub && it.action) {
         row.onclick = (ev) => {
           ev.stopPropagation();
-          document.getElementById('dock-context-menu')?.remove();
-          closeSub();
+          session.closeAll();
           it.action!();
         };
       }
@@ -275,7 +306,8 @@ export class DockPane extends LitElement {
     if (activeTab) (this.root.getEl(activeTab.iid) as any)?.refresh?.();
   }
 
-  // --- tab interactions ---
+  // tab interactions
+  //
 
   private _selectTab(i: number): void {
     if (this.node.active === i) return;
@@ -299,7 +331,8 @@ export class DockPane extends LitElement {
     this.root._showPaneMenu(this.node, ev.clientX, ev.clientY, this.floating);
   }
 
-  // --- manual tab drag (move between panes / float out) ---
+  // manual tab drag (move between panes / float out)
+  //
 
   private _tabMouseDown(ev: MouseEvent, tab: TabState): void {
     if (ev.button !== 0) return;
@@ -481,7 +514,8 @@ export class DockRoot extends LitElement {
   }
   get host(): DockHost { return this._host!; }
 
-  // --- registry helpers ---
+  // registry helpers
+  //
 
   _def(editorId: string): EditorDef | undefined {
     return this._host?.editors.find(e => e.id === editorId);
@@ -508,7 +542,8 @@ export class DockRoot extends LitElement {
     return out;
   }
 
-  // --- pane registry (for hit-testing during drag) ---
+  // pane registry (for hit-testing during drag)
+  //
 
   _registerPane(p: DockPane): void { this._panes.add(p); }
   _unregisterPane(p: DockPane): void { this._panes.delete(p); }
@@ -521,7 +556,8 @@ export class DockRoot extends LitElement {
     return null;
   }
 
-  // --- drag-and-drop zones + highlight ---
+  // drag-and-drop zones + highlight
+  //
 
   // Which region of `pane` the pointer is over: an edge (split there) or the
   // center (drop as a tab).  Floating panes only accept center (leaf-only).
@@ -607,7 +643,8 @@ export class DockRoot extends LitElement {
     this._touch();
   }
 
-  // --- element lifecycle ---
+  // element lifecycle
+  //
 
   private _ensureEl(tab: TabState): HTMLElement | null {
     let el = this._els.get(tab.iid);
@@ -630,7 +667,8 @@ export class DockRoot extends LitElement {
     }
   }
 
-  // --- tree traversal ---
+  // tree traversal
+  //
 
   private _eachTab(fn: (tab: TabState, leaf: LeafNode) => void): void {
     const walk = (n: DockNode) => {
@@ -648,7 +686,8 @@ export class DockRoot extends LitElement {
     return this._parentOf(target, n.a) ?? this._parentOf(target, n.b);
   }
 
-  // --- mutations ---
+  // mutations
+  //
 
   addEditor(leaf: LeafNode, editorId: string): void {
     if (this._def(editorId)?.singleton && this.editorsOf(editorId).length > 0) return;
@@ -777,7 +816,8 @@ export class DockRoot extends LitElement {
     this._touch();
   }
 
-  // --- pane context menu (also used by empty panes) ---
+  // pane context menu (also used by empty panes)
+  //
 
   _showPaneMenu(leaf: LeafNode, x: number, y: number, floating: boolean): void {
     const used = new Set<string>();
@@ -812,7 +852,8 @@ export class DockRoot extends LitElement {
     showMenu(x, y, items);
   }
 
-  // --- persistence ---
+  // persistence
+  //
 
   _touch(): void {
     // Drop floating panels whose editor was dragged/closed away.
@@ -892,7 +933,8 @@ export class DockRoot extends LitElement {
     _idCounter = Math.max(_idCounter, ...nums.map(n => n + 1), 1);
   }
 
-  // --- rendering ---
+  // rendering
+  //
 
   private _renderNode(node: DockNode): unknown {
     if (node.type === 'leaf') {

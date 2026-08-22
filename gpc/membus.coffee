@@ -7,7 +7,7 @@
 # 
 # A GPC subsystem is packaged in two line replaceable units (LRU) as follows:
 #   • One LRU contains the CPU and 40K of main memory.
-#   • The second LU contains the IOP and 24K of main memory.
+#   • The second LRU contains the IOP and 24K of main memory.
 # Although 24K of main memory is located in the IOP, the total 64K main memory is
 # treated as one memory, and neither portion of main memory (40K or 24K) is dedicated
 # to either the IOP or CPU. Both the IOP and CPU view the total 64K as one main mem-
@@ -18,6 +18,8 @@ export class MemoryBus
   constructor: (@cpuMCM, @iopMCM) ->
     @cpuHWCount = @cpuMCM.wordCount * 2
     @totalHWCount = @cpuHWCount + @iopMCM.wordCount * 2
+    if (@totalHWCount & (@totalHWCount - 1)) != 0
+      throw new Error("MemoryBus: total halfword count #{@totalHWCount} is not a power of two")
     @addrMask = @totalHWCount - 1
 
   _route: (addr) ->
@@ -44,9 +46,21 @@ export class MemoryBus
     r.mcm.set32(r.addr, v, checkProtect, trackWrite)
 
   load16: (base, data) ->
-    for i in [0...data.byteLength/2]
+    total = Math.floor(data.byteLength / 2)
+    for i in [0...total]
       @set16((base + i), data.getUint16((i * 2), false), false, false)
     @clearAccessTracking()
+    return total
+
+  clear: () ->
+    @cpuMCM.clear()
+    @iopMCM.clear()
+    return
+
+  resetProtect: () ->
+    @cpuMCM.resetProtect()
+    @iopMCM.resetProtect()
+    return
 
   setStoreProtect: (addr, v) ->
     r = @_route(addr)

@@ -3,17 +3,17 @@ import {property, state, customElement} from 'lit/decorators.js';
 import {FloatIBM} from 'gpc/floatIBM';
 
 /**
- * <gpc-register> — Displays a single register value.
+ * <gpc-register>: Displays a single register value.
  *
  * Properties:
- *   name     — label (e.g. "R0", "F3", "P1")
- *   value    — 32-bit register value
- *   bits     — bit width (default 32)
- *   type     — "int" (default) or "float" (enables click-to-cycle display modes)
- *   changed  — if true, value is shown in red (recently written)
- *   dim      — if true, value is shown dimmed (inactive bank)
+ *   name     -- label (e.g. "R0", "F3", "P1")
+ *   value    -- 32-bit register value
+ *   bits     -- bit width (default 32)
+ *   type     -- "int" (default) or "float" (enables click-to-cycle display modes)
+ *   changed  -- if true, value is shown in red (recently written)
+ *   dim      -- if true, value is shown dimmed (inactive bank)
  *
- * For type="float", clicking cycles: hex → float → hex
+ * For type="float", clicking cycles hex, float, hex
  */
 @customElement('gpc-register')
 export class GpcRegister extends LitElement {
@@ -68,7 +68,8 @@ export class GpcRegister extends LitElement {
     this._displayMode = (this._displayMode + 1) % 2;
   }
 
-  // --- inline editing ---
+  // inline editing
+  //
 
   private _editInitial(): string {
     return (this.value >>> 0).toString(16).padStart(Math.ceil(this.bits / 4), '0');
@@ -82,7 +83,7 @@ export class GpcRegister extends LitElement {
   }
 
   private _onEditKey(e: KeyboardEvent): void {
-    // Keep keystrokes from reaching the global debugger shortcuts (s/r/p/f…).
+    // Keep keystrokes from reaching the global debugger shortcuts (s/r/p/f).
     e.stopPropagation();
     if (e.key === 'Enter') {
       const v = parseInt((e.target as HTMLInputElement).value.replace(/[^0-9a-fA-F]/g, ''), 16);

@@ -9,10 +9,12 @@ readline = require 'readline'
 
 require 'com/util'
 import {AGEHarness} from 'gpc/ageharness'
+import {CPU} from 'gpc/cpu'
 import {IOHost} from 'gpc/iohost'
 import Instruction from 'gpc/cpu_instr'
 import {HalUCP} from 'gpc/halUCP'
 import {C, P, formatRegVal, formatTraceLine, formatRegDump} from 'gpc/trace'
+import {checkFCMFits} from 'gpc/machine'
 
 export class GPCDebugger
   constructor: (opts) ->
@@ -37,6 +39,11 @@ export class GPCDebugger
     @lastCommand = null # enter -> repeats @lastCommand
     @stopReason = null
     @executing = false
+
+    @breakOnInterrupt = opts.breakOnInterrupt ? false
+    @age.cpu.setInterruptHold(opts.holdInterrupt ? false)
+    @_intTaken = null
+    @age.cpu.onInterrupt = (entry) => @_intTaken = entry
 
   out: (s) -> process.stdout.write s + "\n"
   error: (s) -> @out "#{C.red}*** #{s}#{C.reset}"
@@ -69,17 +76,24 @@ export class GPCDebugger
           return "#{addr.asHex(5)} <#{sect}+#{offset.asHex(3)}>"
     return addr.asHex(5)
 
+  icRelNote: (d, v, addr) ->
+    target = Instruction.icRelTarget(d, v, addr)
+    return "" unless target?
+    label = @age.sym.getLabelAt?(target)
+    "   #{C.dim}; -> X'#{target.asHex(4)}'" + (if label then " <#{label}>" else "") + C.reset
+
   formatAddrPlain: (addr) ->
     label = @age.sym.getLabelAt?(addr)
     if label then "#{addr.asHex(5)} <#{label}>" else addr.asHex(5)
 
   load: ->
-    { byteCount, entryPoint, symbolsPath } = @age.configureFromOpts(@fcmPath, @opts)
+    { byteCount, entryPoint, entrySource, symbolsPath } = @age.configureFromOpts(@fcmPath, @opts)
     @entryPoint = entryPoint
+    @entrySource = entrySource
     @symbolsPath = symbolsPath
-    unless @entryPoint?
-      @error "No entry point: use --start=ADDR or provide symbols"
-      process.exit(1)
+    if entrySource == 'power-on'
+      why = if @opts.powerOn then '--power-on' else 'no --start, no START symbol'
+      @info "Entry from power-on PSW at PSA 0x#{CPU.POWER_ON_PSW.asHex(4)} (#{why})"
     return byteCount
 
   #
@@ -128,6 +142,16 @@ export class GPCDebugger
     # Sync step counter
     @age._syncStep()
 
+    @_intTaken = null
+
+    if @age.cpu.intArmed?
+      entry = @age.cpu.releaseInterrupt()
+      if entry?
+        @info "#{entry.label} taken: #{@formatAddrPlain(entry.fromNIA)} -> #{@formatAddrPlain(entry.toNIA)}"
+      else
+        @info "held interrupt no longer pending: nothing taken"
+      return 'ok'
+
     nia = @age.cpu.psw.getNIA()
 
     # Check I/O trap
@@ -155,7 +179,12 @@ export class GPCDebugger
       @stopReason = "invalid instruction 0x#{hw1.asHex(4)} at #{@formatAddrPlain(nia)}"
       return 'error'
 
-    @age.gpc.exec1()
+    try
+      @age.gpc.exec1()
+    catch e
+      @out @_formatTraceLine(@age.stepCount, nia, hw1, hw2, disasm, instrLen, [])
+      @stopReason = "simulator error at #{@formatAddrPlain(nia)}: #{e.message}"
+      return 'error'
     @age.stepCount++
 
     after = @age.snapshotRegs()
@@ -188,6 +217,9 @@ export class GPCDebugger
       @stopReason = "SVC trapped"
       return 'svc'
 
+    if @age.cpu.intArmed?
+      return 'interrupt-held'
+
     if @age.cpu.psw.getWaitState()
       @stopReason = "wait state (program halted)"
       return 'halt'
@@ -195,10 +227,22 @@ export class GPCDebugger
     if @_memWatchTriggered?
       return 'watchpoint'
 
+    if @breakOnInterrupt and @_intTaken?
+      return 'interrupt'
+
     return 'ok'
 
   _handleExecResult: (result) ->
     if result == 'error' or result == 'halt' or result == 'svc'
+      return true
+    if result == 'interrupt'
+      e = @_intTaken
+      @stopReason = "interrupt: #{e.label} at #{@formatAddrPlain(e.fromNIA)} -> #{@formatAddrPlain(e.toNIA)}"
+      return true
+    if result == 'interrupt-held'
+      h = @age.cpu.heldInterrupt()
+      @stopReason = "interrupt held before PSW swap: #{h.label} at #{@formatAddrPlain(h.fromNIA)}" +
+                    " (step or run swaps to #{@formatAddrPlain(h.toNIA)})"
       return true
     if result == 'watchpoint'
       wp = @_memWatchTriggered
@@ -249,12 +293,77 @@ export class GPCDebugger
     @executing = false
     @rl.prompt()
 
-  # ---------------------------------------------------------------
   # Display commands
-  # ---------------------------------------------------------------
   showRegisters: ->
     for line in formatRegDump(@age.cpu, @age.stepCount, { color: C })
       @out line
+
+  _durationStr: (us) ->
+    return "#{(us / 1e6).toFixed(3)} s" if us >= 1e6
+    return "#{(us / 1e3).toFixed(3)} ms" if us >= 1e3
+    return "#{us} us"
+
+  showTimers: ->
+    @out "#{C.bold}=== INTERVAL TIMERS ===#{C.reset}"
+    for n in [1, 2]
+      v = @age.cpu.timerValue(n)
+      us = @age.cpu.timerRemainingUs(n)
+      hi = @age.cpu.TIMER_HI(n)
+      pend = if @age.cpu.intPending["clk#{n}"] then "  #{C.red}PENDING#{C.reset}" else ""
+      @out "  #{C.cyan}TIMER #{n}#{C.reset}  #{v.asHex(8)}  timeout in #{@_durationStr(us)}" +
+           "  #{C.dim}(hi at PSA #{hi.asHex(4)})#{C.reset}#{pend}"
+
+  showInterrupts: ->
+    @showTimers()
+    mask = @age.cpu.psw.getIntMask()
+    mc = if @age.cpu.psw.getMachCheckMask() then 1 else 0
+    @out "#{C.bold}=== INTERRUPTS ===#{C.reset} #{C.dim}(system mask #{mask.asHex(2)}, machine check mask #{mc})#{C.reset}"
+    @out "#{C.dim}   KEY           CLS  MASK  OLD/NEW    STATE#{C.reset}"
+    for st in @age.cpu.intStatus()
+      lamp =
+        if st.held then "#{C.cyan}>#{C.reset}"
+        else if st.pending then "#{C.red}*#{C.reset}"
+        else ' '
+      maskStr = if st.maskBit? then "#{st.maskBit}:#{if st.enabled then 1 else 0}" else 'n/m'
+      vector = if st.hasHandler then "" else "  #{C.red}(no handler)#{C.reset}"
+      state =
+        if st.held
+          "HELD before PSW swap"
+        else if st.blocked
+          "pending, MASKED " + (if st.pends then "(held)" else "(will be dropped)")
+        else if st.pending
+          "pending"
+        else if not st.enabled
+          "masked off"
+        else
+          ""
+      @out " #{lamp} #{st.key.rpad(' ', 13)} #{st.cls.rpad(' ', 4)} #{maskStr.rpad(' ', 5)} " +
+           "#{st.old.asHex(4)}/#{st.new.asHex(4)}  #{state}#{vector}"
+    @out "#{C.dim}   `int raise <key>` to force one, `int mask <bit>` to unmask#{C.reset}"
+    sources = @age.gpc.iop?.group1Sources?() ? []
+    if sources.length > 0
+      @out "#{C.dim}   IOP interrupt register A (External 0): #{C.reset}#{C.cyan}#{sources.join(', ')}#{C.reset}"
+    held = @age.cpu.heldInterrupt()
+    if held?
+      @out "#{C.cyan}   HELD: #{held.label} decided at #{@formatAddrPlain(held.fromNIA)}; " +
+           "the PSW swap to #{@formatAddrPlain(held.toNIA)} happens on the next step or run#{C.reset}"
+    else if @age.cpu.intHold
+      @out "#{C.dim}   hold before PSW swap is on (`int hold off` to disable)#{C.reset}"
+
+  showInterruptLog: (count = 20) ->
+    log = @age.cpu.intLog ? []
+    @out "#{C.bold}=== ACCEPTED INTERRUPTS ===#{C.reset} #{C.dim}(#{@age.cpu.intCount} since power-on)#{C.reset}"
+    if log.length == 0
+      @out "  #{C.dim}(none)#{C.reset}"
+      return
+    for e in log.slice(-count)
+      label = @age.cpu.intCodeLabel(e.key, e.code)
+      codeStr =
+        if e.code? and label? then "  code #{e.code.asHex(4)} (#{label})"
+        else if e.code? then "  code #{e.code.asHex(4)}"
+        else ""
+      @out "  #{e.seq.toString().lpad(' ', 4)}  #{((e.timeNs / 1e6).toFixed(3) + ' ms').lpad(' ', 12)}  " +
+           "#{C.cyan}#{e.key.rpad(' ', 13)}#{C.reset}#{@formatAddrPlain(e.fromNIA)} -> #{@formatAddrPlain(e.toNIA)}#{codeStr}"
 
   showRegister: (name) ->
     name = name.toUpperCase()
@@ -408,8 +517,8 @@ export class GPCDebugger
     nia = @age.cpu.psw.getNIA()
     hw1 = @age.mainStorage.get16(nia)
     hw2 = @age.mainStorage.get16(nia + 1)
-    disasm = Instruction.toStr(hw1, hw2)
     [d, v] = Instruction.decode(hw1, hw2)
+    disasm = Instruction.toStr(hw1, hw2) + @icRelNote(d, v, nia)
     instrLen = if d? then d.len else 1
     hw2Str = if instrLen > 1 then hw2.asHex(4) else "    "
     sect = @formatSectionOffset(nia)
@@ -435,7 +544,8 @@ export class GPCDebugger
     @repl.addHelpCommand false
     @repl.showSuggestionAfterError true
 
-    # -- Execution --
+    # Execution
+    #
 
     @repl.command('step')
       .aliases(['s', 'si'])
@@ -483,12 +593,7 @@ export class GPCDebugger
       .action =>
         @age.stepCount = 0
         @outputBuffer = []
-        @age.halUCP.waitingForInput = false
-        @age.halUCP.pendingIocode = null
-        @age.halUCP.skipTrap = false
-        @age.halUCP.svcTrapped = false
-        @age.halUCP.active = false
-        @load()
+        @age.reset()
         @initIO()
         @info "Program reset"
         @showStatus()
@@ -512,7 +617,8 @@ export class GPCDebugger
         @info "Loaded: #{@fcmPath}"
         @showStatus()
 
-    # -- Breakpoints --
+    # Breakpoints
+    #
 
     @repl.command('break')
       .aliases(['b', 'bp'])
@@ -581,7 +687,8 @@ export class GPCDebugger
       .action =>
         @showBreakpoints()
 
-    # -- Memory watchpoints --
+    # Memory watchpoints
+    #
 
     @repl.command('mw')
       .aliases(['memwatch', 'watchmem'])
@@ -623,7 +730,8 @@ export class GPCDebugger
       .action =>
         @showMemWatchpoints()
 
-    # -- Watch expressions --
+    # Watch expressions
+    #
 
     @repl.command('watch')
       .alias('w')
@@ -664,7 +772,8 @@ export class GPCDebugger
       .action =>
         @showWatches()
 
-    # -- Registers --
+    # Registers
+    #
 
     @repl.command('reg')
       .aliases(['regs', 'registers'])
@@ -683,7 +792,8 @@ export class GPCDebugger
       .action (name, valStr) =>
         @setRegister(name, valStr)
 
-    # -- Disassembly --
+    # Disassembly
+    #
 
     @repl.command('disasm')
       .aliases(['d', 'u', 'unassemble'])
@@ -695,7 +805,8 @@ export class GPCDebugger
         count = parseInt(countStr, 10)
         @showDisasm(startAddr, count)
 
-    # -- Memory --
+    # Memory
+    #
 
     @repl.command('mem')
       .aliases(['x', 'examine'])
@@ -744,7 +855,8 @@ export class GPCDebugger
             @age.mainStorage.set16(addr + idx, val & 0xFFFF, false)
             @info "  #{(addr + idx).asHex(5)}: #{(val & 0xFFFF).asHex(4)}"
 
-    # -- Symbols & sections --
+    # Symbols & sections
+    #
 
     @repl.command('sym')
       .alias('symbol')
@@ -759,7 +871,8 @@ export class GPCDebugger
       .action =>
         @showSections()
 
-    # -- Trace --
+    # Trace
+    #
 
     @repl.command('trace')
       .argument('[state]', 'on or off')
@@ -774,7 +887,133 @@ export class GPCDebugger
         else
           @info "Trace is #{if @traceEnabled then 'on' else 'off'}"
 
-    # -- Info --
+    # Interrupts and interval timers
+    #
+
+    intCmd = @repl.command('int')
+      .aliases(['ints', 'interrupts'])
+      .description('Show interrupt state (int raise|clear|log|break|hold)')
+      .action => @showInterrupts()
+
+    intCmd.command('raise')
+      .argument('<key>', 'interrupt key (clk1 clk2 ext0..ext4 svc machineCheck programCheck instrMonitor)')
+      .argument('[code]', 'interrupt code in hex (program and machine check)')
+      .description('Force an interrupt pending, as the AGE could')
+      .action (key, codeStr) =>
+        opts = {}
+        if codeStr?
+          code = parseInt(codeStr.replace(/^0x/i, ''), 16)
+          if isNaN(code)
+            @error "Invalid hex code: #{codeStr}"
+            return
+          opts.code = code
+        try
+          spec = @age.cpu.raiseInterrupt(key, opts)
+        catch e
+          @error e.message
+          return
+        unless @age.cpu.intHasHandler(spec)
+          @error "no handler installed: the new PSW at #{spec.new.asHex(4)} is all zeros, " +
+                 "so the swap will send NIA to 0"
+
+        @age.cpu.checkInterrupts()
+        held = @age.cpu.heldInterrupt()
+        if @_intTaken?
+          @info "#{@_intTaken.label} taken: #{@formatAddrPlain(@_intTaken.fromNIA)} -> #{@formatAddrPlain(@_intTaken.toNIA)}"
+          @_intTaken = null
+        else if held?
+          @info "#{held.label} held before PSW swap at #{@formatAddrPlain(held.fromNIA)}" +
+                " (step or run swaps to #{@formatAddrPlain(held.toNIA)})"
+        else
+          @info "#{key} pending (masked off — it will be taken when unmasked)"
+
+    intCmd.command('clear')
+      .argument('<key>', 'interrupt key')
+      .description('Clear a pending interrupt latch')
+      .action (key) =>
+        try
+          @age.cpu.clearInterrupt(key)
+        catch e
+          @error e.message
+          return
+        @info "#{key} cleared"
+
+    intCmd.command('mask')
+      .argument('<bit>', 'PSW mask bit: 32-39 (system) or 45 (machine check)')
+      .argument('[state]', 'on or off (default: flip it)')
+      .description('Show or change an interrupt mask bit in the PSW')
+      .action (bitStr, state) =>
+        bit = parseInt(bitStr, 10)
+        unless (32 <= bit <= 39) or bit == 45
+          @error "Mask bit must be 32-39 (system) or 45 (machine check)"
+          return
+        psw = @age.cpu.psw
+        cur =
+          if bit == 45 then (if psw.getMachCheckMask() then true else false)
+          else (psw.getIntMask() & (1 << (39 - bit))) != 0
+        want = if state? then state.toLowerCase() in ['on', 'yes', 'true', '1'] else not cur
+        if bit == 45
+          psw.setMachCheckMask(if want then 1 else 0)
+        else
+          m = psw.getIntMask()
+          b = 1 << (39 - bit)
+          psw.setIntMask(if want then (m | b) else (m & ~b & 0xff))
+        @info "PSW mask bit #{bit} is #{if want then 'enabled' else 'masked off'}" +
+              " (system mask #{@age.cpu.psw.getIntMask().asHex(2)})"
+
+    intCmd.command('log')
+      .argument('[count]', 'entries to show', '20')
+      .description('Show recently accepted interrupts')
+      .action (countStr) => @showInterruptLog(parseInt(countStr, 10))
+
+    intCmd.command('break')
+      .argument('[state]', 'on or off')
+      .description('Break when an interrupt is accepted')
+      .action (state) =>
+        if state?
+          @breakOnInterrupt = state.toLowerCase() in ['on', 'yes', 'true', '1']
+        else
+          @breakOnInterrupt = not @breakOnInterrupt
+        @info "Break on interrupt is #{if @breakOnInterrupt then 'on' else 'off'}"
+
+    intCmd.command('hold')
+      .argument('[state]', 'on or off')
+      .description('Stop just before an interrupt swaps PSWs (step/run then swaps)')
+      .action (state) =>
+        want =
+          if state? then state.toLowerCase() in ['on', 'yes', 'true', '1']
+          else not @age.cpu.intHold
+        @age.cpu.setInterruptHold(want)
+        @info "Hold before PSW swap is #{if want then 'on' else 'off'}"
+        if not want and @age.cpu.intArmed?
+          @info "(one interrupt is still held; step or run takes it)"
+
+    @repl.command('timer')
+      .aliases(['timers', 'ctr'])
+      .argument('[n]', 'timer number (1 or 2)')
+      .argument('[value]', 'hex value to load')
+      .description('Show or load an interval timer')
+      .action (nStr, valStr) =>
+        unless nStr?
+          @showTimers()
+          return
+        n = parseInt(nStr, 10)
+        unless n == 1 or n == 2
+          @error "Timer must be 1 or 2"
+          return
+        unless valStr?
+          us = @age.cpu.timerRemainingUs(n)
+          @out "  TIMER #{n} = #{@age.cpu.timerValue(n).asHex(8)} (timeout in #{@_durationStr(us)})"
+          return
+        v = parseInt(valStr.replace(/^0x/i, ''), 16)
+        if isNaN(v)
+          @error "Invalid hex value: #{valStr}"
+          return
+        @age.cpu.loadTimer(n, v)
+        @info "TIMER #{n} = #{@age.cpu.timerValue(n).asHex(8)} (timeout in #{@_durationStr(@age.cpu.timerRemainingUs(n))})"
+
+    # Info
+    #
 
     infoCmd = @repl.command('info')
       .alias('i')
@@ -805,7 +1044,8 @@ export class GPCDebugger
       .description('Show section map')
       .action => @showSections()
 
-    # -- Misc --
+    # Misc
+    #
 
     @repl.command('where')
       .aliases(['loc', 'here'])
@@ -936,7 +1176,7 @@ export class GPCDebugger
         @repl.parse tokens, { from: 'user' }
       catch e
         if e.code == 'commander.helpDisplayed' or e.code == 'commander.version'
-          null  # expected — help/version was displayed
+          null  # expected: help or version was displayed
         else unless e.code
           @error "Internal error: #{e.message}"
           if @traceEnabled
@@ -970,10 +1210,15 @@ export addCommand = (program) ->
   cmd
     .option('--max-steps <n>', 'max instructions before auto-stop', '10000000')
     .option('--trace', 'enable instruction trace at startup')
+    .option('--break-on-interrupt', 'stop when an interrupt is accepted', false)
+    .option('--hold-interrupt', 'stop just before an interrupt swaps PSWs', false)
     .action (fcmPath, o) ->
+      checkFCMFits(fcmPath, o.machine)
       debugger_ = new GPCDebugger(Object.assign({}, o, {
         fcmPath
         maxSteps: parseInt(o.maxSteps, 10)
         traceEnabled: o.trace or false
+        breakOnInterrupt: o.breakOnInterrupt or false
+        holdInterrupt: o.holdInterrupt or false
       }))
       debugger_.start()

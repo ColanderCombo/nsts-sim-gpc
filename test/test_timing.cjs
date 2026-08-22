@@ -31,7 +31,8 @@ async function bundle(entry) {
     return require(out);
 }
 
-// ---- assertion harness ----
+// assertion harness
+//
 let pass = 0, fail = 0;
 function check(label, got, want) {
     if (got === want) { pass++; }
@@ -51,31 +52,37 @@ function check(label, got, want) {
         return cpu.timeNs - t0;
     }
 
-    // ---- RR: AR R1,R2 = .250 us ----
+    // RR: AR R1,R2 = .250 us
+    //
     let cpu = new CPU();
     check('AR RR normal', execTime(cpu, 0x01E2), 250);
 
-    // ---- SRS short: A R1,D2(B2)  x=1 d=2 b=0 = .250 us ----
+    // SRS short: A R1,D2(B2)  x=1 d=2 b=0 = .250 us
+    //
     cpu = new CPU();
     cpu.r(0).set32(0x10000000);          // base 0x1000
     check('A SRS normal', execTime(cpu, 0x0108), 250);
 
-    // ---- RS indexed, X!=0 IA=0 I=0 (plain indexing): normal = .250 us ----
+    // RS indexed, X!=0 IA=0 I=0 (plain indexing): normal = .250 us
+    //
     cpu = new CPU();
     cpu.r(2).set32(0);                   // index reg X=2 (value 0)
     check('A RS indexed normal', execTime(cpu, 0x04F7, 0x4100), 250);
 
-    // ---- RS indexed, X=0 IA=1 I=1: auto storage modification = 5.5 us ----
+    // RS indexed, X=0 IA=1 I=1: auto storage modification = 5.5 us
+    //
     cpu = new CPU();
     cpu.ram.set32(0x100, 0x03000002);    // indirect fullword: addr 0x300, mod 2
     check('A auto storage mod', execTime(cpu, 0x04F7, 0x1900), 5500);
 
-    // ---- RS indexed, X!=0 IA=0 I=1: auto indexing = 7.25 us ----
+    // RS indexed, X!=0 IA=0 I=1: auto indexing = 7.25 us
+    //
     cpu = new CPU();
     cpu.r(1).set32(0x00800005);          // index 0x80, modifier 5
     check('A auto indexing', execTime(cpu, 0x04F7, 0x2900), 7250);
 
-    // ---- RS indexed, X!=0 IA=1 I=1: double indirection by (XC,C) ----
+    // RS indexed, X!=0 IA=1 I=1: double indirection by (XC,C)
+    //
     // pointer fullword at 0x100: address 0x0300, XC=bit20, C=bit21
     const diCases = [
         [0, 0, 4500], [0, 1, 4250], [1, 0, 4250], [1, 1, 4250],
@@ -88,39 +95,70 @@ function check(label, got, want) {
               execTime(cpu, 0x04F7, 0x3900), want);
     }
 
-    // ---- BC: branch taken 1.25 us, not taken .250 us ----
+    // BC: branch taken 1.25 us, not taken .250 us
+    //
     cpu = new CPU();
     check('BC taken (M1=111)', execTime(cpu, 0xC7F3, 0x0200), 1250);
     check('BC NIA after taken', cpu.psw.getNIA(), 0x200);
     cpu = new CPU();
     check('BC not taken (M1=000)', execTime(cpu, 0xC0F3, 0x0200), 250);
 
-    // ---- BC with double indirection XC=0 C=0: 4.25 us regardless of BT ----
+    // BC with double indirection XC=0 C=0: 4.25 us regardless of BT
+    //
     cpu = new CPU();
     cpu.r(1).set32(0);
     cpu.ram.set32(0x100, 0x03000000);
     check('BC double indirection', execTime(cpu, 0xC7F7, 0x3900), 4250);
 
-    // ---- BALR: taken 3.5 us, not taken (R2=0) 4.5 us ----
+    // BALR: taken 3.5 us, not taken (R2=0) 4.5 us
+    //
     cpu = new CPU();
     cpu.r(2).set32(0x04000000);          // branch target 0x400
     check('BALR taken', execTime(cpu, 0xE1E2), 3500);
     cpu = new CPU();
     check('BALR not taken', execTime(cpu, 0xE1E0), 4500);
 
-    // ---- SLL R1,5: .675 + 0.1*5 = 1.175 us ----
+    // SLL R1,5: .675 + 0.1*5 = 1.175 us
+    //
     cpu = new CPU();
     cpu.r(1).set32(1);
     check('SLL count 5', execTime(cpu, 0xF114), 1175);
 
-    // ---- MR R1 odd: 2.15 us (vs 2.40 even) ----
+    // MR R1 odd: 2.15 us (vs 2.40 even)
+    //
     cpu = new CPU();
     cpu.r(2).set32(0);
     check('MR R1 even', execTime(cpu, 0x42E2), 2400);   // MR R2,R2 (x=2)
     cpu = new CPU();
     check('MR R1 odd', execTime(cpu, 0x43E2), 2150);    // MR R3,R2 (x=3)
 
-    // ---- Interval timer: 1 tick per accumulated microsecond ----
+    // MR/M with an ODD R1 keep the HIGH 32 BITS OF THE SAME PRODUCT
+    //
+    cpu = new CPU();
+    cpu.r(3).set32(0x20000000);          // 0.25
+    cpu.r(2).set32(0x40000000);          // 0.5
+    execTime(cpu, 0x43E2);               // MR R3,R2 -- R1 = 3, ODD
+    check('MR R1 odd keeps the product high half', cpu.r(3).get32() >>> 0, 0x10000000);
+
+    // The even form puts the same product across the pair, which is the
+    // reference the odd form's high half has to agree with.
+    cpu = new CPU();
+    cpu.r(2).set32(0x20000000);
+    cpu.r(4).set32(0x40000000);
+    execTime(cpu, 0x42E4);               // MR R2,R4 -- R1 = 2, EVEN
+    check('MR R1 even high half', cpu.r(2).get32() >>> 0, 0x10000000);
+    check('MR R1 even low half', cpu.r(3).get32() >>> 0, 0x00000000);
+
+    // A small integer multiplier, whose top halfword is zero.  
+    cpu = new CPU();
+    cpu.r(3).set32(0x0CCCCCCD); // 1/10.
+    cpu.r(2).set32(10);
+    execTime(cpu, 0x43E2);               // MR R3,R2 -- R1 odd, multiplier 10
+    check('MR R1 odd by a small integer is not zero (top halfword is zero)',
+          cpu.r(3).get32() !== 0, true);
+
+    // Interval timer: 1 tick per accumulated microsecond
+    //
     cpu = new CPU();
     cpu.counter1 = 2;
     cpu.ram.set16(0x00B0, 0, false);
@@ -137,18 +175,27 @@ function check(label, got, want) {
     check('counter2 high decremented', cpu.ram.get16(0x00B1), 4);
     check('clk2 not pending', cpu.intPending.clk2, false);
 
-    // ---- ICR write counter 1 loads it and clears the pending latch ----
+    // ICR write counter 1 loads it and clears the pending latch
+    //
     cpu = new CPU();
     cpu.intPending.clk1 = true;
     cpu.r(1).set32(0x00050010);          // hi=5, lo=0x10
     cpu.r(2).set32(0x40000000);          // cmd 01000 = write counter 1
     const dt = execTime(cpu, 0xD9E2);    // ICR R1,R2
-    check('ICR time', dt, 5500);         // load counter = 5.5us (POO p.10-3)
+    // Load counter 1 = 3.5 us.  This was 5.5 (a row of the p.10-3 table that
+    // belongs to a different counter set; the counter rows are not legible in
+    // our scan), and the flight self-test arbitrates: its interval timer
+    // tolerance check writes a count, reads it straight back, and demands
+    // 3-4 counts of decay.  At 5.5 the machine reads one count too few and
+    // reports both clocks out of tolerance; at 3.5 the self-test passes
+    // clean.  See the derivation at the ICR site in cpu_instr.coffee.
+    check('ICR time', dt, 3500);
     check('ICR loads high halfword', cpu.ram.get16(0x00B0), 5);
-    check('ICR loads low halfword', cpu.counter1, 0x10 - 5); // 5.5us elapsed
+    check('ICR loads low halfword', cpu.counter1, 0x10 - 3); // 3.5us elapsed
     check('ICR clears clk1 pending', cpu.intPending.clk1, false);
 
-    // ---- LXAR/LXA early out: equal new/current DSE -> -1.25 us ----
+    // LXAR/LXA early out: equal new/current DSE -> -1.25 us
+    //
     cpu = new CPU();
     cpu.r(2).set32(0x12340000);          // DSE 0 == current DSE(R1) 0
     check('LXAR early out', execTime(cpu, 0x41EA), 2250);
@@ -156,7 +203,8 @@ function check(label, got, want) {
     cpu.r(2).set32(0x12340003);          // DSE 3 != current 0
     check('LXAR no early out', execTime(cpu, 0x41EA), 3500);
 
-    // ---- MVH: PSW-DSR destination path runs 2.25 us faster ----
+    // MVH: PSW-DSR destination path runs 2.25 us faster
+    //
     cpu = new CPU();
     cpu.r(1).set32(0x81000004);          // dest bit0=1 (DSR path), count 4
     cpu.r(2).set32(0x02000000);          // source 0x0200
@@ -166,12 +214,14 @@ function check(label, got, want) {
     cpu.r(2).set32(0x02000000);
     check('MVH DSE dest, count 4', execTime(cpu, 0x69EA), 13750);  // 10.25+3.5
 
-    // ---- ME short-SRS form: 5.75 us regardless of R1 parity ----
+    // ME short-SRS form: 5.75 us regardless of R1 parity
+    //
     cpu = new CPU();
     cpu.r(0).set32(0x10000000);
     check('ME SRS even R1', execTime(cpu, 0x6208), 5750);
 
-    // ---- AP-101 C/M model (xtc, IBM 75-A97-001 sect 2.4) ----
+    // AP-101 C/M model (xtc, IBM 75-A97-001 sect 2.4)
+    //
     function cModel() { const c = new CPU(); c.model = 'C'; return c; }
 
     // AR: Even 1.2, Odd NOK 0.8, Odd ~NOK (after branch) 1.2
@@ -209,7 +259,7 @@ function check(label, got, want) {
     cpu.ram.set32(0x100, 0x03000000);
     check('C: A indirect post-indexed +1.6', execTime(cpu, 0x04F7, 0x3900), 3400);
 
-    // op with no xtc (MVH: not on the original AP-101) falls back to the
+    // op with no xtc (MVH: not on the AP-101-B) falls back to the
     // S-model chain (here the opExecT override: negative count = 7.5us)
     cpu = cModel();
     cpu.r(1).set32(0x00008000);          // negative move count
@@ -234,7 +284,8 @@ function check(label, got, want) {
     cpu.r(3).set32(0x00000000);
     check('S: SUM count 3', execTime(cpu, 0x9AE9), 7500);
 
-    // ---- RTPacer: wait-state wakeup via counter interrupt ----
+    // RTPacer: wait-state wakeup via counter interrupt
+    //
     const { RTPacer } = await bundle('rtpacer.coffee');
 
     function makeWaitingCPU(counter1) {
@@ -245,9 +296,9 @@ function check(label, got, want) {
         c.psw._setField2(c.psw.pack2.desc.f.m, 0x80);
         c.counter1 = counter1;
         c.ram.set16(0x00B0, 0, false);
-        // CLK1 new PSW at 0x64: NIA=0x500, run state (w=1), all masked
+        // CLK1 new PSW at 0x64: NIA=0x500, process state (bit 46 = 0), all masked
         c.ram.set32(0x0064, 0x05000000);
-        c.ram.set32(0x0066, 0x00020000);
+        c.ram.set32(0x0066, 0x00000000);
         return c;
     }
 

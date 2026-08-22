@@ -43,12 +43,12 @@ export class PackedBits
 
     getMask: (desc) ->
         w1 = desc.split('/')[0]
-        mask = w1.replace(/[01]/g,'1').replace(/[a-z_]/g,'0')
+        mask = w1.replace(/[01]/g,'1').replace(/[a-zA-Z_]/g,'0')
         return mask.bin()
 
     getMaskedDescVal: (desc) ->
         w1 = desc.split('/')[0]
-        masked = w1.replace(/[a-z_]/g,'0')
+        masked = w1.replace(/[a-zA-Z_]/g,'0')
         return masked.bin()
 
     makeFieldDesc: (s,fname) ->

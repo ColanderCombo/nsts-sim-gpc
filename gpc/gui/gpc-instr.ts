@@ -5,19 +5,23 @@ import 'com/util';
 import Instruction from 'gpc/cpu_instr';
 
 /**
- * <gpc-instr> — Displays decoded instruction bit-field diagrams
+ * <gpc-instr>: Displays decoded instruction bit-field diagrams
  * for the instruction at the current NIA.
  *
  * Properties (set via JS):
- *   cpu — CPU instance (reads NIA, mainStorage, registers)
+ *   cpu -- CPU instance (reads NIA, mainStorage, registers)
  *
  * Public methods:
- *   refresh() — re-decode instruction at NIA and re-render
+ *   refresh() -- re-decode instruction at NIA and re-render
  */
 @customElement('gpc-instr')
 export class GpcInstr extends LitElement {
 
   cpu: any = null;
+
+  firstUpdated(): void {
+    this.refresh();
+  }
 
   refresh(): void {
     const container = this.shadowRoot?.getElementById('content');

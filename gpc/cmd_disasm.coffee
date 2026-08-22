@@ -4,6 +4,7 @@
 #
 import {AGEHarness} from 'gpc/ageharness'
 import {BatchRunner} from 'gpc/cmd_run'
+import {checkFCMFits} from 'gpc/machine'
 
 parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
 
@@ -17,6 +18,7 @@ export addCommand = (program) ->
   cmd
     .option('--end <addr>', 'end address in hex')
     .action (fcmPath, o) ->
+      checkFCMFits(fcmPath, o.machine)
       runner = new BatchRunner(Object.assign({}, o, { fcmPath }))
       endAddr = if o.end then parseHex(o.end) else null
       entryPoint = if o.start then parseHex(o.start) else null

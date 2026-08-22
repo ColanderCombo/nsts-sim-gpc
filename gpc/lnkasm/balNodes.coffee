@@ -45,14 +45,14 @@
         # the intermediate stages of evaluation. The assembler considers
         # relocatable terms as paired under the following conditions:
         #
-        # • The paired terms must be defined in the same control section
+        #   • The paired terms must be defined in the same control section
         #   of a source module (that is, have the same relocatability
         #   attribute).
-        # • The paired terms must have opposite signs after all unary
+        #   • The paired terms must have opposite signs after all unary
         #   operators are resolved. In an expression, the paired terms
         #   do not have to be contiguous (that is, other terms can come
         #   between the paired terms).
-        # • The value represented by the paired terms is absolute.
+        #   • The value represented by the paired terms is absolute.
         #
         # The following examples illustrate absolute expressions. A is an
         # absolute term; X and Y are relocatable terms with the same

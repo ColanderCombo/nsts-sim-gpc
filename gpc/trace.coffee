@@ -5,7 +5,7 @@
 # Used by both batch (plain) and debug (ANSI color) CLI modes.
 #
 # The color palette (C = ANSI, P = no-op) is selected by the caller and
-# applied unconditionally — since P's fields are all empty strings, the same
+# applied unconditionally: since P's fields are all empty strings, the same
 # format string works for both without branching.
 
 require 'com/util'
@@ -24,7 +24,7 @@ C =
   white:   '\x1b[37m'
   bgRed:   '\x1b[41m'
 
-# No-op color palette — every field an empty string.
+# No-op color palette: every field an empty string.
 # Auto-generated from C's keys so we can't get out of sync.
 P = {}
 P[k] = '' for own k of C
@@ -67,7 +67,7 @@ export formatRegDump = (cpu, step, opts = {}) ->
 
   lines.push "#{c.bold}--- Registers (step #{step}, bank #{grSet}) ---#{c.reset}"
 
-  # General registers — two rows of 4
+  # General registers: two rows of 4
   for row in [0, 4]
     parts = []
     for i in [row..row+3]
@@ -76,7 +76,7 @@ export formatRegDump = (cpu, step, opts = {}) ->
       parts.push "#{c.cyan}#{name}#{c.reset}=#{(val >>> 0).asHex(8)}"
     lines.push "  " + parts.join("  ")
 
-  # Floating-point registers — two rows of 4
+  # Floating-point registers: two rows of 4
   for row in [0, 4]
     parts = []
     for i in [row..row+3]

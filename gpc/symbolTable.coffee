@@ -54,7 +54,7 @@ export class SymbolTable
         if verbose
           process.stderr.write "SymbolTable: Loaded symtypes from #{symTypesPath} (#{Object.keys(@symTypes).length} entries)\n"
       catch
-        # No symtypes file — use defaults
+        # No symtypes file: use defaults
 
       @symTypes['IOBUF'] ?= { type: 'ascii', size: 43 }
 

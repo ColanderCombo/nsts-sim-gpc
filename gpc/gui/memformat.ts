@@ -1,5 +1,5 @@
 /**
- * memformat.ts — Shared utilities for formatting memory values as typed strings.
+ * memformat.ts: Shared utilities for formatting memory values as typed strings.
  *
  * Used by gpc-watch (symbol watch panel) and gpc-memory (selection tooltip).
  */

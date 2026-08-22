@@ -10,6 +10,7 @@ path = require 'path'
 {spawn} = require 'child_process'
 
 import {AGEHarness} from 'gpc/ageharness'
+import {checkFCMFits} from 'gpc/machine'
 
 export addCommand = (program) ->
   cmd = program.command('gui')
@@ -19,8 +20,12 @@ export addCommand = (program) ->
   AGEHarness.addOptions(cmd)
 
   cmd
+    .option('--real-time', 'start with real-time pacing on (toggleable from the toolbar)')
+    .option('--rt-factor <x>', 'real-time speed multiplier (2 = 2x real speed)')
+    .option('--rt-idle-timeout <s>', 'stop after this many wall seconds in wait state with no wakeup')
     .option('--no-sandbox', 'pass --no-sandbox to Electron (required on some Linux systems)')
     .action (fcmPath, o) ->
+      checkFCMFits(fcmPath, o.machine)
       # Resolve Electron binary and main.js relative to this bundle's location.
       # gpc.js lives at ext/sim/dist/gpc.js, so __dirname = ext/sim/dist/.
       simDir = path.resolve(__dirname, '..')
@@ -33,6 +38,9 @@ export addCommand = (program) ->
       cliOpts = Object.assign(AGEHarness.optsFrom(o), {
         fcmPath: if fcmPath then path.resolve(fcmPath) else null
         symbols: if o.symbols then path.resolve(o.symbols) else null
+        realTime: o.realTime
+        rtFactor: o.rtFactor
+        rtIdleTimeout: o.rtIdleTimeout
       })
       encoded = Buffer.from(JSON.stringify(cliOpts)).toString('base64')
 

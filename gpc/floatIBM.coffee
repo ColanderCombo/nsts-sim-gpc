@@ -130,7 +130,7 @@ export class FloatIBM
     @data8[4] = @data8[5] = @data8[6] = @data8[7] = 0
 
   setFrom64: (x1,x2) ->
-    # Ensure unsigned 32-bit interpretation — get32() may return signed values
+    # Ensure unsigned 32-bit interpretation: get32() may return signed values
     x1 = x1 >>> 0
     x2 = x2 >>> 0
     @data8[0] = (x1 >>> 24) & 0xff
@@ -242,16 +242,13 @@ export class FloatIBM
 
 
 
-# =====================================================================
-# POO 8.11 anomaly:
+# POO 8.11 anomaly
 #
-# The HARDWARE bug: when two operands' fractions differ by exactly
-# x'80 0000' after prealignment (in 56-bit fraction form), the AP-101S
-# compare instruction reports them as equal even though they are not.
+# When two operands' fractions differ by exactly x'80 0000' after
+# prealignment (in 56-bit fraction form), the AP-101S compare instruction
+# reports them as equal even though they are not.
 #
-# Returns CC: 0 = equal, 1 = a > b, 3 = a < b.
-#
-# Used by CER/CE/CEDR/CED in cpu_instr.coffee.
+# Returns CC: 0 = equal, 1 = a > b, 3 = a < b.  Used by CER/CE/CEDR/CED.
 export compE_anomalous = (x, y) ->
   # Snapshot fields up-front so we never mutate the caller's operands.
   aSign = x.gSign() < 0
@@ -315,11 +312,9 @@ export compE_anomalous = (x, y) ->
   return (if rSign then 3 else 1)
 
 
-# =====================================================================
 # Exception-aware DP arithmetic.  Returns {result: FloatIBM, exc: int}.
-# Exception codes match POO 2.5.2 interrupt codes — same numeric
-# values used by cpu.coffee's signal* methods.
-# =====================================================================
+# Exception codes match POO 2.5.2 interrupt codes: the same numeric
+# values used by the CPU's signal* methods.
 
 export FP_EXC =
   OK:               0
@@ -331,7 +326,7 @@ export FP_EXC =
 
 export addE = (x, y) -> _addsubE(x, y, false)
 export subE = (x, y) -> _addsubE(x, y, true)
-# compE never raises per POO §8.11 — discard exc, return result only.
+# compE never raises per POO 8.11, so discard exc and return the result.
 # (Compare instructions use _addsubE(true) directly to inspect the
 # fraction sign; this wrapper exists for callers that want a plain
 # subtract-as-FloatIBM convenience.)
@@ -343,11 +338,11 @@ export compE = (x, y) -> _addsubE(x, y, true).result
 # Result/exceptions per POO 8.8:
 #   OK           - result valid; caller writes back, sets CC.
 #   EXP_OVERFLOW - result holds the would-be-wrapped value for trace.
-#                  Caller MUST NOT write back ("operation terminated").
-#   EXP_UNDERFLOW- result = true zero.  Caller writes IFF PSW exp-
-#                  underflow mask bit 22 is 0; signals always.
-#   SIGNIFICANCE - result = true zero.  Caller ALWAYS writes back,
-#                  CC=00.  Mask bit 23 only gates the interrupt.
+#                  Caller must not write back ("operation terminated").
+#   EXP_UNDERFLOW- result = true zero.  Caller writes back only when PSW
+#                  exp-underflow mask bit 22 is 0; signals always.
+#   SIGNIFICANCE - result = true zero.  Caller always writes back, CC 00.
+#                  Mask bit 23 only gates the interrupt.
 _addsubE = (xIn, yIn, subtract_b) ->
   # Snapshot fields up-front so we never mutate the caller's operands.
   aSign = xIn.gSign() < 0
@@ -364,7 +359,7 @@ _addsubE = (xIn, yIn, subtract_b) ->
   bZero = bMant.isZero()
 
   if not bZero and not aZero
-    # Both non-zero — align with guard digit, then signed add.
+    # Both non-zero: align with guard digit, then signed add.
     if aExp == bExp
       aMant = aMant.shiftLeft(4)
       bMant = bMant.shiftLeft(4)
@@ -377,7 +372,7 @@ _addsubE = (xIn, yIn, subtract_b) ->
         else
           aMant = aMant.shiftRightUnsigned(shift * 4)
         if aMant.isZero()
-          # a effectively zero — result is just b (no guard).
+          # a effectively zero: result is just b (no guard).
           aSign = bSign
           aMant = bMant
           return _packAddsubResult(aSign, aExp, aMant, false)
@@ -390,7 +385,7 @@ _addsubE = (xIn, yIn, subtract_b) ->
         else
           bMant = bMant.shiftRightUnsigned(shift * 4)
         if bMant.isZero()
-          # b effectively zero — keep a (no guard).
+          # b effectively zero: keep a (no guard).
           return _packAddsubResult(aSign, aExp, aMant, false)
       aMant = aMant.shiftLeft(4)
 
@@ -399,7 +394,7 @@ _addsubE = (xIn, yIn, subtract_b) ->
       rSign = aSign
       rMant = aMant.add(bMant)
     else if aMant.equals(bMant)
-      # True cancellation — SIGNIFICANCE, true zero.
+      # True cancellation: SIGNIFICANCE, true zero.
       return {result: new FloatIBM(), exc: FP_EXC.SIGNIFICANCE}
     else if aMant.greaterThan(bMant)
       rSign = aSign
@@ -437,7 +432,7 @@ _addsubE = (xIn, yIn, subtract_b) ->
     aSign = bSign
     aExp  = bExp
     aMant = bMant
-  # (else: a not zero, b zero — keep a unchanged.)
+  # (else: a not zero, b zero, so keep a unchanged.)
   return _packAddsubResult(aSign, aExp, aMant, true)
 
 # Pack addsub helper.  Returns {result, exc}.  needsRenorm=true means
@@ -481,7 +476,7 @@ export mulE = (x, y) ->
 
   resultSign = x.gSign() * y.gSign()
 
-  # Renormalize both operands so each has top hex set — matches the C
+  # Renormalize both operands so each has top hex set, matching the C
   # reference's IBM_DP_RENORMALIZE_56.  Operating on biased characteristic.
   xBiasedExp = x.gExp() + 64
   yBiasedExp = y.gExp() + 64
@@ -512,11 +507,11 @@ export mulE = (x, y) ->
   hi = wk.shiftRightUnsigned(32).add(aHi.multiply(bHi))
 
   if hi.getHighBitsUnsigned() & 0x0000F000
-    # Top hex of product at bits 60..63 of `hi`'s view — pack with <<8.
+    # Top hex of product at bits 60..63 of `hi`'s view; pack with <<8.
     rMant = hi.shiftLeft(8).or(Long.fromBits(v >>> 24, 0, true))
     rBiasedExp = xBiasedExp + yBiasedExp - 64
   else
-    # One hex below — pack with <<12 and decrement biased exp by 1.
+    # One hex below: pack with <<12 and decrement biased exp by 1.
     rMant = hi.shiftLeft(12).or(Long.fromBits(v >>> 20, 0, true))
     rBiasedExp = xBiasedExp + yBiasedExp - 65
 
@@ -537,14 +532,33 @@ export mulE = (x, y) ->
   return {result, exc: FP_EXC.OK}
 
 
-# AP-101S 8.17 quasi-extended multiply (MEDR/MED).  Pre-truncate each
+# The AP-101 C/M's quasi-extended operand preparation, shared by the
+# extended multiply and the extended divide.  IBM-6246156B 8-25: the
+# quasi-extended operands are formed "by truncating the fraction portion
+# to 31 bits and then rounding into the 31st bit based upon the 32nd
+# bit".  Takes and returns [56-bit fraction, biased characteristic] --
+# a round that carries out of the fraction renormalizes and bumps the
+# characteristic.
+QE_ROUND_BIT = Long.fromBits(0x01000000, 0, true)         # 1 << 24
+QE_CLEAR_BOT = Long.fromBits(0xFE000000, 0xFFFFFFFF, true) # ~((1<<25)-1)
+QE_CARRY_OUT = Long.fromBits(0, 0x01000000, true)         # 1 << 56
+
+qeRound31 = (mant, biasedExp) ->
+  rounded = mant.add(QE_ROUND_BIT)
+  if not rounded.and(QE_CARRY_OUT).isZero()
+    rounded = rounded.shiftRightUnsigned(4)
+    biasedExp += 1
+  [rounded.and(QE_CLEAR_BOT), biasedExp]
+
+
+# AP-101 C/M quasi-extended multiply (MEDR/MED).  Pre-truncate each
 # operand's 56-bit mantissa to 31 bits with round-into-bit-31 from
 # bit 32.  Then multiply at the truncated precision.  Returns
 # {result, exc} like mulE.  Mirrors tools/floatIBM/ibmFloat.c
-# ibm_dp_mul_qe_exc.
+# ibm_dp_mul_qe_exc.  The AP-101S does not do this; see mulQeS.
 #
 # POO programming note: rounding can cause exponent overflow (e.g.
-# 7FFFFFFFFF000000 rounds up to 8000000000000000 → char bumps).
+# 7FFFFFFFFF000000 rounds up to 8000000000000000, so the char bumps).
 mulQeE = (x, y) ->
   xFrac = x.gFracBits().toUnsigned()
   yFrac = y.gFracBits().toUnsigned()
@@ -561,21 +575,8 @@ mulQeE = (x, y) ->
     yFrac = yFrac.shiftLeft(4)
     yBiasedExp -= 1
 
-  # Round to 31 bits: add 1<<24, then if carry into bit 56 shift right 4
-  # and bump exp.  Then clear bottom 25 bits.
-  ROUND_BIT = Long.fromBits(0x01000000, 0, true)        # 1 << 24
-  CLEAR_BOT = Long.fromBits(0xFE000000, 0xFFFFFFFF, true) # ~((1<<25)-1)
-  CARRY_OUT = Long.fromBits(0, 0x01000000, true)        # 1 << 56
-
-  roundOnce = (mant, biasedExp) ->
-    rounded = mant.add(ROUND_BIT)
-    if not rounded.and(CARRY_OUT).isZero()
-      rounded = rounded.shiftRightUnsigned(4)
-      biasedExp += 1
-    [rounded.and(CLEAR_BOT), biasedExp]
-
-  [xFrac, xBiasedExp] = roundOnce(xFrac, xBiasedExp)
-  [yFrac, yBiasedExp] = roundOnce(yFrac, yBiasedExp)
+  [xFrac, xBiasedExp] = qeRound31(xFrac, xBiasedExp)
+  [yFrac, yBiasedExp] = qeRound31(yFrac, yBiasedExp)
 
   if xBiasedExp > 127 or yBiasedExp > 127
     result = new FloatIBM()
@@ -599,12 +600,16 @@ mulQeE = (x, y) ->
   rMant = null
   rBiasedExp = 0
   if not target.and(Long.fromBits(0, 0x00F00000, true)).isZero()
-    # Top hex (bits 52..55) of target is set — already normalized.
+    # Top hex (bits 52..55) of target is set: already normalized.
     rMant = target.and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
     rBiasedExp = xBiasedExp + yBiasedExp - 64
   else
-    # Shift up one hex digit; equivalent to target<<4 = prod>>2.
-    rMant = prod.shiftRightUnsigned(2).and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
+    # Postnormalize one hex digit.  The C/M shifts the 62-bit intermediate
+    # and fills the vacated low-order positions with ZEROS -- it does not
+    # reach back into the product for four more bits.  Taking prod>>2
+    # here did, and came out 1 ulp high on every postnormalizing
+    # product.
+    rMant = target.shiftLeft(4).and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
     rBiasedExp = xBiasedExp + yBiasedExp - 65
 
   if rBiasedExp > 127
@@ -619,21 +624,102 @@ mulQeE = (x, y) ->
   result.sFrac(rMant)
   return {result, exc: FP_EXC.OK}
 
-export {mulQeE}
+# AP-101S extended multiply (MEDR/MED), IBM-85-C67-001 8.x:
+#
+#   "Fraction multiplication is accomplished by multiplying the three most
+#    significant fullword partial sum pairs and adding the results (to 68
+#    bits), followed by normalization and truncation to 56 bits."
+#
+# The two 56-bit fractions split into 28-bit halves (A:B and C:D); the
+# three most significant partial products are AC, AD and BC, and BD -- the
+# least significant -- does not participate.  That is the whole difference
+# from the AP-101 C/M, which instead throws away everything below 31 bits
+# of each OPERAND before multiplying (mulQeE above).  The S keeps far
+# more: it lands within an ulp of the exact product where the C/M is
+# millions of ulps out, which is why the two machines visibly disagree.
+mulQeS = (x, y) ->
+  xFrac = x.gFracBits().toUnsigned()
+  yFrac = y.gFracBits().toUnsigned()
+  if xFrac.isZero() or yFrac.isZero()
+    return {result: new FloatIBM(), exc: FP_EXC.OK}
+
+  resultSign = x.gSign() * y.gSign()
+  xBiasedExp = x.gExp() + 64
+  yBiasedExp = y.gExp() + 64
+  while not (xFrac.getHighBitsUnsigned() & 0x00F00000)
+    xFrac = xFrac.shiftLeft(4)
+    xBiasedExp -= 1
+  while not (yFrac.getHighBitsUnsigned() & 0x00F00000)
+    yFrac = yFrac.shiftLeft(4)
+    yBiasedExp -= 1
+
+  MASK28 = Long.fromBits(0x0FFFFFFF, 0, true)
+  MASK56 = Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true)
+  a = xFrac.shiftRightUnsigned(28)
+  b = xFrac.and(MASK28)
+  c = yFrac.shiftRightUnsigned(28)
+  d = yFrac.and(MASK28)
+
+  # The 112-bit product is AC<<56 + (AD+BC)<<28 + BD, and BD -- the least
+  # significant partial product -- is the one that does not participate.
+  # The hardware accumulates 68 bits of that; 64 is carried here (the top
+  # of the product, = product >> 48), which is all the postnormalization
+  # can reach: two normalized fractions multiply to at least 1/256, so at
+  # most one hex digit of left shift is ever needed, and eight guard bits
+  # cover it.  A 68-bit intermediate does not fit a 64-bit Long.
+  ac = a.multiply(c)
+  mid = a.multiply(d).add(b.multiply(c))
+  inter = ac.shiftLeft(8).add(mid.shiftRightUnsigned(20))
+
+  if inter.isZero()
+    return {result: new FloatIBM(), exc: FP_EXC.OK}
+
+  frac = inter.shiftRightUnsigned(8).and(MASK56)
+  rBiasedExp = xBiasedExp + yBiasedExp - 64
+  if not (frac.getHighBitsUnsigned() & 0x00F00000)
+    # Postnormalize one hex digit within the intermediate, then truncate.
+    frac = inter.shiftRightUnsigned(4).and(MASK56)
+    rBiasedExp -= 1
+
+  result = new FloatIBM()
+  if rBiasedExp > 127
+    if resultSign < 0 then result.sSign(-1)
+    result.sExp((rBiasedExp & 0x7F) - 64)
+    result.sFrac(frac)
+    return {result, exc: FP_EXC.EXP_OVERFLOW}
+  if rBiasedExp < 0
+    return {result, exc: FP_EXC.EXP_UNDERFLOW}
+  if resultSign < 0 then result.sSign(-1)
+  result.sExp(rBiasedExp - 64)
+  result.sFrac(frac)
+  return {result, exc: FP_EXC.OK}
+
+export {mulQeE, mulQeS}
 
 
-export divE = (x, y) ->
+# divE is the AP-101S extended divide: a full 56-bit quotient.  divQeE
+# is the AP-101 C/M's quasi-extended divide, which prepares its operands
+# the same way the C/M's quasi-extended multiply does (31 bits, rounded
+# in from the 32nd) and delivers a quotient good to 31 bits.  That is
+# the mechanism behind the C/M POO's warning that DED/DEDR "does not
+# always produce a quotient which is accurate to 31 bits" -- rounding
+# the DIVISOR up perturbs the quotient in exactly the low-order bits the
+# note describes.  The signature is unmistakable: a C/M quotient's low
+# 25 bits read as zero, and its value is not any rounding of the true
+# quotient -- it is the quotient of the two ROUNDED operands.  The short
+# divides DE/DER are exempt (C/M POO: "does not have this problem").
+export divE = (x, y, qe = false) ->
   # 56-bit hex-FP divide via iterative hex-digit long-division.
   # Returns {result, exc}.  Modeled on tools/floatIBM/ibmFloat.c
   # ibm_dp_div_exc.  Per POO 8.8 divide-by-zero is reported as
-  # FP_DIVIDE — the CPU layer must suppress the writeback.
+  # FP_DIVIDE: the CPU layer must suppress the writeback.
   xFrac = x.gFracBits().toUnsigned()
   yFrac = y.gFracBits().toUnsigned()
 
   if yFrac.isZero()
-    # FP_DIVIDE: caller MUST NOT write back.  Result is a sentinel
-    # (DEADBEEFDEADBEEF) so any accidental use crashes loud — matches
-    # the C ref's IBM_FP_DIVIDE_SENTINEL_DP.  Note: we set ALL 8 bytes
+    # FP_DIVIDE: the caller must not write back.  Result is a sentinel
+    # (DEADBEEFDEADBEEF) so any accidental use crashes loud, matching
+    # the C ref's IBM_FP_DIVIDE_SENTINEL_DP.  All 8 bytes are set
     # including the high byte so to64x()/to64y() reproduce the sentinel
     # exactly in the runner output.
     sentinel = new FloatIBM()
@@ -663,6 +749,10 @@ export divE = (x, y) ->
     yFrac = yFrac.shiftLeft(4)
     yBiasedExp -= 1
 
+  if qe
+    [xFrac, xBiasedExp] = qeRound31(xFrac, xBiasedExp)
+    [yFrac, yBiasedExp] = qeRound31(yFrac, yBiasedExp)
+
   # Position dividend / compute quotient biased exp.
   if xFrac.lessThan(yFrac)
     rBiasedExp = xBiasedExp - yBiasedExp + 64
@@ -670,7 +760,7 @@ export divE = (x, y) ->
     rBiasedExp = xBiasedExp - yBiasedExp + 65
     yFrac = yFrac.shiftLeft(4)
 
-  # Long division — 14 hex digits of quotient.
+  # Long division: 14 hex digits of quotient.
   wk2 = xFrac.divide(yFrac)
   wk  = xFrac.subtract(wk2.multiply(yFrac)).shiftLeft(4)
   i = 13
@@ -679,6 +769,9 @@ export divE = (x, y) ->
     wk  = wk.subtract(wk.divide(yFrac).multiply(yFrac)).shiftLeft(4)
     i -= 1
   resultFrac = wk2.shiftLeft(4).or(wk.divide(yFrac))
+  # The C/M's quotient register holds 31 bits; the rest reads as zero.
+  if qe
+    resultFrac = resultFrac.and(QE_CLEAR_BOT)
 
   result = new FloatIBM()
   if rBiasedExp > 127
@@ -694,18 +787,21 @@ export divE = (x, y) ->
   return {result, exc: FP_EXC.OK}
 
 
+export divQeE = (x, y) -> divE(x, y, true)
+
+
 export cvfx = (x) ->
   # Convert short FP to two's-complement int32, binary point between
   # bits 15 and 16 (POO 8.13).  Returns {result: int32, exc}.  Caller
-  # must NOT update R1 on CONVERT_OVERFLOW per spec.
+  # must not update R1 on CONVERT_OVERFLOW per spec.
   #
-  # Mirrors tools/floatIBM/ibmFloat.c ibm_cvfx — work out the shift
+  # Mirrors tools/floatIBM/ibmFloat.c ibm_cvfx: work out the shift
   # algebraically from the biased characteristic, then range-check.
   if x.gFracBits().isZero()
     return {result: 0, exc: FP_EXC.OK}
 
   # Take a working copy so we don't mutate the caller (gFracBits is a
-  # snapshot — but unNormalizeToExp / sExp / sFrac would mutate `x`).
+  # snapshot: but unNormalizeToExp / sExp / sFrac would mutate `x`).
   work = new FloatIBM()
   work.setFrom64(x.to64x(), x.to64y())
   # Renormalize to ensure top hex of fraction is set.
@@ -721,7 +817,7 @@ export cvfx = (x) ->
   if shift > 8
     # mant occupies bits 0..55 of the Long; left-shift by >8 pushes its
     # top bit past bit 63 and Long.js wraps mod 64.  Any value that
-    # large is unambiguously beyond INT32 range — declare overflow
+    # large is unambiguously beyond INT32 range: declare overflow
     # before the shift loses data.
     return {result: 0, exc: FP_EXC.CONVERT_OVERFLOW}
 

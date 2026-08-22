@@ -4,18 +4,18 @@ import 'com/util';
 import Instruction from 'gpc/cpu_instr';
 
 /**
- * <gpc-breakpoints> — Displays the breakpoint list.
+ * <gpc-breakpoints>: Displays the breakpoint list.
  *
  * Properties (set via JS):
- *   cpu         — CPU instance (reads mainStorage for instruction disassembly)
- *   breakpoints — Map<number, {enabled: boolean}>
+ *   cpu         -- CPU instance (reads mainStorage for instruction disassembly)
+ *   breakpoints -- Map<number, {enabled: boolean}>
  *
  * Public methods:
- *   refresh() — re-render the breakpoint list
+ *   refresh() -- re-render the breakpoint list
  *
  * Events:
- *   breakpoint-toggle — detail: { addr }   (left click)
- *   breakpoint-menu   — detail: { addr, x, y } (right click)
+ *   breakpoint-toggle -- detail: { addr }   (left click)
+ *   breakpoint-menu   -- detail: { addr, x, y } (right click)
  */
 @customElement('gpc-breakpoints')
 export class GpcBreakpoints extends LitElement {
@@ -30,6 +30,10 @@ export class GpcBreakpoints extends LitElement {
     }
     const full = Instruction.toStr(hw1, hw2);
     return { mnemonic: full.substring(0, 5).trim(), args: full.substring(5) };
+  }
+
+  firstUpdated(): void {
+    this.refresh();
   }
 
   refresh(): void {

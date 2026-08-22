@@ -37,13 +37,15 @@ interface DisasmFields {
 @customElement('gpc-disasm')
 export class GpcDisasm extends LitElement {
 
-  // --- Properties set by host via JS ---
+  // Properties set by host via JS
+  //
   cpu: any = null;
   sym: any = null;
   halUCP: any = null;
   breakpoints: Map<number, {enabled: boolean}> = new Map();
 
-  // --- Internal state ---
+  // Internal state
+  //
   private _viewAddr: number | null = null;
   private _followNIA: boolean = true;
   private _contentEl: HTMLDivElement | null = null;
@@ -51,7 +53,8 @@ export class GpcDisasm extends LitElement {
   private _toolbarEl: HTMLElement | null = null;
   private _rangeText: string = '';
 
-  // --- Lit lifecycle ---
+  // Lit lifecycle
+  //
 
   private _resizeObserver: ResizeObserver | null = null;
 
@@ -74,7 +77,8 @@ export class GpcDisasm extends LitElement {
     this._resizeObserver?.disconnect();
   }
 
-  // --- Public methods ---
+  // Public methods
+  //
 
   refresh(): void {
     if (!this._contentEl || !this.cpu) return;
@@ -105,7 +109,8 @@ export class GpcDisasm extends LitElement {
     this.refresh();
   }
 
-  // --- Disassembly logic (ported from ap101.coffee) ---
+  // Disassembly logic (ported from ap101.coffee)
+  //
 
   private _disasmFields(hw1: number, hw2: number): DisasmFields {
     const [d, v] = Instruction.decode(hw1, hw2);
@@ -156,7 +161,7 @@ export class GpcDisasm extends LitElement {
         if (s.name === sect) { scanStart = s.address; break; }
       }
     } else {
-      // No section info — scan from nearest 256-word boundary
+      // No section info: scan from nearest 256-word boundary
       scanStart = Math.max(0, addr - 256);
     }
     let cur = scanStart;
@@ -246,7 +251,8 @@ export class GpcDisasm extends LitElement {
     return lines;
   }
 
-  // --- Rendering ---
+  // Rendering
+  //
 
   private _renderLines(container: HTMLDivElement, lines: DisasmLine[]): void {
     container.innerHTML = '';
@@ -389,7 +395,8 @@ export class GpcDisasm extends LitElement {
     }
   }
 
-  // --- Navigation ---
+  // Navigation
+  //
 
   private _getLineCount(): number {
     // Use host element height minus toolbar to compute available space
@@ -465,7 +472,8 @@ export class GpcDisasm extends LitElement {
     this._goto(input.value);
   }
 
-  // --- Template ---
+  // Template
+  //
 
   render() {
     return html`<div id="content" @wheel="${this._onWheel}"></div>`;
@@ -498,7 +506,8 @@ export class GpcDisasm extends LitElement {
     `;
   }
 
-  // --- Styles ---
+  // Styles
+  //
 
   static styles = css`
     :host {

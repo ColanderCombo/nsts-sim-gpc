@@ -98,7 +98,12 @@ Options:
   --infileN <file>                read input for channel N (0..7)
   --outfileN <file>               write output for channel N (0..7)
   --max-steps <n>                 max instructions to execute (default: 100000)
+  --real-time                     pace execution at AP-101 speed
+  --rt-factor <x>                 real-time speed multiplier (2 = 2x real speed)
+  --rt-idle-timeout <s>           stop after this long in the wait state with no wakeup
   --break <addr>                  stop at halfword address (hex)
+  --break-on-interrupt            stop when an interrupt is accepted
+  --hold-interrupt                stop just before an interrupt swaps PSWs
   --watch <spec>                  memory watchpoint: addr[:count] in hex
   --watch-log                     log every watchpoint change instead of breaking
   --output <file>                 write trace/verbose output to file instead of stdout
@@ -131,7 +136,32 @@ Options:
   --infileN / --outfileN <file>   I/O channels (0..3)
   --max-steps <n>                 max instructions before auto-stop (default: 10000000)
   --trace                         enable instruction trace at startup
+  --break-on-interrupt            stop when an interrupt is accepted
+  --hold-interrupt                stop just before an interrupt swaps PSWs
 ```
+
+Interrupt and interval-timer commands:
+
+```
+  int                     interval timers, the interrupt repertoire, and what is
+                          pending, masked or blocked
+  int raise <key> [code]  force an interrupt (clk1 clk2 ext0..ext4 svc
+                          machineCheck programCheck instrMonitor)
+  int clear <key>         clear a pending latch
+  int mask <bit> [on|off] change a PSW mask bit (32-39 system, 45 machine check)
+  int log [count]         interrupts accepted, with simulated time and NIA
+  int break [on|off]      break when an interrupt is accepted
+  int hold [on|off]       stop in front of the PSW swap, not after it
+  timer [n] [value]       show or load an interval timer (as the ICR would)
+```
+
+`int break` stops at the first instruction of the handler; `int hold`
+stops one step earlier, at the instant the interrupt is accepted and
+before the PSW swap, so the registers, the PSW and the NIA are still the
+interrupted program's and the old-PSW slot still holds what was there
+before.  The next `step` performs the swap alone, landing on the
+handler's first instruction without executing it; `run` performs it and
+carries on. 
 
   ## GPC.sh gui \[fcm\]
 
@@ -145,9 +175,74 @@ Options:
   --start <addr>                  start address in hex
   --symbols <file>                load symbol table JSON from linker
   --ebcdic                        use EBCDIC encoding for character I/O
+  --real-time                     start with real-time pacing on
+  --rt-factor <x>                 real-time speed multiplier (2 = 2x real speed)
+  --rt-idle-timeout <s>           stop after this many wall seconds in wait
+                                  state with no wakeup
   --no-sandbox                    pass --no-sandbox to Electron (required on
                                   some Linux systems)
 ```
+
+Simulated CPU time is tracked per instruction so a debugging session sees 
+the same interrupt sequence a straight run does.  The toolbar's **Real-time** 
+checkbox additionally ties that simulated time to the wall clock: execution 
+is paced to AP-101 speed (times the factor beside it). In real-time mode,
+entering the wait state advances simulated time until an interval timer 
+or other interrupt wakes the CPU (The IOP will continue to run).
+`Step` in the wait state does the same in one jump, landing on the next
+interrupt.  The toolbar shows simulated time since power-on and how fast 
+it is running against the wall clock.
+
+Execution runs in 200 ms slices of wall time between display refreshes,
+so the panes update at a steady rate whatever speed the host manages.
+
+Interrupts
+==========
+
+The **Interrupts** pane collects interrupt history and controls, presenting
+the pending latch, the PSW mask bit, and the PSA vector. It shows both 
+interval timers (editable), every interrupt its class, mask bit and new-PSW 
+address, and a log of what has been accepted and where it went.  Buttons raise
+or clear a pending latch the way the AGE could, a click on the mask cell
+flips that bit in the PSW, `break` stops the run at the first instruction
+of any handler, `hold` stops it one step earlier — in front of the PSW
+swap, with the interrupted program still in the registers and the NIA,
+which Step or Run then completes — and `system reset` performs the POO
+2.5.3.2 reset.  What is being held is spelled out under the interrupt
+list and on the toolbar (`INT HELD`).
+
+IOP
+===
+
+The **IOP** pane presents the current state of the Input/Output Processor.
+The IOP is a timesliced parallel processor.  One ALU and datapath is shared
+by one "Master Sequence Controller" (MSC) and 24 "Bus Control Elements" (BCEs).
+Each tick the IOP executes instructions for one processor, stepping through
+the MSC and BCEs in order (each BCE get's one slot/round, the MSC gets several)
+
+In the panel, a foldable **REGISTERS** section lists every register that
+belongs to the IOP rather than to one processor, raw: the four
+per-processor status words (STAT1/STAT4/STAT5 and the indicator bits),
+the MIA enables, the RM status word the CPU reads and the latch word
+behind it, all five interrupt registers, the discretes, the data word the
+last PCI/PCO left, the GO/NO-GO count and the MSC's own two.
+
+Below that each processor is one line — its STAT5/STAT4/STAT1, its MIA 
+transmitter and receiver enables, and its local store registers
+(PC, the fetched instruction, and then X/ACC/ECR/status for the MSC or
+D/ID/MTO/BASE/IUAR/status for a BCE).  
+
+Clicking a processor unfolds three more lines: a short disassembly at its
+PC (with the PC's own instruction highlighted, in the MSC or BCE
+instruction set as appropriate), then a ring of the words its MIA has put
+on its bus and a ring of the words that have come back — command words
+starred, each with the simulated time it crossed.  
+
+`active only` hides the processors that are halted, idle and silent.
+
+An existing saved layout won't have the newer panes: right-click a pane
+and pick **Add editor → Interrupts** or **→ IOP** (the default layout
+carries both as tabs beside Watch and Breakpoints).
 
 ![GPC debugger window screenshot](doc/gpcDebuggerWindow.png)
 
@@ -264,7 +359,9 @@ The gpc simulator was originally part of a larger system that also simulates oth
     - `gpc/lnkasm` contains a small in-tree assembler and linker (BAL grammar in `bal.pegjs`).  This is the "simple assembler / (very) simple linker" mentioned above; for real builds use the asm101s + lnk101s toolchain in `sdl`.
     - `cli.coffee` is the unified entry point, dispatching to one of the `cmd_*.coffee` files.
     - `ap101.coffee` is the definition of the GPC LRU.
-    - `cpu.coffee` / `cpu_instr.coffee` implement the CPU half of the AP-101.  Instruction definitions live in `cpu_instr.coffee`.
+    - `cpu.coffee` implements the AP-101's CPU
+      -  `cpu_instr.coffee` CPU instruction definitions.
+      -  `cpu_intr.coffee` CPU interrupt handling routines
     - `iop.coffee` and `iop_*.coffee` implement the IOP half of the AP-101
       - `iop_msc_*.coffee` is for the IOP Master Sequence Controller (MSC)
       - `iop_bce_*.coffee` is for the many IOP Bus Control Elements (BCE)
@@ -292,11 +389,11 @@ Development Notes
 AP-101 Implementation Notes
 ---------------------------
 
-  - This implementation is at an *instruction* level and makes no attempt to simulate timing, microcode, or internal state.
+  - This implementation is at an *instruction* level and simulates approximate timing, based on timing data in the Principles of Operation (B & S).  Most internal microstate isn't modeled, except where it's required for things like DIAG instructions.
 
   - The implementation is very verbose.  I've copied blocks of the POO directly into the comments and used it to guide the implementation.  Instruction opcode patterns and decoding is defined using bit strings (like '00011xxx11100yyy'), and additional format information is attached to make disassembly easier.  The intent is to make it as simple as we can to understand what the processor is doing and locate any errors in our logic.  Once verified, converting this to a much terser decoding process would make sense.
 
-  - Implementation initially targeted the AP-101/B model originally installed in the Shuttle.  The current version includes instructions and some features from the AP-101/S upgrade.  I have not made a complete pass through the POO and implementation to verify these changes.
+  - We model both the AP-101/B model originally installed in the Shuttle and the AP-101/S upgrade.  We default to AP-101/S mode.
 
   - The simulator includes an implementation of the IOP coprocessor used to interface to the 24 serial shuttle busses. This implementation has only had *very* basic testing and almost certainly will not work with real MSC/BCE programs.  This is future work.
 

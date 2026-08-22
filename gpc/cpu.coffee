@@ -3,6 +3,8 @@ require 'com/util'
 import {RAM,Register,RegisterFile,ProgramStatusWord} from 'gpc/regmem'
 import {MCM} from 'gpc/mcm'
 import Instruction from 'gpc/cpu_instr'
+import {INTERRUPTS, INTERRUPT_METHODS, INT_BITS_NONMASKABLE, INT_MACHINE_CHECK,
+        INT_INSTR_MONITOR, INT_CLK1, INT_CLK2} from 'gpc/cpu_intr'
 
 _now = if typeof window != 'undefined' and window.performance? then (-> window.performance.now()) else (-> Date.now())
 
@@ -14,9 +16,23 @@ OPTYPE_DATA = 1
 OPTYPE_BRCH = 2
 OPTYPE_SHFT = 4
 
+# IOP timeslice wakeup: 
+#  when the CPU is running, the IOP steps along with the CPU,
+#  and executes one instruction per CPU instruction.
+#  When the CPU is waiting, IOP_SLICE_NS paces things.
+# A BCE comes round once every 33 slices, and a BCE's own delay and 
+# time-out counters have a resolution of 16.5 us  which puts the slice 
+# itself at half a microsecond:
+IOP_SLICE_NS = 500
+
 export class CPU
+  @POWER_ON_PSW: 0x0004
+  @SYSTEM_RESET_PSW: 0x0014
+
+  @INTERRUPTS: INTERRUPTS
+
   #
-  #   The CPU is microprogram-controlled and provides 32-bit, parallel data 
+  #   The CPU is microprogram-controlled and provides 32-bit, parallel data
   # flow, floating point arithmetic, and 40,960 36-bit words of core main
   # storage in a single LRU (line replacable unit). The processing capability
   # is 480,000 operations per second based on a typical distribution of
@@ -32,8 +48,8 @@ export class CPU
   # capacity, power-switching places the memory in a low-power, quiescent mode
   # when the memory is not addressed.
   #
-  constructor: () ->
-    @mainStorage = new MCM(40*1024)
+  constructor: (opts = {}) ->
+    @mainStorage = new MCM(opts.cpuWords ? 40*1024)
     @ram = @mainStorage
     @regFiles = [
         new RegisterFile("r0",8,32), # R0 - R7   fixed bank 0
@@ -42,26 +58,26 @@ export class CPU
     ]
     @psw = new ProgramStatusWord()
 
-    # Interrupt pending flags by priority
-    @intPending = {
-        powerTransient: false    # Group 0 - highest
-        systemReset: false       # Group 0
-        ipl: false               # Group 0
-        machineCheck: false      # Group 0
-        programCheck: false      # Groups 1-3 (use intCode to distinguish)
-        svc: false               # Group 1
-        clk1: false              # Group 4
-        clk2: false              # Group 5
-        ext1: false              # External interrupt 1
-        ext2: false              # External interrupt 2
-        ext3: false              # External interrupt 3
-        ext4: false              # External interrupt 4
-        iopGrp1: false           # IOP Group 1
-        iopGrp2: false           # IOP Group 2
-        iopProg: false           # IOP Programmable
-    }
-    @intCode = 0                 # Interrupt code for program check
+    @_initInterrupts()           # see gpc/cpu_intr.coffee
+
+    # Storage protect override (POO 9.2, ISPB programming notes): an ISPB
+    # with an illegal M1 (100-111) "leaves the storage protect override
+    # bit set on, which means that storage protected locations can be
+    # written into without getting a store protect violation.  The
+    # condition will occur until the next valid ISPB is executed."
+    @storeProtectOverride = false
     @halUCP = null               # HalUCP instance for SVC interception
+
+    # DIAGNOSE state (POO sect.15).  The interrupt page's scan register
+    # doubles as its Diagnose Error register: the EA Scan 5 assist reads it
+    # and clears it, and nothing in a fault-free machine ever sets a bit in
+    # it.  'diagIuStoreDetect' is B STAT bit 6, set/reset by DIAG 7100/7101
+    @diagScanReg = 0
+    @diagIuStoreDetect = true
+    # The stale halfwords the IU file holds while detection is off.
+    # Null whenever the machine is behaving normally:
+    @iuShadow = null
+    @curIC = 0
 
     # Program interval timers (POO 2.5.2 "System" interrupts).  Each is a
     # 32-bit counter decrementing once per microsecond of CPU time.  The
@@ -81,9 +97,11 @@ export class CPU
     @xtcRow = null               # C-model row override [5 x us], set by e()
     @xtcAddT = null              # C-model additive (us), set by e()
 
-    # CPU model for instruction timing: 'S' (AP-101S, xts/xtbs) or
+    # CPU model for instruction timing and fp behavior: 
+    # 'S' (AP-101S, xts/xtbs) or
     # 'C' (original AP-101 C/M, xtc/xtcs).
     @model = 'S'
+    @fpModel = opts.fp ? 'S'
     @prevDiscont = false         # last instr broke sequential fetch (C: ~NOK)
 
   r: (x) -> @regFiles[@psw.getRegSet()].r(x)
@@ -115,274 +133,70 @@ export class CPU
   swapPSW: (oldAddr, newAddr) ->
     @ram.set32(oldAddr  ,@psw.psw1.get32())
     @ram.set32(oldAddr+2,@psw.psw2.get32())
-    @psw.load(@ram.get32(newAddr  ),
-              @ram.get32(newAddr+2))
+    @loadPSW(@ram.get32(newAddr  ),
+             @ram.get32(newAddr+2))
+
+  loadPSW: (p1, p2) ->
+    @psw.load(p1, p2)
+    @testFixedOverflow()
+    return
 
   sendToIOP: (cmd, data) ->
     @iop.recvFromCPU(cmd, data)
 
   recvFromIOP: () -> @iop.regCCData.get32()
 
-  INT_addressSpec: () ->
-    # Interrupt:             CPU address specification
-    # Interrupt Priority:    7
-    # Class:                 PE
-    # Old PSW:               0048 (Contains address of next instruction or
-    #                             second half of existing full-word instruction)
-    # New PSW:               004C
-    # Not Maskable:          X
-    # Mask Bit:              -
-    # Pending:               -
-    # Interrupt Code:        0003
-    # Interrupt Accept Time: Immediate
-    # CPU/IOP/AGE Generated: CPU
-    #
-    @psw.setIntCode(0x003)
-    @swapPSW(0x0048, 0x004c)
+  reset: () ->
+      @resetInterrupts()
+      @clearInterruptLog()
+      @storeProtectOverride = false
+      @counter1 = 0xffff
+      @counter2 = 0xffff
+      @cntAccumNs = 0
+      @timeNs = 0
+      @prevDiscont = false
+      return
 
-  INT_illegalOperation: () ->
-    # Interrupt:             Illegal operation
-    # Interrupt Priority:    11
-    # Class:                 PE
-    # Old PSW:               0048
-    # New PSW:               004C
-    # Not Maskable:          X
-    # Mask Bit:              -
-    # Pending:               -
-    # Interrupt Code:        0000
-    # Interrupt Accept Time: During instr fetch
-    # CPU/IOP/AGE Generated: CPU
-    #
-    @psw.setIntCode(0x000)
-    @swapPSW(0x0048,0x004c)
+  # System reset (POO 2.5.3.2)
+  systemReset: () ->
+      # XXX Power-off putaway and IPL memory fill not modeled
+      @resetInterrupts()
+      @storeProtectOverride = false
+      @counter1 = 0xffff
+      @counter2 = 0xffff
+      @cntAccumNs = 0
+      @loadPSW(@ram.get32(CPU.SYSTEM_RESET_PSW), @ram.get32(CPU.SYSTEM_RESET_PSW + 2))
+      return @psw.getNIA()
 
 
-  INT_privilegedInstruction: () ->
-    # Interrupt:             Privileged instruction
-    # Interrupt Priority:    11
-    # Class:                 PE
-    # Old PSW:               0048
-    # New PSW:               004C
-    # Not Maskable:          X (Only occurs when in problem state: PSW 48=1)
-    # Mask Bit:              -
-    # Pending:               -
-    # Interrupt Code:        0001
-    # Interrupt Accept Time: During addr generation
-    # CPU/IOP/AGE Generated: CPU
-    #
-    @psw.setIntCode(0x001)
-    @swapPSW(0x0048,0x004C)
+  # Fixed point add/subtract indicators
+  #
+  # Every add and subtract in the repertoire carries the same two
+  # sentences: "The carry indicator is set to indicate whether or not
+  # there is a carry out of the high-order bit position of the general
+  # register", and "The overflow indicator is set to one if the magnitude
+  # of the sum is too large to be represented in the general register ...
+  # If the overflow indicator already contains a one, it is not altered by
+  # this instruction.  (Overflow can be reset by testing or by loading the
+  # PSW.)"
+  #
+  # So the two differ: carry is written on every one of these instructions,
+  # set or reset, while overflow is only ever set.  Self-test software
+  # depends on both, priming overflow and adding 2 to FFFF to check that it
+  # survived ("OFLOW SET AT ENTRY, NOT RESET BY AHI").
+  #
+  addFixed: (a, b, carryIn = 0) ->
+      a = a >>> 0
+      b = b >>> 0
+      sum = a + b + carryIn        # exact: both are 32-bit, JS numbers are 53
+      @psw.setCarry(if sum > 0xffffffff then 1 else 0)
+      result = sum | 0             # ...then truncate to the register width
+      # Signed overflow: the two addends agreed in sign and the sum did not.
+      if ((a ^ result) & (b ^ result) & 0x80000000) != 0
+          @signalFixedOverflow()
+      return result
 
-
-  INT_supervisorCall: () ->
-    # Interrupt:             Supervisor Call
-    # Interrupt Priority:    12
-    # Class:                 SC
-    # Old PSW:               0058
-    # New PSW:               005C
-    # Not Maskable:          X
-    # Mask Bit:              -
-    # Pending:               0
-    # Interrupt Code:        0
-    # Interrupt Accept Time: Address Generation
-    # CPU/IOP/AGE Generated: CPU
-    #
-    @swapPSW(0x0058, 0x005c)
-
-  INT_CLK1: () ->
-    # Interrupt:             Real-time CLK 1
-    # Interrupt Priority:    14
-    # Class:                 SYS
-    # Old PSW:               0060
-    # New PSW:               0064
-    # Not Maskable:          -
-    # Mask Bit:              32
-    # Pending:               X
-    # Interrupt Code:        -
-    # Interrupt Accept Time: End of instr
-    # CPU/IOP/AGE Generated: CPU
-    #
-    @swapPSW(0x0060, 0x0064)
-
-  INT_CLK2: () ->
-    # Interrupt:             Real-time CLK 2
-    # Interrupt Priority:    15
-    # Class:                 SYS
-    # Old PSW:               0068
-    # New PSW:               006C
-    # Not Maskable:          -
-    # Mask Bit:              33
-    # Pending:               X
-    # Interrupt Code:        -
-    # Interrupt Accept Time: End of instr
-    # CPU/IOP/AGE Generated: CPU
-    #
-    @swapPSW(0x0068, 0x006c)
-
-  checkInterrupts: () ->
-      # Check highest priority first
-
-      # Group 0: Non-maskable (always serviced)
-      if @intPending.machineCheck
-          if @psw.getMachCheckMask()  # Machine check mask (PSW bit 45)
-              @intPending.machineCheck = false
-              @psw.setIntCode(0x0008)
-              @swapPSW(0x0040, 0x0044)
-              return
-
-      # Program check: Non-maskable (except FP exceptions which are pre-filtered by signal methods).
-      # If the new-PSW slot at 0x004C is empty, no handler is installed —
-      # log + continue rather than swapping into a zero PSW (which sends
-      # NIA to address 0 and wanders through low memory). 
-      if @intPending.programCheck
-          @intPending.programCheck = false
-          newPsw1 = @ram.get32(0x004c)
-          newPsw2 = @ram.get32(0x004e)
-          if newPsw1 == 0 and newPsw2 == 0
-              # No handler.  Set int code in current PSW for trace, log
-              # the exception, and resume at the instruction following
-              # the offending one (which is already in NIA).
-              @psw.setIntCode(@intCode)
-              if @halUCP and @halUCP._log
-                  @halUCP._log "GPC: unhandled program check, code=0x#{@intCode.toString(16).toUpperCase().padStart(4, '0')} (no handler at 0x004C); continuing\n"
-              return
-          @psw.setIntCode(@intCode)
-          @swapPSW(0x0048, 0x004c)
-          return
-
-      # SVC: Non-maskable
-      if @intPending.svc
-          @intPending.svc = false
-          @swapPSW(0x0058, 0x005c)
-          return
-
-      # External interrupts: Maskable via PSW bits 32-39
-      intMask = @psw.getIntMask()
-
-      # CLK1: Mask bit 32 (intMask bit 0, value 0x80)
-      if @intPending.clk1 and (intMask & 0x80)
-          @intPending.clk1 = false
-          @swapPSW(0x0060, 0x0064)
-          return
-
-      # CLK2: Mask bit 33 (intMask bit 1, value 0x40)
-      if @intPending.clk2 and (intMask & 0x40)
-          @intPending.clk2 = false
-          @swapPSW(0x0068, 0x006c)
-          return
-
-      # External 1: Mask bit 38 (intMask bit 6, value 0x02)
-      if @intPending.ext1 and (intMask & 0x02)
-          @intPending.ext1 = false
-          @swapPSW(0x0070, 0x0074)
-          return
-
-      # IOP Group 1: Mask bit 35 (intMask bit 3, value 0x10)
-      if @intPending.iopGrp1 and (intMask & 0x10)
-          @intPending.iopGrp1 = false
-          @swapPSW(0x0078, 0x007c)
-          return
-
-      # IOP Group 2: Mask bit 36 (intMask bit 4, value 0x08)
-      if @intPending.iopGrp2 and (intMask & 0x08)
-          @intPending.iopGrp2 = false
-          @swapPSW(0x0080, 0x0084)
-          return
-
-      # IOP Programmable: Mask bit 37 (intMask bit 5, value 0x04)
-      if @intPending.iopProg and (intMask & 0x04)
-          @intPending.iopProg = false
-          @swapPSW(0x0088, 0x008c)
-          return
-
-
-  signalFixedOverflow: () ->
-      if @psw.getFixedPtOverflow()  # PSW bit 20 = 1 means enabled
-          @intPending.programCheck = true
-          @intCode = 0x0002  # Fixed-point overflow
-
-  signalExponentOverflow: () ->
-      # POO 2.5.2 priority 21, non-maskable, code 0x000B.
-      @intPending.programCheck = true
-      @intCode = 0x000B
-
-  signalExponentUnderflow: () ->
-      # POO 2.5.2 priority 22, mask bit 22, code 0x0009.
-      if @psw.getExponentUnderflow()  # PSW bit 22 = 1 means enabled
-          @intPending.programCheck = true
-          @intCode = 0x0009
-
-  signalSignificance: () ->
-      # POO 2.5.2 priority C4, mask bit 23, code 0x0005.
-      if @psw.getSignificanceMask()  # PSW bit 23 = 1 means enabled
-          @intPending.programCheck = true
-          @intCode = 0x0005
-
-  signalFPDivide: () ->
-      # POO 2.5.2 priority C3, non-maskable, code 0x000C.
-      # Floating-point divide-by-zero — division is suppressed.
-      @intPending.programCheck = true
-      @intCode = 0x000C
-
-  signalConvertOverflow: () ->
-      # POO 2.5.2 priority C5, non-maskable, code 0x000A.
-      # CVFX value out of int32 range.  R1 unchanged.
-      @intPending.programCheck = true
-      @intCode = 0x000A
-
-  # FP exception dispatch helper.
-  # Takes the exc field from {result, exc} returned by floatIBM ops.
-  # Returns true iff caller should proceed to write result + set CC.
-  # Per POO 8.8: 
-  #   OK            - write back, set CC normally.
-  #   EXP_OVERFLOW  - signal, terminate (no writeback, no CC change).
-  #   EXP_UNDERFLOW - signal; if mask=0 write true zero (CC=0), if mask=1
-  #                   terminate (no writeback).
-  #   SIGNIFICANCE  - signal IFF mask=1; ALWAYS write true zero with CC=00.
-  #   FP_DIVIDE     - signal, suppress division (no writeback, no CC change).
-  fp_dispatch_exc: (exc) ->
-      switch exc
-          when 0          # OK
-              return true
-          when 0x000B     # EXP_OVERFLOW
-              @signalExponentOverflow()
-              return false
-          when 0x0009     # EXP_UNDERFLOW
-              @signalExponentUnderflow()
-              # Caller proceeds (writes true zero + CC=0) only when the
-              # mask bit is OFF.  When mask bit is ON, operands unchanged
-              # — so we suppress writeback.
-              return not @psw.getExponentUnderflow()
-          when 0x0005     # SIGNIFICANCE
-              @signalSignificance()
-              # ALWAYS write true zero (handler does this via the result
-              # value already returned from the primitive).  CC=00 falls
-              # out of the standard "result is zero" branch.
-              return true
-          when 0x000C     # FP_DIVIDE
-              @signalFPDivide()
-              return false
-          when 0x000A     # CONVERT_OVERFLOW
-              @signalConvertOverflow()
-              return false
-          else
-              return true
-
-  signalIllegalOp: () ->
-      @intPending.programCheck = true
-      @intCode = 0x0000
-
-  signalPrivilegedOp: () ->
-      @intPending.programCheck = true
-      @intCode = 0x0001
-
-  signalProtectionViolation: () ->
-      @intPending.programCheck = true
-      @intCode = 0x0004
-
-  signalAddressingException: () ->
-      @intPending.programCheck = true
-      @intCode = 0x0003
+  subFixed: (a, b) -> @addFixed(a, ~b, 1)
 
   i_SUPER: () ->
       if @psw.getProblemState() == 1   # problem state == not supervisor
@@ -474,6 +288,8 @@ export class CPU
               base = @r(v.b).get32() >>> 16
           pea = base+disp
 
+          dseVal = @g_BASE_DSE(v, true)
+
         #   console.log "#{v.nm} g_EA: B2=#{base} D=#{disp} X=#{v.i} ii=#{v.ii} ia=#{v.ia}",
         #   console.log "\td=#{v.d} b=#{v.b} baseR=#{@r(v.b).get32()}"
         #   console.log v
@@ -501,7 +317,9 @@ export class CPU
                   #      to 11 may be changed in figure computers.
                   #
                   if v.ii==0 and v.ia==0
-                      ea = @psw.getNIA() + pea
+                      # "address calculations used to form the EA are
+                      # performed on the low 16 bits only" 
+                      ea = @g_EXPAND(@psw.getIC16() + pea, OPTYPE_BRCH)
 
                   # 4) If the X field is all zeros, IA (bit 19) is a zero and
                   #    and I (bit 20) is a one, the 16-bit result of Step 2 is
@@ -513,7 +331,7 @@ export class CPU
                   #    the Data Sector Register (DSR) bits.)
                   #
                   if v.ia==0 and v.ii==1
-                      ea = @psw.getNIA() - pea
+                      ea = @g_EXPAND(@psw.getIC16() - pea, OPTYPE_BRCH)
 
                   # 5) If the X field is all zeros, IA (bit 19) is a one and
                   #    I (bit 20) is a zero, then Indirect Addressing is 
@@ -530,9 +348,9 @@ export class CPU
                       # own in the sect.17 table; use the closest double-
                       # indirection case (XC=1: no post-indexing here).
                       @xtCase = 3
-                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
+                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA,dseVal)
                       indirectHW = @ram.get16(indirectAddr)
-                      ea = @g_EXPAND(indirectHW,v.opType)
+                      ea = @g_EXPAND(indirectHW,v.opType,dseVal)
 
                   # 6) If the X field is all zeros, IA (bit 19) is a one and
                   #    I (bit 20) is a one, Indirect Addressing is performed
@@ -546,13 +364,16 @@ export class CPU
                   #    word. (See Figure 2-15.)
                   if v.ia==1 and v.ii==1
                       @xtCase = 5     # timing: auto storage modification
-                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
+                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA,dseVal)
                       indirectFW = @ram.get32(indirectAddr)
-                      ea = indirectFW >>> 16
+                      addr16 = indirectFW >>> 16
                       modifier = indirectFW & 0xffff
-                      ea = @g_EXPAND(ea,v.opType)
-                      ea = ea + modifier
-                      @ram.set32(indirectAddr,(ea<<16) + modifier)
+                      # "Indirect Addressing is performed as described in
+                      # Step 5 ... THEN, storage modification is automatically
+                      # performed"
+                      ea = @g_EXPAND(addr16,v.opType,dseVal)
+                      modifiedAddr = (addr16 + modifier) & 0xffff
+                      @ram.set32(indirectAddr,(modifiedAddr << 16) + modifier)
 
               else
                   #console.log "g_EA X!=0, DO INDEXING"
@@ -567,9 +388,9 @@ export class CPU
                   #    Expanded Addressing section.)
                   if v.ia==0 and v.ii==0
                       @xtIndexed = true   # timing (C/M): plain indexing
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       ea = pea + regx
-                      ea = @g_EXPAND(ea,v.opType)
+                      ea = @g_EXPAND(ea,v.opType,dseVal)
                       #console.log " regx=#{regx}, ea=#{pea+regx}, EXP=#{ea}"
 
                   # 8) If the X field is not all zeros, IA (bit 19) is a zero
@@ -585,13 +406,13 @@ export class CPU
                   #
                   if v.ia==0 and v.ii==1
                       @xtCase = 6     # timing: auto indexing
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      index = @r(v.i).get32() >>> 16
+                      regx = index << (v.indexWidth - 1)
                       modifier = @r(v.i).get32() & 0xffff
                       ea16 = (pea + regx) & 0xffff
-                      ea = @g_EXPAND(ea16,v.opType)
-                      modifiedAddr = (ea16 + modifier) & 0xffff
+                      ea = @g_EXPAND(ea16,v.opType,dseVal)
+                      modifiedAddr = (index + modifier) & 0xffff
                       @r(v.i).set32((modifiedAddr << 16) + modifier)
-
 
                   # 9) If the X field is not all zeros, IA (bit 19) is a one 
                   #    and I (bit 20) is a zero, Indirect Addressing (IA) with
@@ -609,11 +430,11 @@ export class CPU
                       # Timing: indirection with post-indexing; closest table
                       # case is double indirection XC=0 (post-indexed), C=0.
                       @xtCase = 1
-                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
+                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA,dseVal)
                       indirectHW = @ram.get16(indirectAddr)
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       ea = indirectHW + regx
-                      ea = @g_EXPAND(ea,v.opType)
+                      ea = @g_EXPAND(ea,v.opType,dseVal)
 
                   #10) If the X field is not all zeros, IA (bit 19) is a one
                   #    and I (bit 20) is a one, a direct addressing mode is
@@ -685,7 +506,7 @@ export class CPU
                   #      If XC=0, postindexing will occur.
                   #
                   if v.ia==1 and v.ii==1
-                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA)
+                      indirectAddr = @g_EXPAND(pea,OPTYPE_DATA,dseVal)
                       indirectFW = @ram.get32(indirectAddr)
                       # Parse fullword indirect address pointer fields
                       # Bit layout (bit 0 = MSB):
@@ -709,7 +530,7 @@ export class CPU
                       # Timing: double indirection, case selected by (XC,C)
                       @xtCase = 1 + xc*2 + c
 
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)  # aligned index register value
+                      regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)  # aligned index register value
 
                       if c == 0
                           # C=0: use pointer's BSR/DSR for data, current PSW's BSR for branches
@@ -760,7 +581,7 @@ export class CPU
               #ea = pea + index & 0xffff
           else
               ea = pea
-              ea = @g_EXPAND(ea,v.opType)
+              ea = @g_EXPAND(ea,v.opType,dseVal)
 
       else
           # SRS or SI addressing
@@ -769,12 +590,7 @@ export class CPU
           ea = base+disp
           if v.addrWidth == 2
               ea = ea & 0xfffe  # mask off bit 15 for fullwords
-          # Use DSE for base registers 0-2; register 3 means no base
-          if v.b? and v.b != 3
-              dseVal = @regFiles[@psw.getRegSet()].getDSE(v.b)
-              ea = @g_EXPAND_DSE(ea, v.opType, dseVal)
-          else
-              ea = @g_EXPAND(ea,v.opType)
+          ea = @g_EXPAND(ea, v.opType, @g_BASE_DSE(v, false))
 
           # console.log "SRS", base, disp , ea
 
@@ -829,8 +645,10 @@ export class CPU
                       indirectFW = @ram.get32(indirectAddr)
                       ea = (indirectFW >>> 16) & 0xffff
                       modifier = indirectFW & 0xffff
-                      ea = (ea + modifier) & 0xffff
-                      @ram.set32(indirectAddr, (ea << 16) + modifier)
+                      # EA is the pointer as it stands; the modified value is
+                      # what the pointer holds for next time.  See g_EA step 6.
+                      modifiedAddr = (ea + modifier) & 0xffff
+                      @ram.set32(indirectAddr, (modifiedAddr << 16) + modifier)
 
               else
                   # v.i != 0, indexing performed
@@ -838,16 +656,19 @@ export class CPU
                   # Step 7: Indexed, no indirect
                   if v.ia==0 and v.ii==0
                       @xtIndexed = true   # timing (C/M): plain indexing
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       ea = (pea + regx) & 0xffff
 
                   # Step 8: Indexed with modification
                   if v.ia==0 and v.ii==1
                       @xtCase = 6     # timing: auto indexing
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      index = @r(v.i).get32() >>> 16
+                      regx = index << (v.indexWidth - 1)
                       modifier = @r(v.i).get32() & 0xffff
                       ea = (pea + regx) & 0xffff
-                      modifiedAddr = (ea + modifier) & 0xffff
+                      # Modifier advances the INDEX, not the EA -- see the
+                      # long note on step 8 in g_EA.
+                      modifiedAddr = (index + modifier) & 0xffff
                       @r(v.i).set32((modifiedAddr << 16) + modifier)
 
                   # Step 9: Indirect with post-indexing (expand for memory lookup)
@@ -855,7 +676,7 @@ export class CPU
                       @xtCase = 1     # timing: see g_EA step 9
                       indirectAddr = @g_EXPAND(pea, OPTYPE_DATA)
                       indirectHW = @ram.get16(indirectAddr)
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       ea = (indirectHW + regx) & 0xffff
 
                   # Step 10: ZCON fullword indirect pointer
@@ -867,7 +688,7 @@ export class CPU
                       xc = (indirectFW >>> 11) & 1
                       c16 = (indirectFW >>> 10) & 1
                       @xtCase = 1 + xc*2 + c16   # timing: double indirection
-                      regx = (@r(v.i).get32() >>> 16) << (v.addrWidth - 1)
+                      regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       if xc == 0
                           ea = (address16 + regx) & 0xffff
                       else
@@ -888,48 +709,59 @@ export class CPU
 
       return ea
 
-  g_EXPAND: (ea, bsrdsr=OPTYPE_DATA) ->
-      # EXPANDED ADDRESSING
+  g_EXPAND: (ea, bsrdsr=OPTYPE_DATA, dseVal=null) ->
+      # 2.2.9 EXPANDED ADDRESSING
       #
       #   The addressing philosophy accommodates 64K* halfword addresses
       # since a full 16-bit address is provided. Extending the addressing
       # range beyond 64K halfword locations up to 512K halfword locations
-      # is provided by utilizing PSW bits.
+      # is provided by utilizing PSW bits and Data Sector Extension (DSE)
+      # registers.
       #
       #   Expanding to 19 bits is achieved by replacing the high-order bit of
       # a 16-bit address with 4 bits, as shown in Figure 2-18. Data operand
-      # addresses are extended to 19 bits by specifying either a 4-bit Data
-      # Sector Register (DSR) or an implied DSR. When the high-order bit of
-      # a 16-bit address is 1, a 4-bit DSR (PSW bits 28 through 31) is se-
-      # lected to replace the high-order bit. When the high-order bit of a
-      # 16-bit data address is a 0, an implied DSR containing 0000 is 
-      # selected. Note that indirect addressing locates the indirect address
-      # pointer as if the pointer were a data operand. Branch addresses are
-      # extended to 19 bits in an equivalent manner. When the high-order bit
-      # of a 16-bit branch address is a 1, a 4-bit Branch Sector Register 
-      # (BSR-PSW bits 24 through 27) is selected to replace the high-order 
+      # addresses are extended to 19 bits with a 4-bit Data Sector Register
+      # (DSR), a DSE, a BSR, or an implied DSR of zero. When the high-order
+      # bit of a 16-bit data address is 1, a 4-bit DSR (PSW bits 28 through
+      # 31) is selected to replace the high-order bit. (Note: IC relative
+      # data operand addressing would use BSR instead.) When the high-order
+      # bit of a 16-bit data address is 0 and a base register is used to
+      # determine the address, the 4-bit DSE for that base register is
+      # selected to replace the high-order bit. When the high-order bit of a
+      # 16-bit data address is a 0, and no base register is used, an implied
+      # DSR containing 0000 is selected. Note that indirect addressing
+      # locates the indirect address pointer as if the pointer were a data
+      # operand. Second stage expansion of the indirect address pointer uses
+      # an implied DSR of zero if the high-order bit of the 16-bit address is
+      # 0 and no base register is used; if the high-order bit is 0 and a base
+      # register is used, the 4-bit DSE for that base register is selected.
+      # Branch addresses are also extended to 19 bits. When the high-order
+      # bit of a 16-bit branch address is a 1, a 4-bit Branch Sector Register
+      # (BSR-PSW bits 24 through 27) is selected to replace the high-order
       # bit. When the high-order bit is a 0, an implied BSR containing 0000
-      # is selected. The high-order bit of both the BSR and DSR must be zero.
+      # is selected. 
+      #
+      # AP-101-B only: The high-order bit of both the BSR and DSR must be zero.
       #
       ea = ea & 0xffff
-      
+
       if ea & 0x8000
           if bsrdsr == OPTYPE_DATA || bsrdsr == OPTYPE_SHFT
               ea = (@psw.getDSR() << 15) + (ea & 0x7fff)
           else         # OPTYPE_BRCH
               ea = (@psw.getBSR() << 15) + (ea & 0x7fff)
+      else if dseVal? and bsrdsr != OPTYPE_BRCH
+          ea = (dseVal << 15) + ea
       return ea
 
-  g_EXPAND_DSE: (ea, bsrdsr, dseVal) ->
-      # DSE-based expanded addressing: uses per-base-register DSE
-      # instead of the PSW DSR for data operands
-      ea = ea & 0xffff
-      if ea & 0x8000
-          if bsrdsr == OPTYPE_DATA || bsrdsr == OPTYPE_SHFT
-              ea = (dseVal << 15) + (ea & 0x7fff)
-          else
-              ea = (@psw.getBSR() << 15) + (ea & 0x7fff)
-      return ea
+  # The DSE of the base register an EA is formed from, or null when the
+  # instruction uses no base register.  RS extended/indexed addressing uses
+  # B2 == 11 to mean "no base"; SRS and SI do not -- there B2 == 11 is
+  # register 3, used as a base like any other (POO 2.2.8)
+  g_BASE_DSE: (v, noBase3) ->
+      return null if not v.b?
+      return null if noBase3 and v.b == 3
+      return @regFiles[@psw.getRegSet()].getDSE(v.b)
 
   g_EAF: (v, extraOffset=0) ->
       ea = @g_EA(v)+extraOffset
@@ -942,22 +774,73 @@ export class CPU
       #console.log "g_EAH ea=#{ea} value=#{value}"
       return value
 
+  # Macrocode stores to main storage
+  #
+  # Every store an instruction makes goes through storeHW/storeFW, so the
+  # protection rule is handled once: a protected location is not written
+  # ("In this case, the store operation does not occur", POO 2.4) and the
+  # store protect violation program check is raised.  An ISPB with an
+  # illegal M1 leaves the override on, and nothing is protected until the
+  # next valid ISPB.
+  #
+  # They return true when the store happened, so a multi-halfword
+  # instruction (STM, SCAL, MVH) can stop at the halfword that faulted.
+
+  # The instruction unit's view of a store into its own file:
+  #
+  # The IU prefetches ahead of the PC, so a store into the instruction
+  # stream can land on a halfword that has already been fetched.  B STAT
+  # bit 6 decides what happens then (POO sect.15, DIAG 7100/7101).  Set:
+  # "the CPU hardware checks for conflicts within the IU file.  When
+  # conflicts are detected, the file is purged", which a machine that
+  # always refetches from store gets for free.  Reset: "no checks for
+  # conflicts within the IU file are performed.  THE PIPELINE WILL NOT BE
+  # PURGED", and the already-fetched halfword executes stale.
+  #
+  # Only the second case needs modelling, and it needs no IU file: keep the
+  # pre-store halfword for the window the IU could have reached and hand it
+  # to the instruction fetch instead of storage, until the next
+  # discontinuity flushes it.  Sect.16.8 gives the window: "the actual
+  # detection circuitry uses the range of IC-1 to IC+23", compared on "the
+  # 15 least significant bits of the logical address" with 7FFF/0000 and
+  # FFFF/8000 contiguous.
+  IU_WINDOW_AHEAD = 23
+  shadowIuStore: (addr) ->
+      return if @diagIuStoreDetect
+      d = (addr - @curIC) & 0x7fff
+      return unless d <= IU_WINDOW_AHEAD or d == 0x7fff
+      @iuShadow ?= new Map()
+      @iuShadow.set(addr, @ram.get16(addr, false)) unless @iuShadow.has(addr)
+      return
+
+  storeHW: (addr, value) ->
+      @shadowIuStore(addr) unless @diagIuStoreDetect
+      return true if @ram.set16(addr, value, not @storeProtectOverride)
+      @signalProtectionViolation()
+      return false
+
+  # The fullword form tests both halfwords' protect bits before writing
+  # either, so a fullword store that straddles a protection boundary
+  # leaves neither half changed.  The two halves are then written one at a
+  # time, which is also how they are addressed: main storage is two MCMs
+  # and only the halfword path routes between them.
+  storeFW: (addr, value) ->
+      unless @diagIuStoreDetect
+          @shadowIuStore(addr)
+          @shadowIuStore(addr + 1)
+      if not @storeProtectOverride and
+         (@ram.getStoreProtect(addr) or @ram.getStoreProtect(addr + 1))
+          @signalProtectionViolation()
+          return false
+      @ram.set16(addr,     (value >>> 16) & 0xffff, false)
+      @ram.set16(addr + 1, value & 0xffff, false)
+      return true
+
   s_EAF: (v, value,extraOffset=0) ->
-      ea = @g_EA(v)+extraOffset
-      #console.log "s_EAF", ea.toString(16), value.toString(16)
-      if not @ram.set16(ea, value >>> 16)
-          @signalProtectionViolation()
-          return
-      if not @ram.set16(ea+1, value & 0xffff)
-          @signalProtectionViolation()
-          return
+      @storeFW(@g_EA(v)+extraOffset, value)
 
   s_EAH: (v, value) ->
-      ea = @g_EA(v)
-      if not @ram.set16(ea, value)
-          @signalProtectionViolation()
-          return
-      #console.log "s_EAH ea=#{ea}, value=#{value}"
+      @storeHW(@g_EA(v), value)
   
 
 
@@ -993,29 +876,116 @@ export class CPU
       if @cntAccumNs >= 1000
           ticks = (@cntAccumNs / 1000) | 0
           @cntAccumNs -= ticks*1000
-          @counter1 = @tickCounter(@counter1, 0x00B0, 'clk1', ticks)
-          @counter2 = @tickCounter(@counter2, 0x00B1, 'clk2', ticks)
+          @counter1 = @tickCounter(@counter1, 0x00B0, INT_CLK1, ticks)
+          @counter2 = @tickCounter(@counter2, 0x00B1, INT_CLK2, ticks)
 
   # Decrement one interval timer by `ticks` microseconds (POO 2.5.2).  The
   # low halfword is the 16-bit hardware counter; on borrow, microcode
   # decrements the high halfword in main store (bypassing store protect).
   # When the high halfword is 0000 at borrow time it wraps to FFFF and the
   # clock interrupt is raised.
-  tickCounter: (low, hiAddr, intName, ticks) ->
+  tickCounter: (low, hiAddr, spec, ticks) ->
       low -= ticks
       if low < 0
           low += 0x10000        # ticks <= 65535, so at most one borrow
           hi = @ram.get16(hiAddr)
           if hi == 0
               @ram.set16(hiAddr, 0xffff, false)
-              @intPending[intName] = true
+              @intPendingReg |= spec.bit
           else
               @ram.set16(hiAddr, hi - 1, false)
       return low
 
-  reset: () ->
-      @psw.psw1.set32(@ram.get32(0x14))
-      @psw.psw2.set32(@ram.get32(0x16))
+  TIMER_HI: (n) -> if n == 2 then 0x00B1 else 0x00B0
+
+  # The full 32-bit count of interval timer n: high halfword from the PSA,
+  # low halfword from the hardware counter.
+  timerValue: (n) ->
+      hi = @ram.get16(@TIMER_HI(n), false)
+      lo = (if n == 2 then @counter2 else @counter1) & 0xffff
+      return ((hi << 16) | lo) >>> 0
+
+  # Microseconds of CPU time until interval timer n times out.  It fires
+  # when the count borrows past zero, which is (low + 1 + hi*65536) ticks
+  # away.
+  timerRemainingUs: (n) ->
+      lo = (if n == 2 then @counter2 else @counter1) & 0xffff
+      return lo + 1 + @ram.get16(@TIMER_HI(n), false) * 0x10000
+
+  # The ICR write command's effect (POO sect.10), including its reset of
+  # the clock interrupt latch.  The PSA half is written past store protect:
+  # 00B0/00B1 are on the POO's list of locations that must not be protected
+  # (2.5.2.4), and the AGE is not subject to it in any case.
+  loadTimer: (n, value) ->
+      value = value >>> 0
+      @ram.set16(@TIMER_HI(n), (value >>> 16) & 0xffff, false)
+      if n == 2
+          @counter2 = value & 0xffff
+          @intPendingReg &= ~INT_CLK2.bit
+      else
+          @counter1 = value & 0xffff
+          @intPendingReg &= ~INT_CLK1.bit
+      return value
+
+  # Nanoseconds of CPU time until the next interval-timer interrupt.
+  nextTimerNs: () ->
+      Math.min(@timerRemainingUs(1), @timerRemainingUs(2)) * 1000 - @cntAccumNs
+
+  # Could anything still wake a CPU sitting in the wait state?  Only an
+  # unmasked system interrupt or an already-pending non-maskable one; with
+  # neither the wait is permanent and callers should stop.
+  canWake: () ->
+      return true if @psw.getIntMask() != 0
+      (@intPendingReg & (INT_BITS_NONMASKABLE | INT_MACHINE_CHECK.bit)) != 0
+
+  # Advance simulated time through the wait state by up to `ns`, stopping
+  # early if an interrupt takes the CPU out of it.  Steps are at most 1 ms
+  # and are shortened to land exactly on the next interval-timer expiry, so
+  # a wakeup is taken at its true simulated time rather than a step late.
+  # Returns the nanoseconds actually advanced.
+  advanceIdleNs: (ns) ->
+      done = 0
+      while done < ns and @psw.getWaitState()
+          step = Math.min(1e6, ns - done)
+          tNs = @nextTimerNs()
+          step = tNs if tNs > 0 and tNs < step
+          step = Math.max(1, Math.round(step))   # never stall on a 0 step
+          done += step
+          # The IOP's watchdog runs on wall time, not CPU instructions, so
+          # it keeps counting through the wait state.
+          @iop?.tickWatchdog?()
+          # So does the IOP: it is an independent processor and does not
+          # stop because the CPU has.  Stepped at the slice rate, and only
+          # when something is enabled and busy, so an idle IOP costs
+          # nothing here.
+          #
+          # Time must advance with the slices rather than in one jump
+          # before them.  The IOP's two waiting mechanisms are otherwise
+          # incommensurate: a bus control element's delay and time out are
+          # measured in simulated time, while a master sequence
+          # controller's repeat instruction counts its own re-fetches.  A
+          # 1 ms step is about 2000 slices, so an @RAW waiting 848 repeats
+          # would expire well inside a BCE's legitimate 10.7 ms #DLYI.
+          if @iop?.processorsRunning?()
+              left = step
+              while left > 0
+                  slice = Math.min(IOP_SLICE_NS, left)
+                  @advanceTimeNs(slice)
+                  left -= slice
+                  @idleIopNs = (@idleIopNs ? 0) + slice
+                  while @idleIopNs >= IOP_SLICE_NS
+                      @idleIopNs -= IOP_SLICE_NS
+                      @iop.execIdle()
+          else
+              @advanceTimeNs(step)
+              @idleIopNs = 0
+          @checkInterrupts()
+          break if @intArmed?
+      return done
+
+  loadPowerOnPSW: () ->
+      @loadPSW(@ram.get32(CPU.POWER_ON_PSW), @ram.get32(CPU.POWER_ON_PSW + 2))
+      return @psw.getNIA()
 
   run: () ->
       #console.log "CPU @ #{@psw.getNIA().asHex()}: starting execution"
@@ -1029,12 +999,26 @@ export class CPU
       #console.log "CPU: #{insCnt} instructions executed."
 
   exec1: () ->
+      # A held interrupt is taken before anything else runs: the swap it
+      # was stopped in front of is the machine's next act.  Front ends that
+      # know about the hold call releaseInterrupt themselves and stop on
+      # the swap; this is for the ones that just keep stepping.
+      @releaseInterrupt() if @intArmed?
+
       times = [0.0, 0.0, 0.0]
       times[0] = _now()
       nia = @psw.getNIA()
 
+      @curIC = nia
+
       hw1 = @ram.get16(nia)
       hw2 = @ram.get16(nia+1)
+      # A halfword the IU already held when a store rewrote it, with
+      # conflict detection off: the fetch sees what the IU has, not what
+      # storage has.  See shadowIuStore.
+      if @iuShadow?
+          hw1 = @iuShadow.get(nia)   if @iuShadow.has(nia)
+          hw2 = @iuShadow.get(nia+1) if @iuShadow.has(nia+1)
       [d,v] = Instruction.decode(hw1,hw2)
 
       v.niaIncr = d.len
@@ -1060,11 +1044,10 @@ export class CPU
 
       @incrNIA(v.niaIncr)
 
-      # Instruction monitor: PSW bit 34 = 1 and instruction is unprotected
+      # Instruction monitor: PSW bit 34 = 1 and instruction is unprotected.
       intMask = @psw.getIntMask()
-      if (intMask & 0x20) and not @ram.protData[nia]
-          @intPending.programCheck = true
-          @intCode = 0x0009
+      if (intMask & 0x20) and not @ram.getStoreProtect(nia)
+          @intPendingReg |= INT_INSTR_MONITOR.bit
 
       # Instruction timing: reset the per-instruction state.  g_EA/g_EA_16
       # set xtCase/xtIndexed for the special addressing modes; e() may set
@@ -1082,7 +1065,7 @@ export class CPU
       if @model == 'C' and (@xtcRow? or d.xtcNs? or d.xtcsNs?)
           # Original AP-101 C/M (IBM 75-A97-001 sect.2.4).  Column by IC
           # parity; the ~NOK column applies only right after a discontinuity
-          # (branch/interrupt).  Operands assumed in internal (CPU) memory —
+          # (branch/interrupt).  Operands assumed in internal (CPU) memory --
           # the Even-100/Even-200 columns (IOP external memory / EMU) are
           # not yet selected.  opExecT overrides are AP-101S formulas and
           # are ignored here; count-scaled C ops (e.g. SUM note 2) TBD.
@@ -1119,7 +1102,13 @@ export class CPU
       # Sequential-fetch discontinuity (branch taken or interrupt swap):
       # the next instruction starts with an empty lookahead (C-model ~NOK)
       @prevDiscont = @psw.getNIA() != seqNIA
+      @iuShadow = null if @prevDiscont and @iuShadow?
 
       times[1] = _now()
       times[2] = times[1] - times[0]
 
+
+# Import interrupt methods from cpu_intr:
+for own name, fn of INTERRUPT_METHODS
+    Object.defineProperty CPU.prototype, name,
+        value: fn, writable: true, configurable: true, enumerable: false

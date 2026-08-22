@@ -122,7 +122,8 @@ export class GpcLabels extends LitElement {
     return row;
   }
 
-  // --- Template ---
+  // Template
+  //
 
   render() {
     return html`<div id="content"></div>`;
@@ -144,7 +145,8 @@ export class GpcLabels extends LitElement {
     return this._toolbarEl;
   }
 
-  // --- Styles ---
+  // Styles
+  //
 
   static styles = css`
     :host {

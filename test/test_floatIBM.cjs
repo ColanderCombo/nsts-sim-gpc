@@ -47,7 +47,8 @@ const refgenPath = process.argv[2];
         0x000A:   'CONVERT_OVERFLOW',
     };
 
-    // ---- helpers ----
+    // helpers
+    //
     const dpHex = (f) => {
         const hi = f.to64x() >>> 0;
         const lo = f.to64y() >>> 0;
@@ -169,7 +170,8 @@ const refgenPath = process.argv[2];
         return { result_hex, cc, has_cc, exc };
     }
 
-    // ---- main ----
+    // main
+    //
     let raw;
     try {
         raw = execFileSync(refgenPath, [],

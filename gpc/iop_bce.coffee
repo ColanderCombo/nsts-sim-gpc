@@ -146,8 +146,13 @@ import {Bus, BusMsg, bceNumToBusConfig} from 'com/bus'
 import {BCEInstruction} from 'gpc/iop_bce_instr'
 
 
+# How many words of bus traffic each MIA keeps for the display:
+MIA_LOG_MAX = 64
+
 export class MIA
-  constructor: (@bceNum) ->
+  constructor: (@bceNum, @iop) ->
+    @txLog = []
+    @rxLog = []
     @dataOutBuf = 0
     @dataOutAvail = false
     @dataOutIsCmd = false
@@ -173,36 +178,94 @@ export class MIA
     @bus.onReceive @_onRecv, this
 
   _onRecv: (self, busID, msg, remote) ->
-    self.recvQueue.push(msg)
+    return unless msg.data16?
+    for i in [0...msg.data16.length]
+      hw = msg.data16[i] & 0xffff
+      self.recvQueue.push(hw)
+      self._log(self.rxLog, hw)
+    return
+
+  # Push one word onto a traffic ring, stamped with the simulated time the
+  # CPU had reached
+  _log: (ring, value, isCmd = false) ->
+    ring.push({
+      seq: ring.length + (@_dropped ? 0) + 1
+      timeNs: @iop?.cpu?.timeNs ? 0
+      value: value & 0xffff
+      cmd: !!isCmd
+    })
+    while ring.length > MIA_LOG_MAX
+      ring.shift()
+      @_dropped = (@_dropped ? 0) + 1
+    return
+
+  clearState: () ->
+    @recvQueue = []
+    @dataOutBuf = 0
+    @dataOutAvail = false
+    @dataOutIsCmd = false
+    @dataInBuf = 0
+    @dataInAvail = false
+    @dataInIsCmd = false
+    @miaBusy = false
+    @miaNoGo = false
+    @miaParity = false
+    @xmitEna = false
+    @recvEna = false
+    @clearLogs()
+    return
+
+  clearLogs: () ->
+    @txLog = []
+    @rxLog = []
+    @_dropped = 0
+    return
+
+  flushRecv: () ->
+    @recvQueue = []
+    return
 
   dataAvailable: () ->
     @recvQueue.length > 0
 
   getData: () ->
-    if @recvQueue.length > 0
-      msg = @recvQueue.shift()
-      return msg.data16[0] if msg.data16?
-      return 0
-    return 0
+    return 0 unless @recvQueue.length > 0
+    @recvQueue.shift() & 0xffff
 
   xmitWord: (halfword) ->
     return unless @bus
     msg = new BusMsg(1)
     msg.data16[0] = halfword & 0xffff
+    @_log(@txLog, halfword)
     @bus.sendMsg(msg)
 
   xmitCmd: (cmd24) ->
     return unless @bus
+    # A command begins a new transaction, so anything still queued from the
+    # last one is stale and must not lead this one.  A subsystem cannot
+    # always know how many words the bus program will read: a display unit
+    # answers a status request with its whole status block, and software
+    # reads either one halfword of it or sixteen from the same command
+    # word.  A leftover word is therefore normal, and the hardware, whose
+    # receiver is inhibited outside a commanded transfer, never captures it.
+    #
+    # Flushed here rather than on receive completion, which would also
+    # discard words that legitimately arrive later in a transfer and
+    # measurably destabilises the mass memory load.  At command time
+    # nothing a transaction needs has been sent yet.
+    @flushRecv() if @recvQueue.length
     msg = new BusMsg(2)
     msg.data16[0] = (cmd24 >>> 8) & 0xffff
     msg.data16[1] = (cmd24 & 0xff) << 8
+    @_log(@txLog, (cmd24 >>> 8) & 0xffff, true)
     @bus.sendMsg(msg)
 
 
 export class BCE
-    constructor: (@bceNum) ->
-        @mia = new MIA(@bceNum)
+    constructor: (@bceNum, @iop) ->
+        @mia = new MIA(@bceNum, @iop)
         @instr = new BCEInstruction()
+        @recv = null
 
     exec: (iop, hw1, hw2) ->
         @instr.exec(iop, hw1, hw2)

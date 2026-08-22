@@ -1,5 +1,6 @@
 
 import {PackedBits} from 'gpc/util'
+import {STP_BCE_BASE} from 'gpc/iop_msc_instr'
 
 export class BCEInstruction extends PackedBits
     constructor: () ->
@@ -18,6 +19,7 @@ export class BCEInstruction extends PackedBits
             desc.nm = k
             desc.d = v.d
             desc.e = v.e
+            desc.fmt = v.f
 
             @descByOp[desc.nm] = desc
             if desc.mask not of @opByMask
@@ -37,6 +39,46 @@ export class BCEInstruction extends PackedBits
         for k, f of desc.f
             v[k] = @getField(combined, f)
         return v
+
+    # Disassembly
+    #
+    OPERAND_FIELDS: {
+        ADDRESS: 'ad', ADDR: 'ad', COUNT: 'cd', DISP: 'd', DISPLACEMENT: 'd'
+        TRANSFERCOUNT: 'c', IUA: 'u', IMMED: 'i', IMM: 'i', COMMAND: 'cm'
+        TIMEOUT: 'i', FLAG: 'f', BCE: 'b', MASK: 'd'
+    }
+
+    toStr: (hw1, hw2) ->
+        hw1 = hw1 & 0xffff
+        hw2 = hw2 & 0xffff
+        combined = (((hw1 * 0x10000) + hw2)) >>> 0
+        for mask in @orderedMasks when mask > 0xffff
+            maskedVal = (combined & mask) >>> 0
+            desc = @opByMask[mask]?[maskedVal]
+            if desc?
+                return { text: @_render(desc, @decode(combined, desc)), len: 2, nm: desc.nm }
+        for mask in @orderedMasks when mask <= 0xffff
+            maskedVal = (hw1 & mask) >>> 0
+            desc = @opByMask[mask]?[maskedVal]
+            if desc?
+                return { text: @_render(desc, @decode(hw1, desc)), len: 1, nm: desc.nm }
+        return { text: "??? #{hw1.toString(16).padStart(4, '0')}", len: 1, nm: null }
+
+    _render: (desc, v) ->
+        ops = []
+        fmt = desc.fmt?[0]
+        if fmt?
+          rest = fmt.split(' ').slice(1).join(' ')
+          for name in (if rest then rest.split(',') else [])
+            key = name.trim().toUpperCase().replace(/\s+/g, '')
+            letters = @OPERAND_FIELDS[key] ? ''
+            letter = (l for l in letters when v[l]?)[0]
+            ops.push(if letter? then "X'#{v[letter].toString(16).toUpperCase()}'" else key)
+        # m is the index-mode flag on the store forms.
+        ops.push('X') if v.m
+        text = desc.nm
+        text += '  ' + ops.join(',') if ops.length > 0
+        return text
 
     exec: (iop, hw1, hw2) ->
         # Try 32-bit combined match first (for long instructions)
@@ -110,9 +152,8 @@ export class BCEInstruction extends PackedBits
                         d:'10111ddddddddddd'
                         pr:true  # 'd' is a PC-relative displacement
                         e:(t,v)->
-                            addr = t.ls.PC().get32() + v.d + 2*t.curPE
-                            v1 = t.g_EAF(addr)
-                            t.ls.MTO().set32(v1)
+                            ea = t.bceEA(v.d, true) & ~1
+                            t.ls.MTO().set32(t.g_EAF(ea) & 0x3ffff)
                             t.incrNIA(1)
                     }
         # RESET INDICATOR  BIT
@@ -129,7 +170,7 @@ export class BCEInstruction extends PackedBits
                         f:['#RIB']
                         d:'11100___________'
                         e:(t,v)->
-                            t.regIndicator.setbit32(t.curPE, 0)
+                            t.procSet(t.regIndicator, t.curPE, 0)
                             t.incrNIA(1)
                     }
         # SET INDICATOR   BIT
@@ -155,7 +196,7 @@ export class BCEInstruction extends PackedBits
                         f:['#SIB']
                         d:'11101___________'
                         e:(t,v)->
-                            t.regIndicator.setbit32(t.curPE, 1)
+                            t.procSet(t.regIndicator, t.curPE, 1)
                             t.incrNIA(1)
                     }
         # STORE STATUS AND  CLEAR
@@ -183,10 +224,12 @@ export class BCEInstruction extends PackedBits
                         d:'0100mddddddddddd'
                         pr:true
                         e:(t,v)->
-                            disp = v.d + 2*v.m*t.curPE
-                            t.s_EAF(disp, t.ls.getBST())
+                            # "The least significant bit of EA (the halfword
+                            # address) is ignored" 
+                            ea = t.bceEA(v.d, v.m) & ~1
+                            t.s_EAF(ea, t.ls.getBST())
                             t.ls.setBST(0)
-                            t.regProgExcept.setbit32(t.curPE, 1)
+                            t.procSet(t.regProgExcept, t.curPE, 1)
                             t.incrNIA(1)
                     }
         # STORE STATUS
@@ -211,8 +254,8 @@ export class BCEInstruction extends PackedBits
                         d:'0101mddddddddddd'
                         pr:true
                         e:(t,v)->
-                            disp = v.d + 2*v.m*t.curPE
-                            t.s_EAF(disp, t.ls.getBST())
+                            ea = t.bceEA(v.d, v.m) & ~1
+                            t.s_EAF(ea, t.ls.getBST())
                             t.incrNIA(1)
                     }
         # LOAD BASE REGISTER
@@ -367,11 +410,11 @@ export class BCEInstruction extends PackedBits
                                 t.ls.ls(0,0).set32(table)
                             # PC not updated, subsequent execs
                             # enter WIX loop here:
-                            if t.regXmitEna.getbit32(t.curPE)
+                            if t.procGet(t.regXmitEna, t.curPE)
                                 # Exit loop and wait
                                 t.ls.ls(0,0).set32(0)
                                 t.incrNIA(1)
-                                t.regBusyWait.setbit32(t.curPE, 0)
+                                t.procSet(t.regBusyWait, t.curPE, 0)
                             else if t.curBCE()?.mia.dataAvailable()
                                 data = t.curBCE().mia.getData()
                                 listenCmd = (data & 0x01f00000) >>> 20
@@ -468,7 +511,7 @@ export class BCEInstruction extends PackedBits
                         d:'11110110uuuuuiiiiiiiiiiiiiiiiiii'
                         e:(t,v)->
                             # Transmit command immediate: IUA + 19 bits immediate
-                            if t.regXmitEna.getbit32(t.curPE)
+                            if t.procGet(t.regXmitEna, t.curPE)
                                 cmd = (v.u << 19) | v.i
                                 t.ls.IUAR().set32(v.u)
                                 t.curBCE()?.mia.xmitCmd(cmd)
@@ -481,7 +524,7 @@ export class BCEInstruction extends PackedBits
                             # Transmit command from memory at addr + 2*BCE#
                             addr = v.a + 2 * t.curPE
                             cmd = t.g_EAF(addr) & 0x00ffffff
-                            if t.regXmitEna.getbit32(t.curPE)
+                            if t.procGet(t.regXmitEna, t.curPE)
                                 t.ls.IUAR().set32((cmd >>> 19) & 0x1f)
                                 t.curBCE()?.mia.xmitCmd(cmd)
                             t.incrNIA(2)
@@ -534,24 +577,14 @@ export class BCEInstruction extends PackedBits
                         f:['#MOUT Displacement,Transfer Count']
                         d:'11110101ddddddddcccccccccccccccc'
                         e:(t,v)->
-                            # Message out: transmit command then data
-                            # Third halfword contains IUA + command
                             count = v.c + 1
                             base = t.ls.BASE().get32()
                             bce = t.curBCE()
+                            t.bceCompanionCommand()
                             for i in [0...count]
                                 addr = base + v.d + i
                                 t.queueDMA(addr, 'read', bce)
-                            t.incrNIA(3)
-                    }
-        '#MOUTC':   {
-                        f:['#MOUTC IUA,Command']
-                        d:'________uuuuummmmmmmmmmmmmmmmmmm'
-                        e:(t,v)->
-                            # Command portion of MOUT extended instruction
-                            if t.regXmitEna.getbit32(t.curPE)
-                                t.ls.IUAR().set32(v.u)
-                            # NIA handled by parent #MOUT
+                            t.incrNIA(4)
                     }
         '#MOUT@':   {
                         f:['#MOUT@ Address']
@@ -576,13 +609,9 @@ export class BCEInstruction extends PackedBits
                         d:'011cccccdddddddd'
                         e:(t,v)->
                             # Receive 1-32 halfwords into base-relative buffer
-                            count = v.c + 1
                             base = t.ls.BASE().get32()
-                            bce = t.curBCE()
-                            for i in [0...count]
-                                addr = base + v.d + i
-                                t.queueDMA(addr, 'write', bce)
-                            t.incrNIA(1)
+                            if t.bceReceive(base + v.d, v.c + 1)
+                                t.incrNIA(1)
                     }
         # RECEIVE DATA LONG
         #
@@ -591,12 +620,9 @@ export class BCEInstruction extends PackedBits
                         d:'11110011000000cccccccccccccccccc'
                         e:(t,v)->
                             # Receive data long: count from immediate field
-                            count = v.c + 1
                             base = t.ls.BASE().get32()
-                            bce = t.curBCE()
-                            for i in [0...count]
-                                t.queueDMA(base + i, 'write', bce)
-                            t.incrNIA(2)
+                            if t.bceReceive(base, v.c + 1)
+                                t.incrNIA(2)
                     }
         '#RDL':     {
                         f:['#RDL ADDRESS']
@@ -606,10 +632,8 @@ export class BCEInstruction extends PackedBits
                             addr = v.a + 2 * t.curPE
                             count = (t.g_EAH(addr) & 0xffff) + 1
                             base = t.ls.BASE().get32()
-                            bce = t.curBCE()
-                            for i in [0...count]
-                                t.queueDMA(base + i, 'write', bce)
-                            t.incrNIA(2)
+                            if t.bceReceive(base, count)
+                                t.incrNIA(2)
                     }
         # MESSAGE IN
         #
@@ -617,23 +641,11 @@ export class BCEInstruction extends PackedBits
                         f:['#MIN DISPLACEMENT,Transfer Count']
                         d:'11110001ddddddddcccccccccccccccc'
                         e:(t,v)->
-                            # Message in: receive command then data
-                            count = v.c + 1
+                            if t.bceReceiveStarting()
+                                t.bceCompanionCommand()
                             base = t.ls.BASE().get32()
-                            bce = t.curBCE()
-                            for i in [0...count]
-                                addr = base + v.d + i
-                                t.queueDMA(addr, 'write', bce)
-                            t.incrNIA(3)
-                    }
-        '#MINC':    {
-                        f:['#MINC IUA,COMMAND']
-                        d:'________uuuuuccccccccccccccccccc'
-                        e:(t,v)->
-                            # Command portion of MIN extended instruction
-                            if t.regXmitEna.getbit32(t.curPE)
-                                t.ls.IUAR().set32(v.u)
-                            # NIA handled by parent #MIN
+                            if t.bceReceive(base + v.d, v.c + 1)
+                                t.incrNIA(4)
                     }
         '#MIN@':    {
                         f:['#MIN@ ADDRESS']
@@ -681,16 +693,17 @@ export class BCEInstruction extends PackedBits
                         f:['#DLYI TIMEOUT']
                         d:'11000iiiiiiiiiii'
                         e:(t,v)->
-                            # Delay immediate: count * 16.5us (no-op in simulator)
-                            t.incrNIA(1)
+                            t.incrNIA(1) if t.bceDelay(v.i)
                     }
         '#DLY':     {
                         f:['#DLY ADDRESS']
                         d:'11001ddddddddddd'
                         pr:true
                         e:(t,v)->
-                            # Delay from memory: count at addr + 2*BCE# (no-op in simulator)
-                            t.incrNIA(1)
+                            # Count from the fullword at PC(updated) +
+                            # displacement + 2 x BCE#, as #LTO reads its own.
+                            count = t.g_EAF(t.bceEA(v.d, true) & ~1) & 0x3ffff
+                            t.incrNIA(1) if t.bceDelay(count)
                     }
         # WAIT
         #
@@ -718,7 +731,7 @@ export class BCEInstruction extends PackedBits
                         d:'00001___________'
                         e:(t,v)->
                             # Enter wait state: clear Busy/Wait bit
-                            t.regBusyWait.setbit32(t.curPE, 0)
+                            t.procSet(t.regBusyWait, t.curPE, 0)
                             t.incrNIA(1)
                     }
         # INSTRUCTION - SELF TEST
@@ -745,11 +758,52 @@ export class BCEInstruction extends PackedBits
         #   Successful completion of this instruction causes the BCE to
         # increment its PC by 1 and continue with the next instruction.
         #
+        # DESCRIPTION M=1:
+        #
+        #   "This instruction initiates execution of a special micro
+        # program to perform self test on the associated MIA Parity
+        # Checker.  Before execution of this instruction parity must be
+        # enabled and the BCE executing this instruction must have its
+        # transmitter disabled.  If the transmitter is enabled the BCE
+        # will set no-go, go to wait and set the BCE Status Register Bit
+        # 22 to 1.  If the transmitter is disabled the micro program will
+        # do a transmit.  This will allow data to be sent through the
+        # Parity Checking Circuitry, but will not be transmitted on the
+        # Bus.  If bad parity is detected an External 1 interrupt is
+        # generated and the External 1 Status Register will indicate a MIA
+        # Parity Error."
+        #
         '#STP':     {
                         f:['#STP FLAG']
-                        d:'0001___________f'
+                        d:'0001I__________f'
                         e:(t,v)->
-                            # Self-test: always passes in simulator
+                            if v.I
+                                if t.procGet(t.regXmitEna, t.curPE)
+                                    # Transmitter enabled: refuse.
+                                    t.procSet(t.regProgExcept, t.curPE, 0)
+                                    t.procSet(t.regBusyWait, t.curPE, 0)
+                                    st = t.ls.getBST()
+                                    t.ls.setBST((st | (1 << (31 - 22))) >>> 0)
+                                    t.incrNIA(1)
+                                    return
+                                # The transmit that never reaches the bus.
+                                t.checkMIAParity()
+                                t.incrNIA(1)
+                                return
+                            # "If an error is detected, the BCE's Program
+                            # Exception bit is set to 0, bit 22 of the BCE
+                            # Status Register is set to 1 (Self Test
+                            # failure)."  The modelled hardware has no faults,
+                            # so neither happens.
+                            #
+                            # "Ability of BCE to read and write from memory"
+                            # is one of the tests, and like the MSC's it runs
+                            # against a fixed PSA fullword -- this BCE's, at
+                            # STP_BCE_BASE + 2*(n-1).  The high halfword is
+                            # the pattern to read, the low halfword where it
+                            # must land. 
+                            fw = STP_BCE_BASE + 2 * (t.curPE - 1)
+                            t.s_EAH(fw + 1, t.g_EAH(fw))
                             t.incrNIA(1)
                     }
 

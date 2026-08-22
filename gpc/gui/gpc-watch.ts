@@ -3,17 +3,17 @@ import {customElement} from 'lit/decorators.js';
 import {readHalfwords, formatTypedValue} from 'gpc/gui/memformat';
 
 /**
- * <gpc-watch> — Displays symbol values (watch panel).
+ * <gpc-watch>: Displays symbol values (watch panel).
  *
  * Properties (set via JS):
- *   cpu  — CPU instance (reads mainStorage)
- *   sym  — SymbolTable instance (symbols, symTypes, getSectionAt, getSymbolSize)
+ *   cpu  -- CPU instance (reads mainStorage)
+ *   sym  -- SymbolTable instance (symbols, symTypes, getSectionAt, getSymbolSize)
  *
  * Public methods:
- *   refresh() — re-read memory and re-render symbol values
+ *   refresh() -- re-read memory and re-render symbol values
  *
  * Events:
- *   watch-selected — detail: { name: string|null, addresses: Set<number>|null }
+ *   watch-selected -- detail: { name: string|null, addresses: Set<number>|null }
  *     Fired when user clicks a symbol row (toggles selection).
  */
 @customElement('gpc-watch')
@@ -23,6 +23,10 @@ export class GpcWatch extends LitElement {
   sym: any = null;
 
   private _selected: string | null = null;
+
+  firstUpdated(): void {
+    this.refresh();
+  }
 
   refresh(): void {
     const container = this.shadowRoot?.getElementById('content');
@@ -75,7 +79,7 @@ export class GpcWatch extends LitElement {
       nameSpan.textContent = sym.name;
       nameSpan.title = `${sym.name} @ 0x${addr.toString(16).padStart(5, '0')} (${symSize} hw)`;
 
-      // Value — right-justified, monospace
+      // Value: right-justified, monospace
       const valSpan = document.createElement('span');
       valSpan.className = 'value';
       valSpan.textContent = valueStr;

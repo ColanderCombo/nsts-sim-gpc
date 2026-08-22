@@ -1,10 +1,10 @@
 
-# AGEHarness — Aerospace/Ground Equipment Harness
+# AGEHarness: Aerospace/Ground Equipment Harness
 #
 # Development and debugging support equipment for the AP-101 GPC.
 # In the original Shuttle program, AGE was the hardware that connected
 # to physical AP-101 computers for development, testing, and debugging.
-# Flight AP-101s have none of this — symbols, FCM file loading, breakpoints,
+# Flight AP-101s have none of this: symbols, FCM file loading, breakpoints
 # and HalUCP I/O trapping are all ground affordances.
 #
 # All simulator entry points (batch, debug, dump, GUI) use AGEHarness
@@ -14,47 +14,51 @@ fs = require 'fs'
 path = require 'path'
 
 import {AP101} from 'gpc/ap101'
+import {CPU} from 'gpc/cpu'
 import {HalUCP} from 'gpc/halUCP'
 import {SymbolTable} from 'gpc/symbolTable'
+import {DEFAULT_MACHINE, parseMachineOption} from 'gpc/machine'
 
 parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
 
 export class AGEHarness
 
-  # ---------------------------------------------------------------
-  # CLI option registration — call on a commander Command to add
+  # CLI option registration: call on a commander Command to add
   # the options that AGEHarness knows how to consume.
-  # ---------------------------------------------------------------
   @addOptions: (cmd) ->
     cmd
       .option('--start <addr>', 'start address in hex')
+      .option('--power-on', 'enter from the power-on PSW in the PSA, ignoring --start and the symbol entry point')
       .option('--symbols <file>', 'load symbol table JSON from linker')
       .option('--ebcdic', 'use EBCDIC encoding for character I/O')
       .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
       .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
       .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
       .option('--line-width <n>', 'WRITE line width for wrap (default: 132)', '132')
+      .option('--machine <model>', "machine model, sizing main storage: ap101s = 256K words (default), ap101b = 64K", parseMachineOption, DEFAULT_MACHINE)
 
-  # ---------------------------------------------------------------
   # Extract the AGEHarness-consumable subset of commander opts.
   # Use when forwarding parsed CLI options into a constructor that will
   # later pass them to configureFromOpts.
-  # ---------------------------------------------------------------
   @optsFrom: (o) ->
+    machine: o.machine
     start: o.start
+    powerOn: o.powerOn
     symbols: o.symbols
     ebcdic: o.ebcdic
     trapSvcError: o.trapSvcError
     halucpFormatNumBlanks: o.halucpFormatNumBlanks
     lineWidth: o.lineWidth
 
-  # ---------------------------------------------------------------
   # Configure this AGEHarness instance from parsed CLI options.
   # Loads symbols (with auto-detect), loads FCM, sets entry point, and
   # configures HalUCP.  The (fcmPath, opts) pair is saved for reset().
-  # Returns { byteCount, entryPoint, symbolsPath }.
-  # ---------------------------------------------------------------
+  # Returns { byteCount, entryPoint, entrySource, symbolsPath,
+  # entryWarning }, where entrySource is 'start', 'symbols' or 'power-on'
+  # and entryWarning is set when the entry chosen is not a usable one.
   configureFromOpts: (fcmPath, opts = {}) ->
+    @gpc.setMachine(opts.machine) if opts.machine?
+
     # Configure HalUCP from options
     @halUCP.trapSvcError = opts.trapSvcError ? true
     @halUCP.formatNumBlanks = parseInt(opts.halucpFormatNumBlanks ? '5', 10)
@@ -64,11 +68,30 @@ export class AGEHarness
     symbolsPath = opts.symbols or @autoDetectSymbols(fcmPath)
     symEntry = @loadSymbols(symbolsPath, !!opts.verbose)
 
-    # Entry point priority: explicit --start > symbols > null
-    entryPoint = if opts.start then parseHex(opts.start) else symEntry
+    # Entry point priority: --power-on > explicit --start > symbols > the
+    # image's own power-on PSW. 
+    if opts.powerOn
+      entryPoint = null
+      entrySource = 'power-on'
+    else if opts.start
+      entryPoint = parseHex(opts.start)
+      entrySource = 'start'
+    else if symEntry?
+      entryPoint = symEntry
+      entrySource = 'symbols'
+    else
+      entryPoint = null
+      entrySource = 'power-on'
 
     byteCount = @loadFCM(fcmPath)
-    @setEntryPoint(entryPoint) if entryPoint?
+    @applyLoadProtection()
+    entryWarning = null
+    if entryPoint?
+      @setEntryPoint(entryPoint)
+    else
+      entryPoint = @gpc.cpu.loadPowerOnPSW()
+      if entryPoint == 0
+        entryWarning = "power-on PSW at PSA 0x#{CPU.POWER_ON_PSW.asHex(4)} is zero"
 
     # Save for reset() to replay
     @initialFcmPath = fcmPath
@@ -77,7 +100,7 @@ export class AGEHarness
     # Restore persisted breakpoints (no-op in CLI where localStorage is absent)
     @loadBreakpoints()
 
-    return { byteCount, entryPoint, symbolsPath }
+    return { byteCount, entryPoint, entrySource, symbolsPath, entryWarning }
 
   constructor: (opts = {}) ->
     # Create the flight computer
@@ -89,7 +112,7 @@ export class AGEHarness
     @halUCP = new HalUCP(@gpc.cpu)
     @gpc.cpu.halUCP = @halUCP
 
-    # Symbol table — development/debug only
+    # Symbol table, development and debug only
     @sym = new SymbolTable()
 
     # Step counter: incremented on each exec1 by the caller
@@ -103,17 +126,13 @@ export class AGEHarness
     @initialFcmPath = null
     @initialOpts = null
 
-  # ---------------------------------------------------------------
-  # Delegated accessors — convenience access to the flight computer
-  # ---------------------------------------------------------------
+  # Delegated accessors for the flight computer
   Object.defineProperty @prototype, 'cpu', get: -> @gpc.cpu
   Object.defineProperty @prototype, 'iop', get: -> @gpc.iop
   Object.defineProperty @prototype, 'ram', get: -> @gpc.ram
   Object.defineProperty @prototype, 'mainStorage', get: -> @gpc.cpu.mainStorage
 
-  # ---------------------------------------------------------------
-  # FCM loading — ground equipment file I/O
-  # ---------------------------------------------------------------
+  # FCM loading: ground equipment file I/O
 
   file2arrayBuffer: (f) ->
     image = fs.readFileSync f
@@ -130,6 +149,22 @@ export class AGEHarness
     @gpc.ram.load16(0, dv)
     return dv.byteLength
 
+  # Storage protection as the IPL leaves it.
+  #
+  # Store powers up unprotected; protection is what the loader asserts over
+  # what it has loaded.  So the loaded extents are protected and everything
+  # else, scratch and buffers included, is not.
+  applyLoadProtection: () ->
+    sections = @sym?.sectionsByAddr
+    return 0 unless sections?.length
+    n = 0
+    for s in sections
+      continue unless s.size > 0
+      for a in [s.address ... s.address + s.size]
+        @gpc.ram.setStoreProtect(a, true)
+        n++
+    return n
+
   # Auto-detect symbols file: replace .fcm with .sym.json
   autoDetectSymbols: (fcmPath) ->
     autoSymPath = fcmPath.replace(/\.fcm$/i, '.sym.json')
@@ -137,9 +172,7 @@ export class AGEHarness
       return autoSymPath
     return null
 
-  # ---------------------------------------------------------------
   # Symbol loading
-  # ---------------------------------------------------------------
 
   # Load a symbol table from an absolute path.  Returns the entry point
   # address from the symbols JSON (or null if none/failed).  Callers are
@@ -151,17 +184,13 @@ export class AGEHarness
       @halUCP.initFromSymbols(@sym.symbols, @sym.symTypes)
     return entryPoint
 
-  # ---------------------------------------------------------------
   # Entry point management
-  # ---------------------------------------------------------------
 
   setEntryPoint: (addr) ->
     @gpc.cpu.psw.setNIA(addr)
     @gpc.cpu.psw.setWaitState(false)
 
-  # ---------------------------------------------------------------
-  # Register snapshots — development instrumentation
-  # ---------------------------------------------------------------
+  # Register snapshots: development instrumentation
 
   snapshotRegs: ->
     snap = {}
@@ -183,9 +212,7 @@ export class AGEHarness
         changes.push { name: k, old: before[k], new: after[k] }
     return changes
 
-  # ---------------------------------------------------------------
   # Step counter sync
-  # ---------------------------------------------------------------
 
   _syncStep: () ->
     s = @stepCount
@@ -194,12 +221,10 @@ export class AGEHarness
       rf.step = s
     @gpc.cpu.psw.step = s
 
-  # ---------------------------------------------------------------
   # Breakpoint persistence
-  # ---------------------------------------------------------------
 
   # localStorage is only available in a browser/Electron renderer context.
-  # We detect that via `typeof window` — accessing globalThis.localStorage
+  # We detect that via `typeof window`; accessing globalThis.localStorage
   # in plain Node 22+ triggers a noisy experimental-shim warning, so avoid it.
   _storage: () ->
     if typeof window != 'undefined' and window.localStorage?
@@ -225,10 +250,8 @@ export class AGEHarness
     for bp in JSON.parse(json)
       @breakpoints.set(bp.addr, { enabled: bp.enabled })
 
-  # ---------------------------------------------------------------
   # Reset
-  # ---------------------------------------------------------------
-
+  #
   # Reset hardware and ground equipment, then replay the original
   # configureFromOpts to reload memory and symbols.  GUIHarness overrides
   # this to also clear @running and refresh the display.
@@ -245,4 +268,5 @@ export class AGEHarness
     @halUCP.active = false
 
     if @initialFcmPath
+      @gpc.ram.clear?()
       @configureFromOpts(@initialFcmPath, @initialOpts or {})
