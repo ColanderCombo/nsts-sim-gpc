@@ -1,5 +1,7 @@
 $ = require('jquery')
 
+import {KYBD} from 'meds/kybd'
+
 # MDU edgekeys are F1..F6 (keyCodes 112..117). A key held longer than
 # STUCK_MS is declared stuck: it is failed (red-X'ed via the fail callback)
 # and ignored from then on. A normal press fires the handler on release.
@@ -11,6 +13,7 @@ export class MDUEdgeKeys
     @downTimers = {}     # keyIdx -> pending stuck-detection timeout
 
     $(document).keydown (ev) =>
+      return if KYBD.isEditable(ev.target)
       return unless ev.keyCode >= 112 and ev.keyCode <= 117
       ev.preventDefault()
       i = ev.keyCode - 112
@@ -19,6 +22,7 @@ export class MDUEdgeKeys
       @downTimers[i] = setTimeout (=> @_stuck(i)), STUCK_MS
 
     $(document).keyup (ev) =>
+      return if KYBD.isEditable(ev.target)
       return unless ev.keyCode >= 112 and ev.keyCode <= 117
       ev.preventDefault()
       i = ev.keyCode - 112

@@ -275,7 +275,10 @@ class MedsRunner
       frame: false,
       fullscreen: lruConf.window.fullscreen,
       backgroundColor: lruConf.window.backgroundColor ?? "#101336"
+      show: false  // 'show: true' steals focus.
     }
+    newWindow.once 'ready-to-show', () =>
+      newWindow.showInactive()
     remote.enable newWindow.webContents
     // Left-edge growth tracking: ANY resize that moves x while keeping
     // the right edge fixed — the macOS native frameless edge drag OR the
@@ -315,6 +318,7 @@ class MedsRunner
     winConfig := Object.assign({}, CONFIG, {thisStart})
     newWindow.webContents.on 'did-finish-load', () =>
       newWindow.webContents.send 'set-config', winConfig
+      newWindow.showInactive()      // in case 'ready-to-show' never fired
       // dev/test hook: NSTS_EXEC runs in each LRU window once the LRUs are
       // up (2s after load) — e.g. driving a screen's test modes headlessly:
       //   NSTS_EXEC="window.lrus.cdr1.screens.AE_PFD.enterTapeTest()" MEDS.sh --dev cdr1

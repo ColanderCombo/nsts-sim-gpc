@@ -90,13 +90,27 @@ export class KYBD
       @_scanToKey[k.deuCode] = k for _, k of @DEUKey.keys
     @_scanToKey[scan & 0xffff]
 
+  @isEditable: (el) ->
+    return false unless el?
+    tag = el.tagName?.toLowerCase()
+    return true if tag == 'input' or tag == 'textarea' or tag == 'select'
+    !!el.isContentEditable
+
+  @deuKeyFor: (ev) ->
+    # don't steal Mod+Key's or when we're focused on a text box:
+    return null unless ev?
+    return null if @isEditable(ev.target)
+    return null if ev.ctrlKey or ev.metaKey or ev.altKey
+    @DPSKeys[ev.keyCode] ? null
+
   constructor: (@kybdBus, @mdu=null) ->
     @_setupBus()
     $(document).keydown (ev) =>
-      console.log(ev)
-      if ev.key == 'S' # 's'
-        console.log("Handle 's'")
+      return if KYBD.isEditable(ev.target)
+      if ev.key == 'S' and @mdu?
+        ev.preventDefault()
         @mdu.screenshot()
+        return
       if (ev.key == 'F12' or ev.key == 'F11') and not ev.ctrlKey and @mdu?
         # Debug: F12 / F11 cycle the DPS background through every data/*.dfb
         ev.preventDefault()
@@ -126,8 +140,8 @@ export class KYBD
         @mdu.screens['DPS']?.toggleSelfTest()
         @mdu.redraw()
         return
-      if ev.keyCode of KYBD.DPSKeys
-        @keyPress(KYBD.DPSKeys[ev.keyCode])
+      k = KYBD.deuKeyFor(ev)
+      @keyPress(k) if k?
 
   _setupBus: () ->
     @busName = "_KYBD#{@kybdBus}" 
@@ -143,4 +157,4 @@ export class KYBD
     kybdMsg.data16[0] = k.deuCode
     @bus.sendMsg kybdMsg
     if @mdu
-      @mdu.screens['DPS'].recvKey(k)
+      @mdu.screens['DPS']?.recvKey(k)
