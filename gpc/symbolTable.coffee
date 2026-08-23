@@ -6,6 +6,7 @@ export class SymbolTable
     @symbols = null       # Raw parsed JSON { symbols, sections, entryPoint }
     @symbolsByAddr = {}   # addr -> [sym, ...]
     @sectionsByAddr = []  # sorted array of { name, address, size }
+    @storeProtect = null  # [[startHw, endHw), ...] from the linker
     @addrToSection = {}   #
     @sectionColors = {}   #
     @symTypes = {}        # symbol type overrides from .symtypes.json
@@ -20,6 +21,10 @@ export class SymbolTable
       # Sections sorted by address
       @sectionsByAddr = (@symbols.sections or []).slice()
       @sectionsByAddr.sort (a, b) -> a.address - b.address
+
+      # Absolute halfword [start, end) ranges; null if the image has none.
+      sp = @symbols.storeProtect
+      @storeProtect = if sp?.unit == 'halfword' then (sp.ranges ? null) else null
 
       # Symbol lookup by address
       @symbolsByAddr = {}

@@ -153,12 +153,12 @@ export class DebugGUI extends GUIHarness
     @configureRunOpts(opts)
     if opts.fcmPath?
       console.log("DebugGUI load:", opts)
-      { byteCount, entryPoint, entrySource, entryWarning } =
+      { byteCount, entryPoint, entrySource, entryWarning, protectWarning } =
         @configureFromOpts(opts.fcmPath, opts)
       console.log("DebugGUI loaded #{byteCount} bytes, entry=0x#{(entryPoint ? 0).toString(16)} (#{entrySource})")
-      if entryWarning?
-        console.warn("DebugGUI: #{entryWarning}")
-        @notify("Warning: #{entryWarning}")
+      for w in [entryWarning, protectWarning] when w?
+        console.warn("DebugGUI: #{w}")
+        @notify("Warning: #{w}")
 
     # Wire HAL/S I/O trap callbacks to <gpc-terminal> component
     @halUCP.outputCallback = (text) => @_terminal()?.appendText(text)

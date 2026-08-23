@@ -148,14 +148,15 @@ export class BatchRunner
 
   load: ->
     # Process options, load FCM and symbols
-    { byteCount, entryPoint, entrySource, symbolsPath, entryWarning } =
-      @age.configureFromOpts(@fcmPath, @opts)
+    { byteCount, entryPoint, entrySource, symbolsPath, entryWarning,
+      protectWarning } = @age.configureFromOpts(@fcmPath, @opts)
     @entryPoint = entryPoint
     @entrySource = entrySource
     if entrySource == 'power-on'
       why = if @opts.powerOn then '--power-on' else 'no --start, no START symbol'
       @info "Entry from power-on PSW at PSA 0x#{CPU.POWER_ON_PSW.asHex(4)} (#{why})"
     process.stderr.write "Warning: #{entryWarning}\n" if entryWarning?
+    process.stderr.write "Warning: #{protectWarning}\n" if protectWarning?
     if @age.sym.symbols?
       @info "Symbols: #{symbolsPath} (#{@age.sym.symbols.symbols?.length or 0} symbols, #{@age.sym.symbols.sections?.length or 0} sections)"
     return byteCount

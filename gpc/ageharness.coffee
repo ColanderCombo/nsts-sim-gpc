@@ -85,6 +85,10 @@ export class AGEHarness
 
     byteCount = @loadFCM(fcmPath)
     @applyLoadProtection()
+    protectWarning =
+      if @sym?.storeProtect? then null
+      else "image carries no store-protect map; running unprotected " +
+           "(relink to regenerate .sym.json)"
     entryWarning = null
     if entryPoint?
       @setEntryPoint(entryPoint)
@@ -100,7 +104,8 @@ export class AGEHarness
     # Restore persisted breakpoints (no-op in CLI where localStorage is absent)
     @loadBreakpoints()
 
-    return { byteCount, entryPoint, entrySource, symbolsPath, entryWarning }
+    return { byteCount, entryPoint, entrySource, symbolsPath, entryWarning,
+             protectWarning }
 
   constructor: (opts = {}) ->
     # Create the flight computer
@@ -149,18 +154,14 @@ export class AGEHarness
     @gpc.ram.load16(0, dv)
     return dv.byteLength
 
-  # Storage protection as the IPL leaves it.
-  #
-  # Store powers up unprotected; protection is what the loader asserts over
-  # what it has loaded.  So the loaded extents are protected and everything
-  # else, scratch and buffers included, is not.
+  # Storage protection as the IPL leaves it, from the linker's map.  Without
+  # one, protect nothing: guessing by section locks the runtime's I/O cells.
   applyLoadProtection: () ->
-    sections = @sym?.sectionsByAddr
-    return 0 unless sections?.length
+    ranges = @sym?.storeProtect
+    return 0 unless ranges?
     n = 0
-    for s in sections
-      continue unless s.size > 0
-      for a in [s.address ... s.address + s.size]
+    for [lo, hi] in ranges
+      for a in [lo ... hi]
         @gpc.ram.setStoreProtect(a, true)
         n++
     return n
