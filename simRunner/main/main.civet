@@ -63,6 +63,7 @@ addLocalMedsCmd := (program: any) : void =>
     .option('--config <file>', 'alternate LRU config JSON (default: config/meds.json)')
     .option('--display <name>', 'initial display for launched MDUs (DPS, AE_PFD, HYD_APU, OMS_MPS, SPI, ...)')
     .option('--menu <name>', 'initial MDU menu (MAIN, FLT_INST, ...)')
+    .option('--size <px>', 'MDU window size in pixels, square (default: the config width/height)')
     .option('--dev', 'developer mode: MDUs run standalone (no IDP heartbeat gating, preloaded DPS test formats)')
     .option('--list', 'list available LRU names and exit')
     .action (lrus: string[], o: any) : void =>
@@ -71,6 +72,7 @@ addLocalMedsCmd := (program: any) : void =>
         configFile: if o.config then path.resolve(o.config) else null
         display: o.display
         menu: o.menu
+        size: o.size
         dev: o.dev ?? false
         list: o.list ?? false
       }
@@ -253,51 +255,59 @@ class MedsRunner
       console.error `available: ${available.join(', ')}`
       process.exit(2)
 
-    // CLI --display/--menu apply to every launched MDU
+    // An MDU is square, so one dimension does it.  DISPLAY size only: the
+    // render resolution stays put, so pixel-denominated strokes scale too.
+    size .= 0
+    if @opts.size?
+      size = Number(@opts.size)
+      if not Number.isFinite(size) or size <= 0
+        console.error `meds: --size wants a positive pixel count, got '${@opts.size}'`
+        process.exit(2)
+
+    // CLI --display/--menu/--size apply to every launched MDU
     for name of c.start
       lruConf := c.lrus[name]
       if lruConf.module == 'meds/mdu'
         lruConf.init ?= {}
         lruConf.init.display = @opts.display if @opts.display
         lruConf.init.menu = @opts.menu if @opts.menu
+        lruConf.window.displayPx = size if size > 0 and lruConf.window?
 
     return c
 
   async startLRU(CONFIG: any, lruName: string, thisStart: string[]): Promise<BrowserWindow | null>
     lruConf := CONFIG.lrus[lruName]
     return null unless 'window' in lruConf
+    lockSize := not CONFIG.dev and not lruConf.window.fullscreen
+    winW := lruConf.window.displayPx ?? lruConf.window.width
+    winH := lruConf.window.displayPx ?? lruConf.window.height
     newWindow := new BrowserWindow {
       webPreferences
-      width: lruConf.window.width+10,
-      height: lruConf.window.height+30,
+      width: winW+10,
+      height: winH+30,
       x: lruConf.window.x,
       y: lruConf.window.y,
       frame: false,
       fullscreen: lruConf.window.fullscreen,
       backgroundColor: lruConf.window.backgroundColor ?? "#101336"
+      resizable: not lockSize
+      maximizable: not lockSize
       show: false  // 'show: true' steals focus.
     }
     newWindow.once 'ready-to-show', () =>
       newWindow.showInactive()
     remote.enable newWindow.webContents
-    // Left-edge growth tracking: ANY resize that moves x while keeping
-    // the right edge fixed — the macOS native frameless edge drag OR the
-    // cde-window grab strip's 'resize-left' setBounds — accumulates
-    // 'inset' (extra work space opened on the left) and pushes the total
-    // to the renderer, which shifts the canvas right so the on-screen
-    // content stays put. Main-process bounds are the single source of
-    // truth, so this works even when the OS swallows the edge's DOM
-    // pointer events.
-    b0 := newWindow.getBounds()
-    st := {x: b0.x, right: b0.x + b0.width, inset: 0}
-    @insetState[newWindow.id] = st
-    newWindow.on 'resize', =>
-      b := newWindow.getBounds()
-      if b.x != st.x and Math.abs((b.x + b.width) - st.right) <= 2
-        st.inset = Math.max(0, st.inset + (st.x - b.x))
-        newWindow.webContents.send 'cde-left-inset', st.inset
-      st.x = b.x
-      st.right = b.x + b.width
+    if CONFIG.dev
+      b0 := newWindow.getBounds()
+      st := {x: b0.x, right: b0.x + b0.width, inset: 0}
+      @insetState[newWindow.id] = st
+      newWindow.on 'resize', =>
+        b := newWindow.getBounds()
+        if b.x != st.x and Math.abs((b.x + b.width) - st.right) <= 2
+          st.inset = Math.max(0, st.inset + (st.x - b.x))
+          newWindow.webContents.send 'cde-left-inset', st.inset
+        st.x = b.x
+        st.right = b.x + b.width
     newWindow.webContents.on 'before-input-event', (event, input) =>
       // Ctrl+Shift+D toggles DevTools as a detached window
       if input.control and input.shift and input.key.toLowerCase() == 'd'
@@ -335,20 +345,21 @@ class MedsRunner
     return newWindow
 
   async createWindows(): Promise<void>
-    // Left-border drag-resize from the cde-window chrome: move x and grow
-    // width together, so on-screen content stays put while empty work space
-    // opens on the left (e.g. to reach overlay corner handles)
-    ipcMain.on 'resize-left', (event, dx) =>
-      win := BrowserWindow.fromWebContents(event.sender)
-      if win
-        b := win.getBounds()
-        d .= Math.round(dx)
-        // never shrink narrower than the original geometry (inset >= 0)
-        st := @insetState[win.id]
-        if st? and d > st.inset
-          d = st.inset
-        if d != 0
-          win.setBounds({x: b.x + d, y: b.y, width: b.width - d, height: b.height})
+    // Left-border drag-resize from the cde-window chrome, --dev only: move x
+    // and grow width together, so on-screen content stays put while empty
+    // work space opens on the left (e.g. to reach overlay corner handles)
+    if @CONFIG.dev
+      ipcMain.on 'resize-left', (event, dx) =>
+        win := BrowserWindow.fromWebContents(event.sender)
+        if win
+          b := win.getBounds()
+          d .= Math.round(dx)
+          // never shrink narrower than the original geometry (inset >= 0)
+          st := @insetState[win.id]
+          if st? and d > st.inset
+            d = st.inset
+          if d != 0
+            win.setBounds({x: b.x + d, y: b.y, width: b.width - d, height: b.height})
 
     // Collect shared (headless) LRUs from the start list
     sharedLRUs .= @CONFIG.start.filter((x: string): boolean => @CONFIG.lrus[x]?.shared)

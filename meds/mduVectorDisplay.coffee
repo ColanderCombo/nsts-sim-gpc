@@ -371,6 +371,11 @@ export class VectorDisplay
                                         }
     document.body.appendChild(@renderer.domElement)
     @renderer.setSize(@widthPx,@heightPx)
+    # --size: render at the config resolution and scale the canvas element
+    # down, so stroke weights shrink with it.
+    if @CONFIG.window.displayPx
+      @renderer.domElement.style.width = "#{@CONFIG.window.displayPx}px"
+      @renderer.domElement.style.height = "#{@CONFIG.window.displayPx}px"
     @renderer.setClearColor(@c2h.black)
     @renderer.autoClear = false
     @renderer.localClippingEnabled = true   # per-material clippingPlanes (tape windows)
