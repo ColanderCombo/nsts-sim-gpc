@@ -31,6 +31,21 @@ import {PackedBits} from '../gpc/util'
 # grid; that puts the format area at columns 0..51 and rows 0..25.
 #
 #
+# Addressable units (AU) are the coordinate system the deck's `nnnA` form
+# writes in.  STS-83-0020V1-34/sect.3.4.3: "a 1024 x 731 (X, Y) CRT
+# addressable unit grid ... denoted in the table by specifying an A after
+# the Y numerical entry".  One AU is one beam unit, and the character cells
+# lie inside the grid: column c at AU 18 + 19c, row r at AU 27r.
+#
+# Dynamic symbol coordinates are instead signed about the screen centre,
+# X +/-512 and Y +/-365.  Position words carry both forms and nothing in the
+# word distinguishes them; the constants below are calibrated against
+# captured display memory.
+ANGLE_UNITS  = 4096  # op 4 character-rotation units per full turn (0.088 deg)
+ANGINC_UNITS = 32768 # op 5 angle-increment units per turn (0.011 deg); the
+                     # field is still 12 bits, so the range is 0..44.99 deg
+AU_WIDTH    = 1024   # the addressable-unit grid: X 0..1023
+AU_HEIGHT   = 731    # ... Y 0..730
 GRID        = 2048   # beam-coordinate wrap, both axes
 COL_PITCH   = 19     # screen units per character column (small characters)
 ROW_PITCH   = 27     # screen units per character row
@@ -41,7 +56,9 @@ ROW_ORIGIN  = 364    # beam Y of cell row 0
 ABS_X_ORIGIN = 1555  # beam X of absolute screen coordinate 0 (cell col 0 = 18)
 ABS_Y_ORIGIN = 364   # beam Y of absolute screen coordinate 0 (= cell row 0)
 
-export {GRID, COL_PITCH, ROW_PITCH, COL_PITCH_L, ROW_PITCH_L,
+export {ANGLE_UNITS, ANGINC_UNITS,
+        AU_WIDTH, AU_HEIGHT, GRID, COL_PITCH, ROW_PITCH,
+        COL_PITCH_L, ROW_PITCH_L,
         COL_ORIGIN, ROW_ORIGIN, ABS_X_ORIGIN, ABS_Y_ORIGIN}
 
 # Beam register -> screen coordinate, in character cells with the origin at
@@ -56,9 +73,12 @@ export screenY = (y) -> ((ABS_Y_ORIGIN - y + GRID) %% GRID) / ROW_PITCH
 export cellCol = (x) -> ((x - COL_ORIGIN + GRID) %% GRID) / COL_PITCH
 export cellRow = (y) -> ((ROW_ORIGIN - y + GRID) %% GRID) / ROW_PITCH
 
-# Beam modes in FCW2's low nibble.  Bit 2 is the "upright" bit, which
-# character rotation clears -- so rotated characters read 2 / 3.
+# Beam modes in FCW2's low three bits.  Bits 1-0 select the generator and
+# bit 2 is the upright bit, which rotation clears: a vector reads 5 upright
+# and 1 rotated, small characters 6 and 2, large 7 and 3.
 export MODE = {VECTOR: 5, CHAR_SMALL: 6, CHAR_LARGE: 7}
+export GEN  = {VECTOR: 1, CHAR_SMALL: 2, CHAR_LARGE: 3}   # mode & 3
+export UPRIGHT = 0x4
 
 # The REPEAT word: the number of repeats is (REPT_BASE - <FCW>)
 # So, for 0x083A, reps = 0x0841 - 0x83A = 7
@@ -112,7 +132,7 @@ export class FCW extends PackedBits
       when 'MININC', 'SPTYPE'
         out.v.step = @signExtend out.v.step, 8
       when 'ROT'
-        out.v.quarterTurns = out.v.angle >> 10
+        out.v.degrees = out.v.angle * 360 / ANGLE_UNITS
       when 'BRANCH'
         # op 1's bottom bit is address bit 12 (see the table entry); the
         # 12-bit field stays as `addr12` for the record, `addr` is the target
@@ -123,6 +143,13 @@ export class FCW extends PackedBits
         out.v.char1 = @DEUCharset[out.v.char1]
         out.v.char2 = @DEUCharset[out.v.char2]
     return out
+
+  # The three characters of a land-site label, from its op 6 pair.
+  lsiteText: (w1, w2) ->
+    a = (w1 >> 4) & 0x7f
+    b = (((w1 & 0x0f) << 3) | ((w2 >> 8) & 0x07)) & 0x7f
+    c = (w2 >> 1) & 0x7f
+    ((@DEUCharset[g] ? ' ') for g in [a, b, c]).join('')
 
   signExtend: (v, bits) ->
     sign = 1 << (bits - 1)
@@ -136,16 +163,17 @@ export class FCW extends PackedBits
   noop:      ()        -> 0x0000
   repeat:    (n)       -> (REPT_BASE - n) & 0xffff
   branch:    (addr)    -> 0x1000 | (addr & 0x1fff)
-  subList:   (n, addr) -> [0x2100 | (n & 0x00ff), 0x1000 | (addr & 0x1fff)]
+  subList:   (n, addr) -> [@subListWord(n, addr), @branch(addr)]
+  subListWord: (n, addr) ->
+    0x2000 | ((((addr ? 0) >> 12) & 0xf) << 8) | (n & 0x00ff)
   attrMode:  (o={})    -> 0x3800 | (if o.dash then 0x200 else 0) |
                                    (if o.blink then 0x100 else 0) |
                                    (if o.axisY then 0x020 else 0) |
                                    (if o.intensity then 0x008 else 0)
-  #
-  # NOTE: the interpretation of bits 5-6 is currently unclear.
-  #   the FCW2 macro says they set polar coordinate mode: POLRX & POLRY
-  #   dfg input suggests they set 'alternate character set'
-  #
+  # `alt` selects the alternate character set (`ALTCHAR=`, see
+  # `ALTCHARSET`), encoded in FCW2 bits 6 and 5 to match `src/dfg`.  The
+  # bit assignment is unconfirmed; those bits are also named POLRX/POLRY,
+  # a polar coordinate mode, which is a separate feature.
   charMode:  (o={})    ->
     mode = if o.large then MODE.CHAR_LARGE else MODE.CHAR_SMALL
     mode = mode & ~0x4 if o.rotated          # rotation clears the upright bit
@@ -156,12 +184,28 @@ export class FCW extends PackedBits
   colorMode: (code)    ->
     if code? then 0x3400 | 0x80 | (code & 0x3f) else 0x3400 | 40
   colorClear: ()       -> 0x3400
+  # Double intensity in FCW3 bit 6, beside the palette.  `attrMode` carries
+  # the same attribute in FCW1 bit 3; both forms occur.
+  intensityMode: (hi, code) ->
+    (if code? then @colorMode(code) else @colorClear()) | (if hi then 0x40 else 0)
   valueDisplay: (n)    -> 0x3c00 | (n & 0x3ff)
-  rotation:  (turns)   -> 0x4000 | ((turns & 3) << 10)
-  angle:     (a)       -> 0x4000 | (a & 0xfff)
+  rotation:  (deg)     -> @angle(Math.round(deg * ANGLE_UNITS / 360))
+  angle:     (a)       -> 0x4000 | (((a %% ANGLE_UNITS) + ANGLE_UNITS) %% ANGLE_UNITS)
   majorInc:  (units)   -> 0x5000 | (units & 0x7ff)
   minorInc:  (units)   -> 0x7800 | (units & 0xff)
   specialType: (units) -> 0x7c00 | (units & 0xff)
+  circle:    (r)       -> 0x7400 | ((Math.round(r) & 0x1ff) << 1)
+  # A circle is drawn as three words: FCW2 with the deflection bits gated
+  # on, the circle, then FCW2 restored.  The beam is already at the centre.
+  circleRun: (r, fcw2) ->
+    fcw2 = (fcw2 ? @charMode({})) & 0xffff
+    [fcw2 | 0x0005, @circle(r), fcw2]
+  angleIncDeg: (deg)   -> @angleInc(Math.round(deg * ANGINC_UNITS / 360))
+  angleInc:  (units)   -> 0x5000 | (Math.round(units) & 0xfff)
+  lsiteWords: (text) ->
+    [a, b, c] = (@toGlyph(text[i] ? ' ') for i in [0..2])
+    [0x6000 | ((a & 0x7f) << 4) | ((b >> 3) & 0x0f),
+     0x6800 | ((b & 0x07) << 8) | ((c & 0x7f) << 1)]
   xPosition: (x)       -> 0x8000 | (x & 0x7ff)
   yPosition: (y)       -> 0x9000 | (y & 0x7ff)
   translateX: (x=0)    -> 0x8800 | (x & 0x7ff)
@@ -418,8 +462,10 @@ export class FCW extends PackedBits
   #   op 1  branch to a 12-bit DEU address
   #   op 3  mode-register write, register selected by bits 11-10
   #   op 4  character rotation
-  #   op 5  major-axis (character advance) step
-  #   op 7  minor-axis (carriage return) step
+  #   op 5  major-axis (character advance) step, or the angle-increment
+  #         register when FCW2's `incr` bit is set
+  #   op 6  land-site label (a pair of words, three characters)
+  #   op 7  circle, minor-axis (carriage return) step, or special type
   #   op 8  X beam position / X reference (translate) register
   #   op 9  Y beam position / Y reference (translate) register
   #   op A  vector slope word
@@ -449,8 +495,11 @@ export class FCW extends PackedBits
     # ("load what follows at `target`"), and as the exit from a critical
     # format (0x111E) and from a display's static section (0x19EE).
     #
-    # A target below 0x1000 cannot be expressed.  Nothing observed
-    # needs one: display lists live in the upper half of memory. 
+    # DEU addresses are 13 bits over an 8K halfword memory: the opcode is
+    # 000 in bits 15-13 and bit 12 is address bit 12, so `addr` below is
+    # the whole 13 bits.  Display lists occupy the upper half, which is why
+    # every such word reads as op 1.  Known addresses: 0x19EE the display
+    # header, 0x1A06 the uplink indicator, 0x1A0E the dynamic portion. 
     BRANCH: {
       d:'0001aaaaaaaaaaaa'
       nom:{ a:'addr12' }
@@ -458,13 +507,17 @@ export class FCW extends PackedBits
 
     # op 2: splice in a run of words from elsewhere
     #
-    # `0x2000 | count`, ALWAYS followed by a branch word giving the address.
-    # Draw `count` words from there, then carry on after the branch word --
-    # a call with an explicit length instead of a return instruction.
+    #   0010 ssss nnnnnnnn    s = sector, n = count
     #
+    # Always followed by a branch word giving the address.  Draw `count`
+    # words from there, then carry on after the branch word -- a call with
+    # an explicit length instead of a return instruction.  `sector` is the
+    # 4K page of the target; the branch word that follows carries the whole
+    # 13-bit address, which is where the target is read from.  Display
+    # lists occupy the upper half of the 8K memory, so the sector reads 1.
     SUBLIST: {
-      d:'00100001nnnnnnnn'
-      nom:{ n:'count' }
+      d:'0010ssssnnnnnnnn'
+      nom:{ s:'sector', n:'count' }
     }
 
     # op 3: the three feature-control words and the value display
@@ -473,12 +526,13 @@ export class FCW extends PackedBits
     # CONTROL WORD #1/#2/#3") and re-sends it whenever one bit changes, so
     # every one of these is a whole-register write, never a delta.
     #
-    # FCW2 -- beam mode and refresh control.  The flight assembler macro
-    # names its ten bits EOR, INCR, DLY, POLRX, POLRY, then the five beam
-    # gating bits AC5..AC1.
+    # FCW2 -- beam mode and refresh control.  Ten bits: EOR, INCR, DLY,
+    # POLRX, POLRY, then the five beam gating bits AC5..AC1.
     #   eor     end of refresh -- the DEU stops interpreting here
-    #   incr    enable the angle-increment register
-    #   polarX/polarY   polar coordinate mode on each axis
+    #   incr    an op 5 word writes the per-glyph rotation step rather
+    #           than the character advance
+    #   polarX/polarY   polar coordinate mode on each axis; `ALTCHAR=` is
+    #           also encoded here (see `charMode`)
     #   xyRef   AC5 and AC4 -- the X/Y REFERENCE gate (see below)
     #   mode    AC3..AC1; 5 begins a vector, 6 selects small characters,
     #           7 large
@@ -488,22 +542,18 @@ export class FCW extends PackedBits
       nom:{ e:'eor', i:'incr', d:'dly', p:'polarX', q:'polarY',
             r:'xyRef', m:'mode' }
     }
-    # FCW3 -- colour (MEDS only; a monochrome DEU has no palette).  The
-    # interpreter's own colour path is `... & 0xFFC0 | 0x0080 | palette`:
-    # the palette is SIX bits and bit 7 enables it.  `select` off leaves
-    # the DEU drawing in its own default colour.
+    # FCW3 -- colour (MEDS only; a monochrome DEU has no palette) and
+    # double intensity.  The palette is six bits and bit 7 enables it;
+    # `select` off leaves the DEU drawing in its own default colour.
+    # Bit 6 is double intensity, and survives a colour change.
     FCW3: {
       d:'001101_psqcccccc'
-      nom:{ p:'spchar', s:'select', q:'ebit', c:'color' }
+      nom:{ p:'spchar', s:'select', q:'intensity', c:'color' }
     }
-    # FCW1 -- drawing attributes.  The macro names its eight bits TVB,
-    # FBIT, TYPB, OCRB, XYBIT, SPBIT, HBIT, BLBIT -- FBIT
-    # is the blink (flash) bit, XYBIT the spacing direction, HBIT the high
-    # (double) intensity bit.
-    #
-    # Unresolved: we have seen 0x0040 noted as the "high intensity bit", 
-    # which is not where most references put intensity.  
-    # Left as bit 3 for now.
+    # FCW1 -- drawing attributes.  Eight bits: TVB, FBIT, TYPB, OCRB,
+    # XYBIT, SPBIT, HBIT, BLBIT.  FBIT is blink, XYBIT the spacing
+    # direction, HBIT double intensity.  FCW3 bit 6 carries double
+    # intensity as well.
     FCW1: {
       d:'001110dbtoasik__'
       nom:{ d:'dash', b:'blink', t:'typ', o:'ocr', a:'axisY', s:'sp',
@@ -517,8 +567,8 @@ export class FCW extends PackedBits
 
     # op 4: character angle
     #
-    # A 12-bit angle; the display decks only ever write quarter turns, so
-    # `decodeFCW` also reports `quarterTurns` = the top two bits.
+    # A 12-bit angle over a full turn: one unit is 360/4096 = 0.088
+    # degrees.  `decodeFCW` reports `degrees` beside the raw field.
     ROT: {
       d:'0100aaaaaaaaaaaa'
       nom:{ a:'angle' }
@@ -538,9 +588,9 @@ export class FCW extends PackedBits
       d:'0101_sssssssssss'
       nom:{ s:'step' }
     }
-    # Bits 11-10 of op 7 select what the low byte means.  10 is the normal
-    # line spacing; 11 is "special type mode", the same step under a
-    # different character generator.
+    # Bits 11-10 of op 7 select what the rest of the word means: 01 circle,
+    # 10 line spacing, 11 the same step under the special type character
+    # generator.  00 is unknown.
     MININC: {
       d:'011110__ssssssss'
       nom:{ s:'step' }
@@ -549,14 +599,33 @@ export class FCW extends PackedBits
       d:'011111__ssssssss'
       nom:{ s:'step' }
     }
+    # A circle of the given radius about the beam, which it does not move.
+    # The radius is nine bits at bit 1, in screen units, so the low bit is
+    # always zero and the radius saturates at 511.  FCW1's dash attribute
+    # applies -- USA-002869/sect.3.4.2.1-5, on the four self-test circles:
+    # "the second smallest (0.8204 inch diameter) is dashed, and the other
+    # three are drawn with solid lines".
+    CIRCLE: {
+      d:'011101rrrrrrrrr_'
+      nom:{ r:'radius' }
+    }
 
-    # op 6: the land-site table
+    # op 6: the land-site label
     #
-    # Two opcodes, `01100` and `01101`, emitted as a pair by the LSITE DDT
-    # command.  We haven't worked out exactly what this should generate yet.
-    LSITE: {
-      d:'0110svvvvvvvvvvv'
-      nom:{ s:'second', v:'value' }
+    # `LSITE=` emits an XPOS/YPOS pair placing the beam, then this op 6
+    # pair carrying a three-character label -- the first three characters
+    # of a runway name (STS-83-0020V3-34/app.B).  Bit 11 selects the half,
+    # and the second character straddles the two:
+    #
+    #   LSITE1  0110 0AAA AAAA BBBB   A = char 1, then char 2's top 4 bits
+    #   LSITE2  0110 1BBB CCCC CCC0   char 2's low 3 bits, C = char 3
+    LSITE1: {
+      d:'01100aaaaaaabbbb'
+      nom:{ a:'char1', b:'char2hi' }
+    }
+    LSITE2: {
+      d:'01101bbbccccccc_'
+      nom:{ b:'char2lo', c:'char3' }
     }
 
     # op 8 / 9: beam position
@@ -600,6 +669,24 @@ export class FCW extends PackedBits
       d:'11aaaaaaabbbbbbb'
       nom:{ a:'char1', b:'char2' }
     }
+  }
+
+  # The MEDS alternate character set, keyed by symbol number.  `ALTCHAR=n`
+  # gives n in decimal; its hex value is the symbol number here.  Names
+  # from STS-83-0020V1-34, which does not give the glyph shapes.  Used by
+  # displays 0540G, 0543G and 3041G.
+  #
+  # A code shared with `DEUCharset` does not carry the same glyph: 19 is a
+  # lozenge there and the Shuttle symbol here.  No alternate glyphs are
+  # loaded, so these draw their `DEUCharset` counterparts.
+  ALTCHARSET: {
+    0x14: 'filled/shaded circle'    # alternate landing site 1; landing sites
+    0x15: 'filled/shaded diamond'   # alternate landing site 2
+    0x16: 'cross, large'            # instantaneous impact point, main plot
+    0x17: 'cross, small'            # instantaneous impact point, inset window
+    0x18: 'Shuttle planform'        # vehicle current position (rotated)
+    0x19: 'Shuttle symbol'          # Entry Bearing, rotated by roll angle
+    0x1c: 'heading arrow'           # rotated by heading, points up at zero
   }
 
   DEUCharset: {

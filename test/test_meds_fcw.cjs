@@ -107,15 +107,21 @@ async function main() {
 
     // op 2: SUBLIST, the variable-field splice
     //
-    // `SUBLIST count` + `BRANCH addr`: draw `count` words from `addr`, then
-    // carry on after the branch word.  Taken from a live GPCIPL display,
-    // where 0x2107 + 0x1AAA splices the seven words at 0x1AAA into the menu
-    // line to give " MEMORY PURGE".  The count is literal, not less one.
+    // `0010 ssss nnnnnnnn` + a branch word: draw `count` words from the
+    // address, then carry on after the branch word.  The count is literal,
+    // not less one.  The GPCIPL menu splices its purge title this way,
+    // seven words out of sector 1.
     const sl = f.decodeFCW(0x2107);
     eq(sl.nm, 'SUBLIST', 'op 2 decodes');
     eq(sl.v.count, 7, 'the count is literal');
+    eq(sl.v.sector, 1, 'and the sector sits above it');
     eq(f.decodeFCW(f.subList(7, 0x1aaa)[1]).v.addr, 0x1aaa, 'its branch word');
-    eq(f.subList(7, 0x1aaa)[0], 0x2107, 'and the pair round-trips');
+    eq(hex(f.subList(7, 0x1aaa)[0]), '0x2107', 'and the pair round-trips');
+    // The sector is the target's 4K page rather than part of the opcode, so
+    // it decodes for any value even though display lists put it at 1.
+    eq(f.decodeFCW(0x2003).v.sector, 0, 'sector 0 decodes');
+    eq(f.decodeFCW(0x2003).v.count, 3, '... as a SUBLIST of 3');
+    eq(f.decodeFCW(0x2f20).v.sector, 15, 'so does the widest sector');
 
     // op 3: the four mode registers
     //
@@ -174,13 +180,20 @@ async function main() {
     eq(vd.nm, 'VDISP', 'value display');
     eq(vd.v.vdisp, 0x2a5, 'value display code');
 
-    // op 4: character rotation
-    //
+    // op 4: character rotation -- 12 bits at 360/4096 per unit.
     for (let q = 0; q < 4; q++) {
-        const d = f.decodeFCW(f.rotation(q));
+        const d = f.decodeFCW(f.rotation(q * 90));
         eq(d.nm, 'ROT', `rotation ${q * 90} degrees decodes`);
-        eq(d.v.quarterTurns, q, `rotation ${q * 90} degrees`);
+        eq(d.v.angle, q * 1024, `rotation ${q * 90} degrees is ${q * 1024} units`);
+        eq(d.v.degrees, q * 90, `... and reads back as ${q * 90} degrees`);
     }
+    eq(hex(f.rotation(270)), '0x4c00', 'ANGLE=270, the only non-zero the decks use');
+    // one unit is 0.088 degrees, and the field spans a whole turn
+    eq(f.decodeFCW(f.rotation(360 / 4096)).v.angle, 1, 'one unit is 360/4096 deg');
+    eq(f.decodeFCW(f.rotation(33.84)).v.angle, 385, 'an arbitrary angle quantises');
+    eq(f.decodeFCW(f.angle(4095)).v.degrees.toFixed(3), '359.912', 'the last unit');
+    eq(hex(f.rotation(-90)), hex(f.rotation(270)), 'a negative angle wraps');
+    eq(hex(f.rotation(450)), hex(f.rotation(90)), '... and so does one past a turn');
 
     // op 5 / 7: the spacing steps, two's complement
     //
@@ -292,25 +305,52 @@ async function main() {
     eq(sp.nm, 'SPTYPE', 'special type mode');
     eq(sp.v.step, -27, 'special type step sign-extends');
     ok(f.specialType(-27) !== f.minorInc(-27), 'the two spacings are distinct words');
-    const ls = f.decodeFCW(0x6800 | 123);
-    eq(ls.nm, 'LSITE', 'land-site word');
-    eq(ls.v.second, 1, 'the second land-site opcode');
-    eq(ls.v.value, 123, 'land-site payload carried opaquely');
+    // op 6: a pair of words carrying three 7-bit characters, the middle
+    // one straddling the word boundary.
+    const [ls1, ls2] = f.lsiteWords('EDW');
+    eq(hex(ls1), hex(0x6000 | (0x45 << 4) | (0x44 >> 3)), 'land-site word 1');
+    eq(hex(ls2), hex(0x6800 | ((0x44 & 7) << 8) | (0x57 << 1)), 'land-site word 2');
+    eq(f.decodeFCW(ls1).nm, 'LSITE1', 'first land-site opcode');
+    eq(f.decodeFCW(ls2).nm, 'LSITE2', 'second land-site opcode');
+    eq(f.decodeFCW(ls1).v.char1, 0x45, 'the first character rides whole');
+    eq(f.lsiteText(ls1, ls2), 'EDW', 'the label round-trips through the pair');
+    eq(f.lsiteText(...f.lsiteWords('KSC')), 'KSC', 'and again for KSC');
+
+    // op 7 sub-selector 01: the circle.  Nine radius bits at bit 1.
+    const ci = f.decodeFCW(f.circle(5));
+    eq(ci.nm, 'CIRCLE', 'circle word');
+    eq(ci.v.radius, 5, 'circle radius');
+    // Matches `dfg`'s FCW.circle / FCW.circle_run.
+    eq(hex(f.circle(5)), '0x740a', 'CIRCR = 5 is 740A');
+    eq(f.decodeFCW(f.circle(511)).v.radius, 511, 'the widest circle');
+    const run = f.circleRun(5);
+    eq(run.length, 3, 'a circle is three words');
+    eq(hex(run[0]), hex(f.charMode({}) | 5), 'gated FCW2 leads');
+    eq(hex(run[2]), hex(f.charMode({})), 'and the plain FCW2 restores');
+
+    // FCW3 carries double intensity at 0x40 beside the six-bit palette.
+    eq(hex(f.intensityMode(true)), '0x3440', 'FCW3 intensity, DEU default colour');
+    eq(hex(f.intensityMode(false, 29)), hex(f.colorMode(29)), 'intensity off');
+    eq(hex(f.intensityMode(true, 29)), hex(f.colorMode(29) | 0x40),
+        'FCW3 intensity rides alongside a palette entry');
+    const f3 = f.decodeFCW(f.intensityMode(true, 29));
+    eq(f3.v.intensity, 1, 'and decodes as the intensity bit');
+    eq(f3.v.color, 29, '... with the colour intact beside it');
+    eq(f.decodeFCW(f.colorMode(29)).v.intensity, 0, 'a plain colour is not bright');
 
     // a 12-bit angle, of which the decks use the top two bits
     //
-    eq(f.rotation(2), f.angle(2 << 10), 'a quarter turn is the top of the angle field');
+    eq(f.rotation(180), f.angle(2 << 10), 'half a turn is the top of the angle field');
     eq(f.decodeFCW(f.angle(0x123)).v.angle, 0x123, 'a fine angle survives');
+    // the angle INCREMENT is eight times finer, in the same width of field
+    eq(hex(f.angleIncDeg(360 / 32768)), '0x5001', 'one increment unit is 0.011 deg');
+    eq(hex(f.angleIncDeg(44.989)), '0x5fff', 'the increment tops out under 45 deg');
 
     // unknown words
     //
-    // Op 7 sub-selectors 00 and 01 -- the circle -- are not modelled, so an
-    // unrecognised word must be reported rather than drawn as something
-    // else.  (Op 2 was left out on the same grounds and that was WRONG: it
-    // is SUBLIST.  No deck carries one because a compiled deck is a single
-    // flat static section; it appears only in live DEU memory, which is why
-    // a corpus of decks was the wrong thing to conclude absence from.)
-    for (const w of [0x7000, 0x74ff]) {
+    // Op 7 sub-selector 00 is unmodelled: an unrecognised word is reported
+    // rather than decoded as something else.
+    for (const w of [0x7000, 0x73ff]) {
         eq(f.decodeFCW(w), undefined, `${hex(w)} is unknown`);
     }
 
@@ -321,9 +361,11 @@ async function main() {
         SUBLIST: f.subList(4, 0x1a22)[0],
         FCW1: f.attrMode({blink: true}), FCW2: f.charMode({}),
         FCW3: f.colorMode(7), VDISP: f.valueDisplay(9),
-        ROT: f.rotation(1), MAJINC: f.majorInc(19), MININC: f.minorInc(-27),
+        ROT: f.rotation(90), MAJINC: f.majorInc(19), MININC: f.minorInc(-27),
         XPOS: f.xPosition(500), YPOS: f.yPosition(300),
         VECA: 0xa100, VECB: 0xb100, CHAR2: f.glyphPair(1, 2),
+        CIRCLE: f.circle(5),
+        LSITE1: f.lsiteWords('EDW')[0], LSITE2: f.lsiteWords('EDW')[1],
     };
     for (const [nm, w] of Object.entries(built)) {
         eq(f.decodeFCW(w).nm, nm, `${hex(w)} decodes as ${nm}`);

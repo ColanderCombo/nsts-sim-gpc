@@ -104,7 +104,9 @@ export class Screen_DPS extends MDUScreen
   # draws one or two characters and advances the beam by the MAJOR step,
   # and a carriage return sends it back to the start of the line and on by
   # the MINOR step.  A vector is a run of six words: enter vector mode,
-  # position, a slope word, an extent word, and a mode word to leave.
+  # position, a slope word, an extent word, and a mode word to leave.  A
+  # circle is one word inside the same mode bracket, and a land-site label
+  # is a pair of words holding three characters.
   #
   # A section ends at the end-of-refresh bit in an FCW2, or at a BRANCH with
   # nowhere left to go
@@ -125,10 +127,17 @@ export class Screen_DPS extends MDUScreen
     majorStep = FCWD.COL_PITCH                            # per-glyph advance
     minorStep = -FCWD.ROW_PITCH                           # per-carriage-return
     axisY = false                                         # spacing direction
-    blink = dash = bright = false
-    large = false ; rotated = false ; angle = 0
+    blink = dash = false
+    fcw1Bright = fcw3Bright = false                       # both mean bright
+    large = false ; angle = 0
+    angleStep = 0                                         # radians per glyph
+    incrOn = false                                        # op 5 writes angleStep
+    vecRotate = false                                     # vectors turn with
+                                                          # the character angle
+    altchar = false                                       # alternate glyph set
     colorCode = null                                      # null = the DEU default
     slope = null
+    lsiteHi = null                                        # first op 6 word
     repeatCount = 0
 
     # A glyph is drawn at the beam, in the character-cell coordinates the rest
@@ -153,10 +162,20 @@ export class Screen_DPS extends MDUScreen
     penColor = () =>
       return @_deuColor(colorCode) if colorCode?
       @d.c2h.green
-    penIntensity = () -> if bright then 1.0 else 0.72
+    # Double intensity arrives as either FCW1 bit 3 or FCW3 bit 6.
+    penIntensity = () -> if fcw1Bright or fcw3Bright then 1.0 else 0.72
+
+    # Rotate a beam-space delta by the character angle.  `angle` runs
+    # opposite to the beam's Y, so a quarter turn advances up the screen.
+    rot = (dx, dy) ->
+      return [dx, dy] if not angle
+      cs = Math.cos(angle) ; sn = Math.sin(angle)
+      [dx * cs + dy * sn, -dx * sn + dy * cs]
 
     advance = () ->
-      if axisY then beamY += majorStep else beamX += majorStep
+      [dx, dy] = if axisY then rot(0, majorStep) else rot(majorStep, 0)
+      beamX += dx ; beamY += dy
+      angle += angleStep if angleStep       # letters a string around an arc
 
     carriageReturn = () ->
       if axisY
@@ -180,11 +199,28 @@ export class Screen_DPS extends MDUScreen
         else
           ch = @fcw.DEUCharset[g]
           if ch? and ch != ' '
-            trace? 'GLYPH', "'#{ch}'"
+            # `data/deu_font.svg` holds no alternate glyphs, so an
+            # ALTCHAR symbol draws its `DEUCharset` counterpart.
+            trace? 'GLYPH', "'#{ch}'#{if altchar then ' ALTCHAR' else ''}"
             add @d.str penX(), penY(), ch, penColor(),
               (if large then FCWD.COL_PITCH_L / FCWD.COL_PITCH else 1.0),
               1.0, 1.0, @d.deuFont, angle, false
           advance()
+
+    # Radius in beam units about the beam, which the circle does not move.
+    # Beam units are square, so in character cells this is an ellipse.
+    drawCircle = (r) =>
+      return if not (r > 0)
+      cx = penX() ; cy = penY()
+      n = Math.max(24, Math.min(96, Math.round(2 * r)))
+      pts = ([cx + r * Math.cos(2 * Math.PI * i / n) / FCWD.COL_PITCH,
+              cy - r * Math.sin(2 * Math.PI * i / n) / FCWD.ROW_PITCH] \
+             for i in [0..n])
+      trace? 'CIRCLE', "r #{r} at #{cx.toFixed(2)},#{cy.toFixed(2)}"
+      if dash
+        add @d.dashedLine pts, penColor()
+      else
+        add @d.line pts, penColor(), penIntensity()
 
     # A vector's two words carry the extent along the major axis and the
     # minor/major ratio; reconstruct both deltas in beam units and draw
@@ -198,6 +234,7 @@ export class Screen_DPS extends MDUScreen
       else
         dx = major
         dy = minor * (if a.signDiffer then -1 else 1) * (if dx < 0 then -1 else 1)
+      [dx, dy] = rot(dx, dy) if vecRotate
       x0 = penX() ; y0 = penY()
       trace? 'VECTOR', "d #{dx},#{dy} major=#{major} minor=#{minor} " +
                        "yMajor=#{a.yMajor} signDiffer=#{a.signDiffer} slope=#{a.slope}"
@@ -271,37 +308,48 @@ export class Screen_DPS extends MDUScreen
         when 'FCW1'
           dash = v.dash == 1
           blink = v.blink == 1
-          bright = v.intensity == 1
+          fcw1Bright = v.intensity == 1
           axisY = v.axisY == 1
         when 'FCW2'
           # AC5+AC4 gate the X/Y reference registers: while they are clear
           # the registers are held but not applied.
           xyRef = v.xyRef == 3
+          incrOn = v.incr == 1
+          angleStep = 0 if not incrOn
           if v.eor == 1
             done = true                 # end of refresh
-          else if (v.mode & 0x7) != FCWD.MODE.VECTOR
-            large = (v.mode & 1) == 1
-            # the upright bit is cleared while a rotation is in force
-            angle = 0 if (v.mode & 0x4) != 0
+          else
+            switch v.mode & 0x3
+              when FCWD.GEN.VECTOR
+                vecRotate = (v.mode & FCWD.UPRIGHT) == 0
+              when FCWD.GEN.CHAR_SMALL, FCWD.GEN.CHAR_LARGE
+                large = (v.mode & 0x3) == FCWD.GEN.CHAR_LARGE
+                altchar = v.polarX == 1     # where ALTCHAR is encoded
+                # the upright bit is cleared while a rotation is in force
+                angle = 0 if (v.mode & FCWD.UPRIGHT) != 0
         when 'FCW3'
           colorCode = if v.select == 1 then v.color else null
+          fcw3Bright = v.intensity == 1
         when 'ROT'
           angle = -2 * Math.PI * v.angle / 4096
         when 'MAJINC'
-          majorStep = v.step
+          if incrOn
+            # 12 unsigned bits of 360/32768 degrees, not MAJINC's signed
+            # 11, so the field is read from the word.
+            angleStep = -2 * Math.PI * (desc.word & 0x0fff) / 32768
+          else
+            majorStep = v.step
         when 'MININC', 'SPTYPE'
           minorStep = v.step
         when 'XPOS'
-          # An X position word starts a new BLOCK: it re-homes the beam
-          # vertically as well as setting the column.  Only observable when
-          # an X word stands alone -- all 2450 X words across the deck corpus
-          # are immediately followed by a Y word that overrides it -- and the
-          # live GPCIPL menu has exactly one, `XPOS 1839` between BFS4 and
-          # PASS5, where the real display puts PASS5 back on PASS1's row.
+          # An X position word starts a new block: it re-homes the beam
+          # vertically as well as setting the column.  This is observable
+          # only where an X word stands alone; elsewhere a following Y word
+          # overrides it.
           #
-          # The X/Y reference registers (the flight macros' `XTRN`/`YTRN`)
-          # are held: every position word on the axis draws at reference +
-          # coordinate for as long as FCW2's AC5+AC4 gate is set. 
+          # The X/Y reference registers (XTRN/YTRN) are held: every position
+          # word on the axis draws at reference + coordinate for as long as
+          # FCW2's AC5+AC4 gate is set.
           if v.translate == 1
             tx = v.x
           else
@@ -313,6 +361,14 @@ export class Screen_DPS extends MDUScreen
           else
             beamY = (v.y + (if xyRef then ty else 0)) %% FCWD.GRID
             homeY = beamY
+        when 'CIRCLE'
+          drawCircle(v.radius)
+        when 'LSITE1'
+          lsiteHi = word                # drawn when the pair completes
+        when 'LSITE2'
+          if lsiteHi?
+            drawGlyph(@fcw.toGlyph(c)) for c in @fcw.lsiteText(lsiteHi, word)
+            lsiteHi = null
         when 'VECA'
           slope = v
         when 'VECB'
@@ -324,7 +380,7 @@ export class Screen_DPS extends MDUScreen
           for _ in [0...n]
             drawGlyph(v.g1)
             drawGlyph(v.g2)
-        # VDISP and LSITE latch state this renderer does not draw.
+        # VDISP latches state this renderer does not draw.
 
     @group.add targetGroup
     @d.dirty = true
@@ -573,8 +629,7 @@ export class Screen_DPS extends MDUScreen
     @bgFCWS[idx+2] = @fcw.glyphSingle(@fcw.toGlyph(ch))
 
   _stCharRot: (idx, cx, cy, ch, rot) ->
-    q = ((Math.round(rot / (Math.PI/2)) % 4) + 4) % 4
-    @bgFCWS[idx] = @fcw.rotation(q)
+    @bgFCWS[idx] = @fcw.rotation(rot * 180 / Math.PI)   # rot in radians
     @_stChar(idx+1, cx, cy, ch)
 
   _stLine: (idx, x0, y0, x1, y1) ->
@@ -603,6 +658,8 @@ export class Screen_DPS extends MDUScreen
     # state the static format left set
     @bgFCWS[o] = @fcw.attrMode({})
     o += 1
+    # This .dfb carries the four self-test circles as polygons; the .dsp
+    # that produced it is not in the tree.
     @_stLayout = {}
     @_stLayout.boxVec  = o ; o += 4*ST_VECTOR_WORDS   # (2) windmill: 4 half-lines
     @_stLayout.letters = o ; o += 5*ST_CHARROT_WORDS+1 # (3) A,B,C,D,X + angle reset

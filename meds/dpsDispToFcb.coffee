@@ -78,8 +78,8 @@ dpsDispToFcb = (path) ->
         when 'CHAR', 'CHAR1'
           dfb.push fcw.glyphSingle(fcw.toGlyph(args[0]))
         when 'ROT'
-          # ROT n: character rotation in quarter turns (0..3).
-          dfb.push fcw.rotation(Math.round(parseFloat(args[0])) & 3)
+          # ROT n: character rotation, n in degrees.
+          dfb.push fcw.rotation(parseFloat(args[0]))
         when 'SIZE'
           # SIZE S|L: the DEU's two character sizes.
           dfb.push fcw.charMode({large: args[0] == 'L'})
@@ -103,15 +103,17 @@ dpsDispToFcb = (path) ->
           pts = (parseXY(a).map(parseFloat) for a in args)
           emitPolyline dfb, pts
         when 'CIRCLE'
-          # the DEU's own circle word is not sourced, so a circle is drawn as
-          # the polygon the hardware would otherwise be given
+          # CIRCLE r (cx,cy): r in character columns, scaled to the screen
+          # units the circle word carries.
           r = parseFloat(args[0])
           c = if args.length > 1 then parseXY(args[1]).map(parseFloat) else [COLS/2, ROWS/2]
-          asp = FCWD.COL_PITCH / FCWD.ROW_PITCH
-          n = 48
-          pts = ([c[0] + r*Math.cos(2*Math.PI*i/n),
-                  c[1] + r*asp*Math.sin(2*Math.PI*i/n)] for i in [0..n])
-          emitPolyline dfb, pts
+          emitXY dfb, c[0], c[1]
+          dfb.push fcw.circleRun(r * FCWD.COL_PITCH)...
+        when 'LSITE'
+          # LSITE (cx,cy) TEXT: a three-character landing-site label.
+          c = parseXY(args[0]).map(parseFloat)
+          emitXY dfb, c[0], c[1]
+          dfb.push fcw.lsiteWords(args[1..].join(' '))...
         when 'FOCUS'
           # (6) focus/resolution tick array about (cx,cy): 0.0273" spacing;
           # 33 vertical ticks left of centre + 34 right (horizontal array),

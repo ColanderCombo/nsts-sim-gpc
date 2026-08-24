@@ -6,6 +6,33 @@
 # status the GPC polls out of it.  The wire framing and message layouts are
 # in `meds/deuProto.coffee`.
 #
+# ---------------------------------------------------------------------------
+# The behavior of the MCDS/DEU & MEDS/IDP/MDU is specified in a number
+# of documents, some of which are generally available, others that aren't
+# known to be circulating:
+#
+# Available:
+#   STS-83-0020V1-34   FSSR, Displays and Controls, Vol 1 (GNC)
+#   STS-83-0020V2-34   ... Vol 2 (SM)
+#   STS-83-0020V3-34   ... Vol 3, Appendixes A, B, F
+#   USA-002869         PASS User's Guide (OI-32, OI-20)
+#   SS-P-0002-170      CPDS Vol I, STS System Level Requirements, Software
+#
+# Not Currently Available:
+#   ICD-3-1011-02      GPC/DEU ICD
+#   ICD-3-0070-01      GPC/IDP ICD (MEDS)
+#   MC615-0008         Display Electronic Unit, Orbiter
+#   MG017300           CPDS for the OFT Display Electronic Unit Control
+#                      Program End Item, Part I
+#   SD 74-SH-0230      Data Processing Subsystem Principles of Operation
+#   NAS9-14444         Display Format Generator, Off Line Support Processor
+#                      Requirements Document
+#   MG070100A1012E2    MEDS Display Application SW, SW Requirements Spec
+#   MG07010000013E7    MEDS documentation
+#   MG07010004013E2    MEDS documentation
+#   SS-P-002-580       Level B SM CPDS
+# ---------------------------------------------------------------------------
+#
 import * as DEU from 'meds/deuProto'
 import {SPL} from 'meds/deuSPL'
 
@@ -28,11 +55,10 @@ export class DEUUnit
 
     @mem = new Uint16Array(DEU.DEU_MEMORY_WORDS)
     @xfer = null                 # the transfer in progress, if any
-    @keyQueue = []               # completed ENTRIES (arrays of codes)
+    @keyQueue = []               # completed entries (arrays of codes)
     @spl = new SPL()             # the scratch pad line, and the entry on it
     @majorFunc = o.majorFunc ? 0
     @ipled = o.ipled ? true
-    # A load is running from the moment its FIRST BLOCK arrives
     @iplRunning = false
     # MSG RESET and ACK are not keystrokes.  A press latches a header 
     # bit that rides out on the next poll and is cleared once reported.
@@ -180,14 +206,14 @@ export class DEUUnit
     hdr |= DEU.HDR.IPL_REQUIRED if not @ipled
     hdr |= DEU.HDR.MSG_RESET if @msgResetPending
     hdr |= DEU.HDR.ACK if @ackPending
-    # A response carrying MSG RESET or ACK does NOT carry a keyboard message:
+    # A response carrying MSG RESET or ACK does not carry a keyboard message:
     # when either bit is set the KYBD MSG PRESENT flag is not.  The queued
     # entry is not lost, it waits for the next poll 40 ms later.
     hdr |= DEU.HDR.KYBD_MSG if @keyQueue.length > 0 and
                               not (@msgResetPending or @ackPending)
     hdr
 
-  # The header as TRANSMITTED, which is where MSG RESET and ACK are spent.
+  # The header as transmitted, which is where MSG RESET and ACK are sent.
   # The monitor acts once per poll that carries one -- it pops one message
   # off the error list per MSG RESET bit it sees -- so a single press must
   # be reported exactly once.
@@ -198,10 +224,10 @@ export class DEUUnit
     hdr
 
   pollResponse: () ->
-    # The header is taken BEFORE the queue is drained: it carries the "a
+    # The header is taken before the queue is drained: it carries the "a
     # keyboard message is ready" bit, which is set from the queue depth.
     hdr = @takeHeader()
-    # ONE entry per message, never two concatenated: the monitor dispatches on
+    # One entry per message, never two concatenated: the monitor dispatches on
     # the first keystroke of the message, so a second entry riding behind the
     # first would be read as its arguments.  A queued entry waits 40 ms for
     # the next poll.
