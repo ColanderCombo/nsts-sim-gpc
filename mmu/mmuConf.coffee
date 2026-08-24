@@ -102,6 +102,18 @@
 #     14  invalid '101' check
 #     15  MIA data/address error
 #
+#
+# Place to dump spec excerpts:
+#
+#   SS-P-0002-170H/p.4-29 sect.4.6.2.3.2 par.5:
+#     All areas on the MM not filled with software elements shall contain
+#     a fill batter of C6C6_16. No checksums shall be included at any
+#     location for this fill data.
+#   par.8:
+#     Those areas of a MM block between the load block checksum and the end 
+#     of the MM block shall be filled with a C6C6_16 fill pattern.
+#
+
 
 # geometry
 #
