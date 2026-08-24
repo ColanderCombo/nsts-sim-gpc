@@ -2253,13 +2253,16 @@ class Instruction extends PackedBits
                     xtbs:[1.75,0.75]
                     xtc:[2.2,2.4,3.2,2.3,2.4]
                     e:(t,v) ->
+                        # "First, the branch address is computed ... Then, the
+                        # contents of bits 0 through 15 of general register R1
+                        # are reduced by one."  R1 may name B2 or X2.
+                        branch = t.g_EA(v)
                         # Decrement bits 0-15 of R1
                         r1val = t.r(v.x).get32()
                         count = ((r1val >>> 16) - 1) & 0xffff
                         t.r(v.x).set32((count << 16) | (r1val & 0xffff))
                         # Branch if result is not zero
-                        if count != 0
-                            t.psw.setNIA(t.g_EA(v))
+                        t.psw.setNIA(branch) if count != 0
                 }
 
         # BRANCH ON COUNT BACKWARD

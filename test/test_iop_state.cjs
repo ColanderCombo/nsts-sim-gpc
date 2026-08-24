@@ -636,6 +636,57 @@ function check(label, got, want) {
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x404);
     check('...having asked exactly once', sent.length, 1);
 
+    // The indexed forms of #MOUT and #MIN are one fullword.  They carry an
+    // address instead of a companion command word, and index two fullword
+    // tables by BCE number: displacement and transfer count at ADDRESS +
+    // 2 x BCE#, the 24-bit command at ADDRESS + 48 + 2 x BCE#.
+    //
+    // Displacement is bits 5-15 of its entry and transfer count bits 16-31,
+    // so a table at 0x800 puts BCE 3's entry at 0x806 and its command at
+    // 0x836.
+    const idxTables = (g, disp, count) => {
+        poke(g, 0x806, disp & 0x7ff); poke(g, 0x807, count);
+        poke(g, 0x836, 0x0057);      poke(g, 0x837, 0x0007);  // IUA 10
+    };
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    let sentIdx = spyCmds(gpc);
+    poke(gpc, 0x400, 0xfd00); poke(gpc, 0x401, 0x0800);  // #MOUT@ 0x800
+    idxTables(gpc, 4, 2);                           // BASE + 4, 3 halfwords
+    runBCE(gpc, 1);
+    check('#MOUT@ transmits the command from its table', sentIdx.length, 1);
+    check('...with the interface unit address from bits 8-12',
+          (sentIdx[0] >>> 19) & 0x1f, 10);
+    check('...and records the address it addressed',
+          gpc.iop.ls.at(BCE, 2, 5).get32(), 10);
+    let queued = gpc.iop.dmaQueue.filter((r) => r.bce === gpc.iop.bce[BCE - 1]);
+    check('...queues transfer count + 1 words', queued.length, 3);
+    check('...from BASE plus the table displacement', queued[0].addr, 0x1004);
+    check('...and steps past two halfwords',
+          gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);          // MTO = 16.5 ms
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    sentIdx = spyCmds(gpc);
+    poke(gpc, 0x400, 0xf900); poke(gpc, 0x401, 0x0800);  // #MIN@ 0x800
+    idxTables(gpc, 4, 2);                           // BASE + 4, 3 halfwords
+    gpc.cpu.timeNs = 0;
+    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x1111, 0x2222, 0x3333);
+    runBCE(gpc, 2);
+    check('#MIN@ transmits the command from its table', sentIdx.length, 1);
+    check('...the command bits below the address',
+          sentIdx[0] & 0x7ffff, 0x70007);
+    check('...receives transfer count + 1 words into BASE plus displacement',
+          gpc.cpu.mainStorage.get16(0x1006), 0x3333);
+    check('...leaving the halfword below the displacement alone',
+          gpc.cpu.mainStorage.get16(0x1003), 0);
+    check('...and steps past two halfwords',
+          gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
+
     // A receive that runs out of time is an error termination.
     gpc = mkGPC();
     armBCE(gpc, 0x400);

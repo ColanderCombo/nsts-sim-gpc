@@ -105,7 +105,7 @@ export class BatchRunner
       r32 = (bank, word) -> iop.ls.at(page, bank, word)?.get32() ? 0
       hex = (v, n) -> (v >>> 0).toString(16).padStart(n, '0')
       if page == 0
-        "A=#{hex((r16(1,3) << 16 >>> 0) + r16(2,3), 8)} X=#{hex(r16(0,3), 4)}" +
+        "A=#{hex((r16(1,3) << 16 >>> 0) + r16(2,3), 8)} X=#{hex(r32(0,3), 5)}" +
         " MST=#{hex(r16(2,7), 4)}"
       else
         "D=#{hex((r16(1,0) << 16 >>> 0) + r16(2,0), 8)} BASE=#{hex(r32(2,3), 5)}" +

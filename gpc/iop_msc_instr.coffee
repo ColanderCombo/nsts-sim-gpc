@@ -712,7 +712,7 @@ export class MSCInstruction
                                 t.ls.setACC(t.msc.regFailDisc.get32())
                             when 3 # STAT4 - Busy/Wait
                                 t.ls.setACC(t.regBusyWait.get32())
-                        t.incrNIA(2)
+                        t.incrNIA(1)
                 }
         # SET FAIL DISCRETES
         # OPX=1: OR ACC bits 0-4 into fail discrete register

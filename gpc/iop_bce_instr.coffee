@@ -573,6 +573,27 @@ export class BCEInstruction extends PackedBits
                     }
         # MESSAGE OUT
         #
+        #   Two formats. Bit 4 = 0 is a two-fullword instruction: an 8-bit
+        # base-relative displacement and a 16-bit transfer count in the first
+        # word, the 24-bit command in the second. Bit 4 = 1 is one fullword
+        # carrying an address, and indexes two 24-entry fullword tables by
+        # BCE number: the displacement and transfer count at ADDRESS +
+        # 2 x BCE#, the command at ADDRESS + 48 + 2 x BCE#.
+        #
+        #   Table entry, displacement and transfer count:
+        #
+        #     ------------------------------------------------------
+        #     |         |     DISPLACEMENT    |   TRANSFER COUNT   |
+        #     ------------------------------------------------------
+        #      0       4 5                 15 16                 31
+        #
+        #   Table entry, command:
+        #
+        #     ------------------------------------------------------
+        #     |               |   IUA   |        COMMAND           |
+        #     ------------------------------------------------------
+        #      0             7 8      12 13                      31
+        #
         '#MOUT':    {
                         f:['#MOUT Displacement,Transfer Count']
                         d:'11110101ddddddddcccccccccccccccc'
@@ -580,7 +601,7 @@ export class BCEInstruction extends PackedBits
                             count = v.c + 1
                             base = t.ls.BASE().get32()
                             bce = t.curBCE()
-                            t.bceCompanionCommand()
+                            t.bceCommand()
                             for i in [0...count]
                                 addr = base + v.d + i
                                 t.queueDMA(addr, 'read', bce)
@@ -590,14 +611,15 @@ export class BCEInstruction extends PackedBits
                         f:['#MOUT@ Address']
                         d:'11111101000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
-                            # Message out indexed: load params from memory at addr + 2*BCE#
-                            addr = v.a + 2 * t.curPE
-                            count = (t.g_EAH(addr) & 0xffff) + 1
+                            entry = t.g_EAF(v.a + 2 * t.curPE)
+                            disp = (entry >>> 16) & 0x7ff
+                            count = (entry & 0xffff) + 1
                             base = t.ls.BASE().get32()
                             bce = t.curBCE()
+                            t.bceCommand(v.a + 48 + 2 * t.curPE)
                             for i in [0...count]
-                                t.queueDMA(base + i, 'read', bce)
-                            t.incrNIA(3)
+                                t.queueDMA(base + disp + i, 'read', bce)
+                            t.incrNIA(2)
                     }
 #
 #         3.4 BCE RECEIVE DATA INSTRUCTIONS
@@ -637,12 +659,16 @@ export class BCEInstruction extends PackedBits
                     }
         # MESSAGE IN
         #
+        #   Two formats, laid out as for MESSAGE OUT. Bit 4 = 0 is two
+        # fullwords, bit 4 = 1 is one fullword carrying an address and
+        # indexing the same pair of tables.
+        #
         '#MIN':     {
                         f:['#MIN DISPLACEMENT,Transfer Count']
                         d:'11110001ddddddddcccccccccccccccc'
                         e:(t,v)->
                             if t.bceReceiveStarting()
-                                t.bceCompanionCommand()
+                                t.bceCommand()
                             base = t.ls.BASE().get32()
                             if t.bceReceive(base + v.d, v.c + 1)
                                 t.incrNIA(4)
@@ -651,14 +677,14 @@ export class BCEInstruction extends PackedBits
                         f:['#MIN@ ADDRESS']
                         d:'11111001000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
-                            # Message in indexed: load params from memory at addr + 2*BCE#
-                            addr = v.a + 2 * t.curPE
-                            count = (t.g_EAH(addr) & 0xffff) + 1
+                            entry = t.g_EAF(v.a + 2 * t.curPE)
+                            disp = (entry >>> 16) & 0x7ff
+                            count = (entry & 0xffff) + 1
+                            if t.bceReceiveStarting()
+                                t.bceCommand(v.a + 48 + 2 * t.curPE)
                             base = t.ls.BASE().get32()
-                            bce = t.curBCE()
-                            for i in [0...count]
-                                t.queueDMA(base + i, 'write', bce)
-                            t.incrNIA(3)
+                            if t.bceReceive(base + disp, count)
+                                t.incrNIA(2)
                     }
 #
 #         3.5 SPECIAL INSTRUCTIONS

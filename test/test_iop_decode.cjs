@@ -182,6 +182,8 @@ function check(label, got, want) {
     // @LAR 3 (0xE003): selector 3 -> ACC := busy/wait.
     t = mkT(); t.regBusyWait.set32(0x1234); msc.exec(t, 0xE003, 0);
     check('@LAR 3 loads busy/wait', t.ls.getACC(), 0x1234);
+    // @LAR is a register operation, and every one of those is short format.
+    check('@LAR advances NIA by one', t.nia, 1);
 
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

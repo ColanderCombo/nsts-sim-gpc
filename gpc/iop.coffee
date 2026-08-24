@@ -542,19 +542,20 @@ export class IOP
     bce.delay = null
     true
 
-  # The command half of a #MOUT / #MIN.
+  # The command of a #MOUT / #MIN.
   #
-  # Those are four-halfword instructions: the transfer word, then a
-  # companion fullword carrying eight zero bits, the 5-bit interface unit
-  # address and the 19-bit command
+  # The fullword holding it carries eight zero bits, the 5-bit interface
+  # unit address and the 19-bit command.  The four-halfword forms carry it
+  # as a companion word at PC + 2; the indexed forms pass the address of
+  # their command table entry.
   #
   # Returns the 24-bit command, or null if the transmitter is disabled.
-  bceCompanionCommand: () ->
+  bceCommand: (addr = null) ->
     bce = @curBCE()
     return null unless bce?
     return null unless @procGet(@regXmitEna, @curPE)
-    addr = (@ls.PC().get32() + 2) & LS_WORD_MASK
-    cmd = @g_EAF(addr) & 0x00ffffff
+    addr ?= @ls.PC().get32() + 2
+    cmd = @g_EAF(addr & LS_WORD_MASK) & 0x00ffffff
     @ls.IUAR().set32((cmd >>> 19) & 0x1f)
     bce.mia.xmitCmd(cmd)
     cmd
