@@ -5972,7 +5972,7 @@ class Instruction extends PackedBits
         LDM:    {
                     n:'Load Data Memory'
                     f:['LDM D2(B2)','LDM D2(X2,B2)']
-                    d:'0110100011111abb/X'
+                    d:'01101xxx11111abb/X'
                     xts:[6.75,10,10,10,10,10.25,10.25]
                     e:(t,v) ->
                         fw = t.g_EAF(v)
@@ -6095,7 +6095,7 @@ class Instruction extends PackedBits
         STDM:   {
                     n:'Store Data Memory'
                     f:['STDM D2(B2)','STDM D2(X2,B2)']
-                    d:'1001000011111abb/X'
+                    d:'10010xxx11111abb/X'
                     xts:[2.25,5.25,6.75,5,5.25,7,7.5]
                     e:(t,v) ->
                         regSet = t.psw.getRegSet()
