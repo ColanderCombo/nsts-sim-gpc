@@ -124,14 +124,22 @@ export class MDU extends LRU
     @watchIDP()
     @redraw()
 
-    @kybd = new KYBD(1,@)
+    @kybd = new KYBD(@kybdBus(),@)
 
     # Debug: double-click outside the display canvas (e.g. in space opened
     # by dragging the window edges out) toggles a live feed-parameter editor
     document.addEventListener 'dblclick', (ev) => @_toggleParamEditor(ev)
 
 
-    
+  # Which keyboard drives this display.  An MDU has no keyboard of its own:
+  # a keystroke reaches a GPC through the IDP that owns the DK bus, so it has
+  # to go to a keyboard that IDP is listening to.  Hardcoding 1 sent every
+  # window's keys to _KYBD1, and so only ever to IDP1.
+  kybdBus: () ->
+    for b in (MEDSConf.idps["IDP#{@priPortIDP}"]?.busses ? [])
+      m = /^_KYBD(\d)$/.exec b
+      return Number(m[1]) if m
+    1
 
   initWindow: () ->
     console.log("MDU initWindow")
