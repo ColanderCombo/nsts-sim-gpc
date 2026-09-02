@@ -33,7 +33,7 @@ export class MDUEdgeKeys
         @cb?(i)
 
     # Focus loss eats keyup events; cancel pending detections rather than
-    # spuriously failing keys that were released while we couldn't see it.
+    # spuriously failing keys released while the window was not focused.
     $(window).on 'blur', () =>
       for i, t of @downTimers
         clearTimeout t

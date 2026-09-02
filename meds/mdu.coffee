@@ -16,6 +16,7 @@ import {LRU} from '../com/lru.civet.jsx'
 import {Bus, BusMsg} from '../com/bus.civet.jsx'
 
 import {MEDSConf, MDUMsg} from 'meds/medsConf'
+import * as DEU from 'meds/deuProto'
 import {VectorDisplay} from 'meds/mduVectorDisplay'
 import {MDUMenuArea} from 'meds/mduMenuArea'
 import {MDUEdgeKeys} from 'meds/mduEdgeKeys'
@@ -60,7 +61,8 @@ export class MDU extends LRU
     super(lruConfig)
 
     @screenMods = ScreenMods
-    @_pollWatchdog = null        # POLL FAIL: re-armed by the GPC's poll
+    @_pollWatchdog = null        # POLL FAIL: re-armed by the GPC's poll/clock
+    @_updateWatchdog = null      # big "X": re-armed by a display update
     @_idpWatchdog = null         # the port: re-armed by the IDP's heartbeat
     @_idpWatchdogSec = null
     # Assumed alive until the watchdog says otherwise -- `_idpLost` has to be
@@ -90,8 +92,8 @@ export class MDU extends LRU
 
     @cmdPort = 0
     @flightCritBus = 3
-    @gpcNo = 3
     @kybd = 'left'
+    @majorFunc = DEU.MAJOR_FUNC_NAME[DEU.MAJOR_FUNC_DEFAULT]
     @portReconfigureModeAuto = false
     @modeNegView = false
 
@@ -99,7 +101,13 @@ export class MDU extends LRU
     #@faultLineMsg = "MEDS I/O ERROR CDR1            1"
     @curDisplay = "BLANK"
 
+    # The big "X" indicates a lack of GPC updates,
+    # POLL FAIL indicates a lack of POLL messages
+    # Both initialize to 'on'
+    @dps_big_x = true
     @dps_poll_fail = true
+    @dps_otp = false           # ...and the test page hides the "X" while it
+                               # stands; see `_otpPage`
 
     @_edgeKeys = new MDUEdgeKeys()
     @_edgeKeys.setHandler(@handleEdgekey, @handleEdgekeyFail)
@@ -130,13 +138,21 @@ export class MDU extends LRU
     # by dragging the window edges out) toggles a live feed-parameter editor
     document.addEventListener 'dblclick', (ev) => @_toggleParamEditor(ev)
 
+  windowTitle: () ->
+    "MDU / #{@CONFIG.config.lru} (#{@majorFunc})"
 
-    
+  setMajorFunc: (name) ->
+    @majorFunc = name
+    document.querySelector('cde-window')?.title = @windowTitle()
+    @redraw()
 
   initWindow: () ->
     console.log("MDU initWindow")
-    <cde-window title={"MDU / " + @CONFIG.config.lru} resizable="false" hasFrame={not @CONFIG.window.fullscreen}>
+    <cde-window title={@windowTitle()} resizable="false" hasFrame={not @CONFIG.window.fullscreen}>
     </cde-window>
+
+  commandingIDP: () ->
+    if @cmdPort == 1 and @secPortIDP? then @secPortIDP else @priPortIDP
 
   updateMduData: () ->
     @mdu_menuArea.setData {
@@ -150,7 +166,8 @@ export class MDU extends LRU
       curIDP: @priPortIDP
     }
 
-  POLL_FAIL_MS = 4000       # DPS poll fail timer
+  POLL_FAIL_MS = 3000       # DPS poll fail timer
+  BIG_X_MS = 3000           # DPS display-update timer
   IDP_LOST_MS = 2000        # 'MDU Autonomous' fail timer (16 missed beats)
   STARTUP_MS = 10000        # ...but allow for an IDP that starts up slowly
 
@@ -164,25 +181,60 @@ export class MDU extends LRU
     @screens?['DPS']?.setPollFail(true)
     @redraw()
 
+  # A GPC is polling us again.
+  _pollHeard: () ->
+    return if not @dps_poll_fail
+    @dps_poll_fail = false
+    @screens?['DPS']?.setPollFail(false)
+    @redraw()
+
+  # The big "X" is "not supported during OTP" (JSC-18820 sect.4.6.5, the note
+  # under figure 4-30): it annunciates a loss of GPC display update, and the
+  # operational test program's page is not a GPC display.  The watchdog goes
+  # on running underneath, so what was standing comes back when OTP does.
+  _otpPage: (up) ->
+    return if up == @dps_otp
+    @dps_otp = up
+    @screens?['DPS']?.setBigX(if up then false else @dps_big_x)
+    @redraw()
+
+  _updateLost: () ->
+    return if @dps_big_x
+    @dps_big_x = true
+    @screens?['DPS']?.setBigX(true) if not @dps_otp
+    @redraw()
+
+  _updateHeard: () ->
+    return if not @dps_big_x
+    @dps_big_x = false
+    @screens?['DPS']?.setBigX(false) if not @dps_otp
+    @redraw()
+
+  _pollTick: () ->
+    @_rearm '_pollWatchdog', POLL_FAIL_MS, (=> @_pollLost())
+    @_pollHeard()
+
+  _updateTick: () ->
+    @_rearm '_updateWatchdog', BIG_X_MS, (=> @_updateLost())
+    @_updateHeard()
+
   recvFromPri: (t,busID, msg, remote) ->
-    # Any traffic at all says the port is alive; only a POLL says a GPC is.
     t._idpHeard()
     t._rearm '_idpWatchdog', IDP_LOST_MS, (-> t._idpLost())
     scr = t.screens?['DPS']
     switch msg.data16[0]
       when MDUMsg.HEARTBEAT
-        # The DEU's flashing attribute is local: it advances one phase per
-        # heartbeat, so it keeps flashing with no GPC on the bus.
         scr?.blinkTick()
       when MDUMsg.POLL
-        t._rearm '_pollWatchdog', POLL_FAIL_MS, (-> t._pollLost())
-        t._pollHeard()
-      when MDUMsg.FILL
+        t._pollTick()
+      when MDUMsg.FILL, MDUMsg.LOCAL_FILL
+        t._updateTick() if msg.data16[0] == MDUMsg.FILL
         if scr?
           scr.applyFill(msg.data16[1],
                         (msg.data16[i] for i in [2...msg.data16.length]))
           t.redraw()
       when MDUMsg.CLOCK
+        t._pollTick()
         if scr?
           scr.setClock(msg.data16[1], msg.data16[2], msg.data16[3])
           t.redraw()
@@ -192,14 +244,15 @@ export class MDU extends LRU
           scr.setSyntaxError false
           scr.updateScratchpad()
         t.redraw()
-
-
-  # A GPC is polling us again.
-  _pollHeard: () ->
-    return if not @dps_poll_fail
-    @dps_poll_fail = false
-    @screens?['DPS']?.setPollFail(false)
-    @redraw()
+      when MDUMsg.OTP
+        t._otpPage(msg.data16[1] != 0)
+      when MDUMsg.REFRESH
+        # The DEU's control program says where a refresh starts.  It is
+        # the message line buffer when the program is drawing the scratch
+        # pad line itself (`--dcp`), and the display header otherwise.
+        if scr?
+          scr.setRefreshStart(msg.data16[1])
+          t.redraw()
 
   # The secondary port has a heartbeat of its own, so it can drop
   # independently of the primary -- which is what the AUTONOMOUS display's
@@ -256,7 +309,9 @@ export class MDU extends LRU
       cd = @screens[@curDisplay]
       cd.draw()
       if @curDisplay == 'DPS'
+        cd.setBigX(@dps_big_x and not @dps_otp)
         cd.setPollFail(@dps_poll_fail)
+        cd.setIDPNo(@commandingIDP())
       if cd.group?
         @disp.scene.add cd.group
         @redraw()
@@ -273,6 +328,8 @@ export class MDU extends LRU
     @cmdPort = (@cmdPort+1)%2
     #@updateMduData()
     @mdu_menuArea.setCurPort(@cmdPort)
+    @screens?['DPS']?.setIDPNo(@commandingIDP())
+    @redraw()
 
   toggleReconfigMode: () ->
     @portReconfigModeAuto = not @portReconfigModeAuto
@@ -332,7 +389,7 @@ export class MDU extends LRU
     dflt ?= @disp.overlayImageNames()[0]
     {key, dflt}
 
-  # reference-overlay control descriptors, appended to EVERY screen's param
+  # reference-overlay control descriptors, appended to every screen's param
   # editor (placements/slots are per-screen via ovIdent; the feed-value
   # capture hooks come from the screen when it has them)
   _ovControls: () ->
@@ -528,9 +585,10 @@ export class MDU extends LRU
 
 start = (CONFIG) ->
   mdu = new MDU(CONFIG)
-  # dev mode preloads test screens, so the DPS skips POLL FAIL; otherwise
-  # the flag stays set until an IDP delivers a background DFB
-  mdu.dps_poll_fail = false if CONFIG.dev
+  # dev mode preloads test screens, so the DPS skips both indications:
+  if CONFIG.dev
+    mdu.dps_big_x = false
+    mdu.dps_poll_fail = false
   console.log mdu
   return mdu
 

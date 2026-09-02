@@ -49,6 +49,7 @@ async function bundle(rel) {
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [civetPlugin, coffeePlugin({})],
+        loader: {'.asm': 'text'},   // meds/asm: SP-0 assembly source
         resolveExtensions: ['.coffee', '.js', '.ts', '.civet', '.json'],
         nodePaths: [path.join(SIM, 'node_modules')],
         external: ['dgram', 'electron'],
@@ -95,6 +96,12 @@ function render(mods, words) {
     screen.fcw = new mods.fcw.FCW();
     screen.d = stubSurface(THREE, drawn, lines);
     screen.group = new THREE.Object3D();
+    // `build` hangs everything drawn in the DEU's own coordinates off this
+    // one and gives it the format area's horizontal centring; the geometry
+    // below is measured in format-area cells, so the offset does not show
+    // in it, but the group has to be there to draw into.
+    screen.fmt = new THREE.Object3D();
+    screen.group.add(screen.fmt);
     screen._blinkOn = true;
     const opts = Array.isArray(words) ? {} : words;
     screen.drawFCWS(opts.memory ?? words, new THREE.Object3D(), opts);
@@ -104,10 +111,13 @@ function render(mods, words) {
 
 // The cell a recorded glyph landed in.  `drawFCWS` draws in the DPS format
 // area's coordinates, which are the DEU's character cells plus one on each
-// axis.
+// axis.  A glyph is drawn from the cell's corner and the beam is the cell's
+// middle, so the centre offset comes back off to name the cell.
+let GLYPH_OFF = [0, 0];
 const at = (drawn, ch) => {
     const g = drawn.find((d) => d.ch === ch);
-    return g ? `${Math.round(g.x)},${Math.round(g.y)}` : 'not drawn';
+    if (!g) return 'not drawn';
+    return `${Math.round(g.x + GLYPH_OFF[0])},${Math.round(g.y + GLYPH_OFF[1])}`;
 };
 
 async function main() {
@@ -122,6 +132,7 @@ async function main() {
         `export * as fcw from ${JSON.stringify(path.join(SIM, 'meds/deuFCW.coffee'))}\n`);
     const mods = await bundle(shim);
     const f = new mods.fcw.FCW();
+    GLYPH_OFF = mods.fcw.glyphCentre();
 
     // A miniature of the GPCIPL menu's shared section: a gated Y reference,
     // two separate position runs under it, then the gate cleared and a third
@@ -167,6 +178,27 @@ async function main() {
         f.endOfRefresh(),
     ]);
     eq(at(ungated, 'A'), '2,12', 'an ungated reference does not move the beam');
+
+    // ---- a lone coordinate word re-homes the other axis --------------------
+    //
+    // A position word sets and homes its own axis and returns the beam to
+    // home on the other one, so a bare YC starts at the block's column
+    // rather than wherever the last string left the beam.  1041 of the
+    // corpus's 3246 YC directives have no XC of their own: SPEC 60
+    // (CS0600) writes `XC=2,YC=2,CHAR=(SM COM BUFF),CARRTN,CHAR=(PARAM),
+    // YC=9,CHAR=(<50 characters>)`, and that row fills columns 2-51 only
+    // from the home column -- five right of it, it runs off the screen.
+    const rehome = render(mods, [
+        ...f.positionRun(2, 2),
+        f.glyphSingle(0x48),                 // 'H' -- the block's home column
+        f.carrtn(),
+        f.glyphSingle(0x50), f.glyphSingle(0x51),   // 'P','Q' -- move the beam
+        f.yPosition(f.cellY(9)),             // a bare YC
+        f.glyphSingle(0x52),                 // 'R'
+        f.endOfRefresh(),
+    ]);
+    eq(at(rehome, 'H'), '3,3', 'the block draws at its own column');
+    eq(at(rehome, 'R'), '3,10', 'a bare YC returns to it, not the beam');
 
     // ---- the circle ------------------------------------------------------
     //
@@ -278,6 +310,198 @@ async function main() {
     ok(lineAt([]) < 1.0, 'a plain line is not overbright');
     eq(lineAt([f.attrMode({intensity: true})]), 1.0, 'FCW1 bit 3 is overbright');
     eq(lineAt([f.intensityMode(true)]), 1.0, 'so is FCW3 bit 6');
+
+    // ---- and the colour comes from the rest of that word -------------------
+    //
+    // FCW3's select bit gates its six-bit code: set, the code is the pen;
+    // clear, the pen is the DEU's default.  SPEC 54
+    // sends `select=1 color=7` for its target insertion line and
+    // `select=1 color=56` for the inset, and `COLOR=DEU` between them.
+    const colorAt = (words) => render(mods, [...words,
+        ...f.vector(1, 1, 10, 1), f.endOfRefresh()]).lines[0].color;
+    const deuColor = mods.dps.Screen_DPS.prototype._deuColor;
+    // the default is the surface's own green -- `stubSurface`'s here
+    const DEU_GREEN = colorAt([]);
+    ok(DEU_GREEN != null, 'a pen with no colour word is the DEU default');
+    for (const code of [7, 56, 29, 33]) {
+        eq(colorAt([f.colorMode(code)]), deuColor(code),
+           `FCW3 select=1 color=${code} sets the pen`);
+        ok(colorAt([f.colorMode(code)]) !== DEU_GREEN,
+           `... to something other than the default`);
+    }
+    eq(colorAt([f.colorMode(7), f.colorMode(null)]), DEU_GREEN,
+       'COLOR=DEU -- select clear -- puts the default back');
+    eq(colorAt([f.colorMode(7), f.colorClear()]), DEU_GREEN,
+       '... and so does the static preamble\'s cleared word');
+
+    // --- the self test's resolution ticks ---------------------------------
+    //
+    // "The tick marks are short, straight line segments from the symbol
+    // generator character matrix" (STS-83-0020V2-34/sect.4.6.8 para 8), so
+    // the spacing is the character generator's own advance: MAJOR INCREMENT
+    // carries the four-unit pitch, and FCW1's axis bit turns the advance
+    // down the screen for the vertical array.  This walks both through the
+    // real interpreter and checks where the marks land.
+    {
+        const ST = await bundle(path.join(SIM, 'meds/deuSelfTest.coffee'));
+        const st = new ST.SelfTest(f);
+        const COL = mods.fcw.COL_PITCH, ROW = mods.fcw.ROW_PITCH;
+        for (const down of [false, true]) {
+            const g = down ? ST.TICK_HORIZONTAL : ST.TICK_VERTICAL;
+            const marks = render(mods, [...st.tickArray(g, down),
+                                        f.endOfRefresh()])
+                .filter((d) => d.ch === f.DEUCharset[g]);
+            eq(marks.length, ST.TICK_BEFORE + ST.TICK_AFTER,
+               `${down ? 'the vertical' : 'the horizontal'} array's marks`);
+            // Consecutive marks are one tick pitch apart along the advance
+            // axis and nowhere at all along the other.
+            const axis = down ? 'y' : 'x';
+            const other = down ? 'x' : 'y';
+            const pitch = ST.TICK_STEP / (down ? ROW : COL);
+            let steps = 0, drift = 0;
+            for (let i = 1; i < marks.length; i++) {
+                const d = marks[i][axis] - marks[i - 1][axis];
+                // The gap at the centre is a space, so one step is double.
+                if (Math.abs(d - pitch) < 1e-6 || Math.abs(d - 2 * pitch) < 1e-6) steps++;
+                if (Math.abs(marks[i][other] - marks[0][other]) > 1e-6) drift++;
+            }
+            eq(steps, marks.length - 1, '...are one tick pitch apart');
+            eq(drift, 0, '...and stay on one line');
+            eq(marks.length - 1 - Math.round(
+                 (marks[marks.length - 1][axis] - marks[0][axis]) / pitch), -1,
+               '...with one double step, the gap where the arrays cross');
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // A critical format, commanded the way a display commands one.
+    //
+    // A CRTFMT= background lives in the DEU's format buffer at 0x0100,
+    // loaded once off mass memory, and a display selects it by branching
+    // to its CFIT slot -- the display's own DEULOC=.  The slot holds a
+    // branch to the body, so the picture the crew sees is the body drawn
+    // from resident memory, followed by the display's dynamic fields.
+    // Nothing but the branch crosses the bus for it.
+    const cflm = path.join(SIM, '..', '..', 'build', 'OI340700', 'DEUCFLM.bin');
+    if (fs.existsSync(cflm)) {
+        const raw = fs.readFileSync(cflm);
+        const CRIT = 0x0100, HDR = 0x19ee;
+        const mem = new Array(8192).fill(0);
+        for (let i = 0; i * 2 + 1 < raw.length; i++)
+            mem[CRIT + i] = raw.readUInt16BE(i * 2);
+        eq(mem.length - (CRIT + raw.length / 2) > 0, true,
+           'the load module fits the format buffer');
+
+        // Slot 0 is the fault-message background; its CFIT word branches
+        // to the body, which is where 'FAULT' is written.
+        const slot0 = mem[CRIT];
+        eq((slot0 & 0xf000) >> 12, 1, 'a CFIT slot is a branch word');
+        const body = slot0 & 0x1fff;
+        ok(body > CRIT + 32, 'a CFIT slot branches past the table');
+
+        // Every slot is a branch word, and the image's own branches are
+        // self-consistent: a slot's word IS the body's address when the
+        // image sits at 0x1100, i.e. slot n's word is 0x1000 + its offset
+        // in the image + 0x100.
+        //
+        // The last TWO of the 32 CFIT halfwords are not slots: they are the
+        // exit stub every background body branches to when it is done, and
+        // they leave the format buffer for the display header, which a
+        // branch word cannot do on its own.
+        let bad = 0;
+        for (let i = 0; i < 30; i++) {
+            const w = mem[CRIT + i];
+            if ((w & 0xf000) !== 0x1000) { bad++; continue; }
+            const off = (w & 0x0fff) - 0x100;     // offset into the image
+            if (off < 32 || off >= raw.length / 2) bad++;
+        }
+        eq(bad, 0, 'all 30 CFIT slots branch into the image');
+        eq(mem[CRIT + 30], 0x2100,
+           'the exit stub leads with a SUBLIST naming the display sector');
+        eq(mem[CRIT + 31], 0x19ee, '...and branches to the display header');
+        // 0x111E, the word each body ends on and the buffer is padded with,
+        // is the branch to that stub.
+        eq(0x1000 | ((CRIT + 30) & 0xfff), 0x111e,
+           'the body terminator addresses the stub');
+
+        // Read as the interpreter reads them -- a branch word carries the
+        // whole 13-bit address -- the slots name 0x1120 and up, so the
+        // image has to sit at 0x1100 for its own branches to resolve.
+        const hi = new Array(8192).fill(0);
+        for (let i = 0; i * 2 + 1 < raw.length; i++)
+            hi[0x1100 + i] = raw.readUInt16BE(i * 2);
+        hi[HDR] = f.branch(0x1100);
+        const drawnHi = render(mods, {memory: hi, start: HDR});
+        const textHi = drawnHi.map((d) => d.ch).join('');
+        ok(drawnHi.length > 0, 'commanding a critical format draws something');
+        ok(textHi.includes('FAULT'),
+           `the format's own text is drawn (got ${JSON.stringify(textHi.slice(0, 40))})`);
+
+        // ...and it is the RESIDENT copy drawing it: cleared, the same
+        // command draws nothing.
+        const empty = new Array(8192).fill(0);
+        empty[HDR] = f.branch(0x1100);
+        eq(render(mods, {memory: empty, start: HDR}).length, 0,
+           'an unloaded format buffer draws nothing');
+
+        // And at 0x0100, where the GPC IPL program actually loads it and
+        // where every display's DEULOC= points (256..271, the sixteen
+        // slots), commanded the way a display commands one: the pair
+        // `[0x2000, Branch(DEULOC)]` that dfg emits for an external
+        // background.  A branch word alone cannot reach the lower 4K --
+        // the op-2 lead word's sector is what gets there.
+        for (const [slot, want] of [[0, 'GPC'], [3, 'TGO'], [7, 'DESIRED']]) {
+            mem[HDR] = 0x2000;                       // SUBLIST: sector 0
+            mem[HDR + 1] = f.branch(CRIT + slot);    // ...of this slot
+            const d = render(mods, {memory: mem, start: HDR});
+            const t = d.map((g) => g.ch).join('');
+            ok(t.includes(want),
+               `slot ${slot} (DEULOC ${256 + slot}) draws its background `
+               + `(want ${want}, got ${JSON.stringify(t.slice(0, 30))})`);
+        }
+        // A bare branch still cannot: it names the upper 4K only.
+        mem[HDR] = f.branch(CRIT); mem[HDR + 1] = 0;
+        eq(render(mods, {memory: mem, start: HDR}).length, 0,
+           'a branch word alone does not reach the format buffer');
+    } else {
+        console.log('SKIP  build/OI340700/DEUCFLM.bin not built '
+                    + "(con80build --critfmt)");
+    }
+
+    // ---- a background the display unit holds ----------------------------
+    //
+    // Some displays keep no background in the GPC at all: their whole static
+    // section is one VDISP word naming a picture the unit already has.  The
+    // interpreter cannot draw it inline -- it is a different word list -- so
+    // it collects the code and `refresh` draws what it collected.
+    {
+        const collected = [];
+        const drawn = render(mods, {
+            memory: (() => {
+                const m = new Array(8192).fill(0);
+                m[0x19ee] = f.valueDisplay(158);
+                m[0x19ef] = f.endOfRefresh();
+                return m;
+            })(),
+            start: 0x19ee,
+            vdisp: collected,
+        });
+        eq(collected.join(','), '158', 'a VDISP word yields its code');
+        eq(drawn.length, 0, '...and draws nothing by itself');
+    }
+
+    // The pictures themselves ship beside the fonts, `dfg --dfb` having
+    // recovered each from the release that last carried it inline.  A blank
+    // draws nothing, so the title runs together here.
+    for (const [file, want] of [['VDISP-158-DPS_UTILITY.dfb', 'DPSUTILITY'],
+                                ['VDISP-153-HORIZ_SIT_COMMON.dfb', 'HORIZSIT']]) {
+        const pth = path.join(SIM, 'data', file);
+        if (!fs.existsSync(pth)) { console.log(`SKIP  data/${file}`); continue; }
+        const words = mods.fcw.wordsFromBytes(fs.readFileSync(pth));
+        const text = render(mods, words).map((d) => d.ch).join('');
+        ok(text.includes(want),
+           `data/${file} draws ${want} (got ${JSON.stringify(text.slice(0, 24))})`);
+    }
 
     console.log(`test_meds_render: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

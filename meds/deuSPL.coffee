@@ -29,8 +29,10 @@
 #
 #   * the display checks every keystroke, and puts a flashing ERR to the
 #     right of the illegal keystroke.
-#   * CLEAR takes back one keystroke, not the line: pressing it repeatedly
-#     backs the entry out a keystroke at a time.
+#   * CLEAR takes back one keystroke, so pressing it repeatedly backs the
+#     entry out a keystroke at a time.  The line is the whole of the entry:
+#     there is no history behind it, CLEAR on an empty line does nothing,
+#     and a keystroke that wipes the line leaves nothing to back up into.
 #   * the ERR goes away either by CLEAR, which takes back the ERR and that
 #     one keystroke and leaves the rest of the entry standing, or by
 #     reinitiating the sequence with a key that can begin one.  While it is
@@ -38,7 +40,9 @@
 #   * the grammar is below, and `_transition` is it as an acceptor.
 #
 import * as DEU from 'meds/deuProto'
+import {FCW} from 'meds/deuFCW'
 
+export SPL_ROW = 26                    # the last character row, which POLL FAIL shares
 export SPL_LENGTH = 51                 # positions 0..50
 export SPL_LAST = SPL_LENGTH - 1       # ...and the last is never filled
 export SPL_MAX = 39                    # characters, the leading blank included
@@ -75,7 +79,7 @@ delete KEY_LABEL[DEU.KEY.CLEAR]
 #   ITEM     a  [(+|-) data]  EXEC
 #
 # `data` is a RUN, not a single character (`ITEM D+XXXX EXEC` is one of the
-# display's own operational-test entries).  It takes the DECIMAL POINT as
+# display's operational-test entries).  It takes the DECIMAL POINT as
 # well as 0-9 and A-F; `b` and `a` do not, so a decimal can never appear in
 # an item number, an OPS/SPEC number or a GPC/CRT id.
 #
@@ -97,17 +101,12 @@ export DELIMITERS = [DEU.KEY.PLUS, DEU.KEY.MINUS]
 # the line, and less EXEC, which is also a terminator and is handled there).
 export COMMAND_KEYS = [DEU.KEY.SYS_SUMM, DEU.KEY.FAULT_SUMM, DEU.KEY.RESUME]
 export TERMINATORS = [DEU.KEY.EXEC, DEU.KEY.PRO]
-export VALUE_KEYS = [DEU.KEY['0'], DEU.KEY['1'], DEU.KEY['2'], DEU.KEY['3'],
-                     DEU.KEY['4'], DEU.KEY['5'], DEU.KEY['6'], DEU.KEY['7'],
-                     DEU.KEY['8'], DEU.KEY['9'], DEU.KEY.A, DEU.KEY.B,
-                     DEU.KEY.C, DEU.KEY.D, DEU.KEY.E, DEU.KEY.F]
-
 isDigit = (code) -> code >= DEU.KEY['0'] and code <= DEU.KEY['9']
 isAlpha = (code) -> code >= DEU.KEY.A and code <= DEU.KEY.F
 isData  = (code) -> isDigit(code) or isAlpha(code) or code == DEU.KEY.DECIMAL
 
 # Where EXEC and PRO are allowed to close an entry.  `start` is in the EXEC
-# list because EXEC on its own IS an entry.
+# list because EXEC on its own is an entry.
 EXEC_STATES = ['start', 'ioreset', 'gpc3', 'itemNum1', 'itemNum2', 'itemData',
                'itemAlpha', 'alphaData']
 PRO_STATES  = ['ops4', 'spec2', 'spec3', 'spec4']
@@ -127,25 +126,6 @@ export class SPL
     @lastKind = 'none'     # what the previous keystroke drew
     @state = 'start'       # where the entry has got to in the grammar
     @initSpan = null       # [start, end) of the initiator's label in @line
-    @history = []          # one snapshot per keystroke, for CLEAR
-
-  # CLEAR takes back ONE keystroke, so the line has to be remembered as it
-  # was before each one: a keystroke is not a character.  A delimiter puts
-  # ` (14)+` on the line in a single press, a named key puts its whole label
-  # there, and an illegal keystroke arrives with an ERR behind it -- each
-  # comes off again the same way.
-  _snapshot: () ->
-    line: @line
-    keys: @keys[..]
-    err: @err
-    complete: @complete
-    lastKind: @lastKind
-    state: @state
-    initSpan: @initSpan
-
-  _restore: (s) ->
-    {@line, @err, @complete, @lastKind, @state, @initSpan} = s
-    @keys = s.keys[..]
     return
 
   limit: () -> if @pollFail then SPL_MAX_POLL_FAIL else SPL_MAX
@@ -160,7 +140,7 @@ export class SPL
 
   _add: (s, code, exempt = false, kind = 'value') ->
     return false if not @_fits(s.length)
-    # An initiator's own label is the part that flashes until the command is
+    # An initiator's label is the part that flashes until the command is
     # complete, so remember where on the line it landed.
     @initSpan = [@line.length, @line.length + s.length] if kind == 'name'
     @line += s
@@ -217,14 +197,15 @@ export class SPL
   press: (code) ->
     code = code & 0x1f
     if code == DEU.KEY.CLEAR
-      # One keystroke back, not the whole line.  With nothing left to take
-      # back there is nothing on the line either.
-      if @history.length > 0 then @_restore(@history.pop()) else @clear()
+      # One keystroke back.  A keystroke is not a character -- a delimiter
+      # draws ` (14)+` in one press and rewrites the digits already there,
+      # a named key draws its whole label -- so the line is redrawn from
+      # the keystrokes that are left rather than trimmed.
+      keys = @keys[0...-1]
+      @clear()
+      @press(k) for k in keys
       return 'cleared'
     return 'silent' if not KEY_LABEL[code]?          # ACK / MSG RESET
-    # Taken before anything below can clear the line, and pushed only once
-    # the keystroke has actually landed on it.
-    snap = @_snapshot()
     # A completed entry stays on the line to be read back: the next keystroke
     # wipes it
     @clear() if @complete
@@ -244,11 +225,12 @@ export class SPL
       else ''
       if @_add(sep + label, code, true, 'value')
         @err = 'syntax'
-        @history.push snap
       return 'illegal'
     # An initiator, or a key that is an entry on its own, begins a new
     # sequence wherever it is pressed.
-    @clear() if step.restart and @line.length > 1
+    if step.restart and @line.length > 1
+      @clear()
+      wiped = true
     ok =
       if code in DELIMITERS
         @_delimiter(label, code)
@@ -263,7 +245,6 @@ export class SPL
         sep = if @lastKind == 'name' then ' ' else ''
         @_add(sep + label, code, false, 'value')
     return 'full' if not ok
-    @history.push snap
     @state = step.state
     if step.done
       @complete = true
@@ -283,3 +264,144 @@ export class SPL
                      (if @err then ERR_TEXT.length else 0)) > SPL_LAST
     @line = head
     @_add(group, code, false, 'delim')
+
+# ---------------------------------------------------------------------------
+# The line as format control words, and as glyphs
+#
+# `splFCWs` draws it: a position run, then glyph pairs, with blink turned on
+# around the initiator's label and around ERR.  `splGlyphs` is the same line
+# one halfword a character, the DEU glyph in bits 0-6 and blink in bit 7,
+# which is the form the control program composes from.  Walking `splGlyphs`
+# and emitting an attribute word at every change of state produces
+# `splFCWs`.
+# ---------------------------------------------------------------------------
+export GLYPH_MASK = 0x007f
+export GLYPH_BLINK = 0x0080
+
+_fcw = null
+fcwEnc = () -> _fcw ?= new FCW()
+
+# The three runs the line is drawn in: [text, blinking].  Everything else
+# here is derived from this, so the two views cannot drift apart.
+export splRuns = (spl) ->
+  runs = []
+  span = spl.initSpan
+  if span? and not spl.complete
+    runs.push [spl.line[0...span[0]], false]
+    runs.push [spl.line[span[0]...span[1]], true]
+    runs.push [spl.line[span[1]..], false]
+  else
+    runs.push [spl.line, false]
+  runs.push [ERR_TEXT, true] if spl.err
+  runs
+
+export splFCWs = (spl, fcw = fcwEnc()) ->
+  out = fcw.positionRun(0, SPL_ROW)
+  blinking = false
+  for [text, blink] in splRuns(spl)
+    if blink != blinking
+      out.push fcw.attrMode({blink: blink})
+      blinking = blink
+    out = out.concat fcw.chars(text)
+  out.push fcw.attrMode({}) if blinking
+  out
+
+export splGlyphs = (spl, fcw = fcwEnc()) ->
+  out = []
+  for [text, blink] in splRuns(spl)
+    for ch in text
+      out.push (fcw.toGlyph(ch) & GLYPH_MASK) |
+               (if blink then GLYPH_BLINK else 0)
+  out
+
+# ---------------------------------------------------------------------------
+# The grammar in table form
+#
+# An alternate encoding to assist in building a fakeDCP control program
+# in fakeSP0 assembly.  Internal, for dev use.
+#
+#   row     one per state, GRAMMAR_COLS halfwords
+#   column  0 digit  1 alpha  2 decimal  3 delimiter  4 EXEC  5 PRO
+#   entry   G_ILLEGAL, or the next state with G_DONE set if it terminates
+# ---------------------------------------------------------------------------
+export STATES = ['start', 'item', 'itemNum1', 'itemNum2', 'itemData',
+                 'itemAlpha', 'alphaDelim', 'alphaData',
+                 'ops1', 'ops2', 'ops3', 'ops4',
+                 'spec1', 'spec2', 'spec3', 'spec4',
+                 'gpc1', 'gpc2', 'gpc3', 'ioreset']
+export GRAMMAR_COLS = 8            # a power of two, so the index is a shift
+export G_ILLEGAL = 0xffff
+export G_DONE    = 0x0100
+export G_STATE   = 0x00ff
+
+GRAMMAR_KEYS = [DEU.KEY['0'], DEU.KEY.A, DEU.KEY.DECIMAL, DEU.KEY.PLUS,
+                DEU.KEY.EXEC, DEU.KEY.PRO]
+
+export grammarTable = () ->
+  probe = new SPL()
+  out = []
+  for st in STATES
+    row = new Array(GRAMMAR_COLS).fill(G_ILLEGAL)
+    for code, i in GRAMMAR_KEYS
+      probe.state = st
+      step = probe._transition(code)
+      continue if not step?
+      row[i] = (STATES.indexOf(step.state) & G_STATE) |
+               (if step.done then G_DONE else 0)
+    out = out.concat row
+  out
+
+# What the program needs to know about a key code, one halfword each.  The
+# low three bits are the class the grammar table is indexed by; the flags
+# above them are the cases decided before the table is reached; and the high
+# byte is the state an initiator starts in.
+export KA_CLASS   = 0x0007
+export KA_DIGIT   = 0
+export KA_ALPHA   = 1
+export KA_DECIMAL = 2
+export KA_DELIM   = 3
+export KA_NONE    = 4
+export KA_INIT    = 0x0008    # begins a sequence, wherever it is pressed
+export KA_COMMAND = 0x0010    # ... and is a whole entry on its own
+export KA_EXEC    = 0x0020
+export KA_PRO     = 0x0040
+export KA_NOLABEL = 0x0080    # ACK, MSG RESET, CLEAR: never reach the line
+export KA_STATE_SHIFT = 8
+export KEY_CODES = 32
+
+export keyAttrTable = () ->
+  for code in [0...KEY_CODES]
+    cls =
+      if isDigit(code) then KA_DIGIT
+      else if isAlpha(code) then KA_ALPHA
+      else if code == DEU.KEY.DECIMAL then KA_DECIMAL
+      else if code in DELIMITERS then KA_DELIM
+      else KA_NONE
+    a = cls
+    a |= KA_COMMAND if code in COMMAND_KEYS
+    a |= KA_EXEC    if code == DEU.KEY.EXEC
+    a |= KA_PRO     if code == DEU.KEY.PRO
+    a |= KA_NOLABEL if not KEY_LABEL[code]?
+    if INITIATORS[code]?
+      a |= KA_INIT
+      a |= (STATES.indexOf(INITIATORS[code]) << KA_STATE_SHIFT)
+    a
+
+# What each key draws, as glyphs: a table of pointers into a pool of
+# length-counted strings.  `offset` is relative to the start of the pool;
+# a key with no label is never asked for one (KA_NOLABEL says so).
+export labelTables = (fcw = fcwEnc()) ->
+  offset = []
+  text = []
+  for code in [0...KEY_CODES]
+    lab = KEY_LABEL[code]
+    offset.push 0
+    continue if not lab?
+    offset[code] = text.length
+    text.push lab.length
+    text.push (fcw.toGlyph(c) & GLYPH_MASK) for c in lab
+  {offset: offset, text: text}
+
+# ERR, as glyphs, for the program to append behind an entry it would not take.
+export errGlyphs = (fcw = fcwEnc()) ->
+  (fcw.toGlyph(c) & GLYPH_MASK) for c in ERR_TEXT

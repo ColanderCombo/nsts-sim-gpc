@@ -675,6 +675,9 @@ The gpc simulator was originally part of a larger system that also simulates oth
     -  `mduVectorDisplay.coffee` (Three.js vector renderer),
     -  `medsConf.coffee` (the orbiter's MDU/IDP/bus wiring).  
     -  `dfbDump.coffee` and `dpsDispToFcb.coffee` are node-side tools for the display-format binaries in `data/`.
+    -  `fcwCal.coffee` measures the beam grid a format control word stream is written on -- the character
+       and vector lattices, and which wrap the stream will fit into.  `node esbuild/esbuild.fcwcal.config.js`
+       then `node dist/fcwCal.js <file.dfb>`.  Use it before changing the constants in `deuFCW`.
 
   - `config/meds.json` defines the launchable MEDS LRUs; `data/` holds the DEU/MEDS vector fonts and sample DFB files.
 

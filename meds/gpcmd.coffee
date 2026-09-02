@@ -107,9 +107,11 @@ sum16 = (words) ->
 
 headerFlags = (hdr) ->
   flagsOut = (flagName for flagName, flagMask of DEU.HDR \
-              when flagName != 'MAJOR_FUNC' and (hdr & flagMask))
+              when flagName not in DEU.HDR_FIELDS and (hdr & flagMask))
   majFunc = (hdr & DEU.HDR.MAJOR_FUNC) >> DEU.MAJOR_FUNC_SHIFT
   flagsOut.push "MAJFUNC=#{majFunc}" if majFunc
+  deuId = (hdr & DEU.HDR.DEU_ID) >> DEU.DEU_ID_SHIFT
+  flagsOut.push "DEU=#{deuId}" if deuId
   flagsOut
 
 # Decode a 16-halfword poll response, or return null if it is not one.

@@ -3,7 +3,7 @@
     "crt1",
     "idp1"
   ],
-  "startSharedWindow": false,
+  "startSharedWindow": true,
   "lrus": {
     "shared": {
       "window": {
@@ -29,7 +29,8 @@
       "lru": "IDP",
       "module": "meds/idp",
       "config": {
-        "lru": "IDP2"
+        "lru": "IDP2",
+        "ipled": false
       }
     },
     "idp3": {
@@ -37,7 +38,8 @@
       "lru": "IDP",
       "module": "meds/idp",
       "config": {
-        "lru": "IDP3"
+        "lru": "IDP3",
+        "ipled": false
       }
     },
     "idp4": {
@@ -45,7 +47,8 @@
       "lru": "IDP",
       "module": "meds/idp",
       "config": {
-        "lru": "IDP4"
+        "lru": "IDP4",
+        "ipled": false
       }
     },
     "crt1": {

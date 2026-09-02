@@ -394,6 +394,22 @@ async function main() {
     sp.press(DEU.KEY.CLEAR);
     eq(sp.text(), ' ', '...and further ones have nothing left to take');
 
+    // The line is the whole of the entry: a keystroke that wipes it leaves
+    // nothing for CLEAR to reach back to.
+    const spw = new S.SPL();
+    type(spw, 'OPS', '1', '0', '1', 'PRO');
+    eq(spw.text(), ' OPS 101 PRO ', 'a completed entry stays to be read back');
+    spw.press(DEU.KEY['2']);
+    eq(spw.text(), ' 2 ERR ', '...and the next keystroke wipes it');
+    spw.press(DEU.KEY.CLEAR);
+    eq(spw.text(), ' ', '...which CLEAR cannot bring back');
+
+    const spr = new S.SPL();
+    type(spr, 'ITEM', '1', '2', 'SPEC');
+    eq(spr.text(), ' SPEC', 'an initiator restarts the entry');
+    spr.press(DEU.KEY.CLEAR);
+    eq(spr.text(), ' ', '...and CLEAR cannot bring the abandoned one back');
+
     // A keystroke is not a character: a delimiter draws ` (12)+` in one
     // press and comes off in one.
     const spd = new S.SPL();

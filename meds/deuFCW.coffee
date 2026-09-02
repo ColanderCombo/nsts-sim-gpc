@@ -16,13 +16,13 @@ import {PackedBits} from '../gpc/util'
 #   78E5  minor increment  -27  (a carriage return drops one row)
 #   3800  FCW1  attributes -- no blink, no dash, single intensity
 #   3006  FCW2  small upright characters
-#   3400  FCW3  colour, select off (the DEU's own default)
+#   3400  FCW3  colour, select off (the DEU's default)
 #   0000  position-run lead
 #   8555  X = 1365   (character column 17: 1042 + 19*17)
 #   9153  Y =  339   (character row     1:  366 - 27*1)
 #   E0C2  glyph pair -- 0x41 'A' then 0x42 'B'
 #   C00D  carriage return
-#   19EE  branch back into the DEU's own program: end of the section
+#   19EE  branch back into the DEU's program: end of the section
 #
 # Screen geometry: the beam sits on a 2048-unit modular grid -- the position
 # field is eleven bits and the word above it writes the axis' reference
@@ -46,32 +46,104 @@ ANGINC_UNITS = 32768 # op 5 angle-increment units per turn (0.011 deg); the
                      # field is still 12 bits, so the range is 0..44.99 deg
 AU_WIDTH    = 1024   # the addressable-unit grid: X 0..1023
 AU_HEIGHT   = 731    # ... Y 0..730
-GRID        = 2048   # beam-coordinate wrap, both axes
+# One addressable unit is 7/1024 inch, so the grid is exactly 7.000 by 4.997
+# inches.  Every dimension the DEU stand-alone self test is specified in
+# (STS-83-0020V2-34/sect.4.6.8) comes out an exact whole number of units at
+# this scale -- the four circle radii are 21, 60, 127 and 160, the longest of
+# the ten brightness lines is 512, the boxed windmill's square is 108 -- which
+# is what fixes it.
+AU_INCH     = 7.0 / 1024
+# The beam register is eleven bits, so a position word can hold 0..2047, but
+# the beam wraps at 1536.  These constants are the display format generator's
+# (src/dfg/fcw.py), whose output is byte-identical to the flight display
+# compools: a deck's XC=7 compiles to beam 1175 in flight, so beam 1175 is
+# column 7.  A format area of 52 columns is 988 units wide and starts at
+# 1042, so every column past 25 is written as a low beam value (column 29 is
+# 76), which resolves back to a column only if the fold is at 1536.
+#
+# Calibrating them against the GPCIPL menu puts the origin 531 units
+# (27.95 columns) right and the wrap 512 high, which lands every flight
+# display ~21 columns left of where it belongs with a third of it off the
+# screen.  See the note under `cellCol`.
+GRID        = 2048   # beam register width: a position word's field is
+                     # eleven bits, so beam arithmetic wraps here
+SCREEN_WRAP = 1536   # ...but the screen is 1536 units around, which is where
+                     # a beam position folds back to a character cell
 COL_PITCH   = 19     # screen units per character column (small characters)
 ROW_PITCH   = 27     # screen units per character row
 COL_PITCH_L = 24     # ... large characters (SIZE=L)
 ROW_PITCH_L = 32
-COL_ORIGIN  = 1573   # beam X of cell column 0
-ROW_ORIGIN  = 364    # beam Y of cell row 0
-ABS_X_ORIGIN = 1555  # beam X of absolute screen coordinate 0 (cell col 0 = 18)
-ABS_Y_ORIGIN = 364   # beam Y of absolute screen coordinate 0 (= cell row 0)
+COL_ORIGIN  = 1042   # beam X of cell column 0
+ROW_ORIGIN  = 366    # beam Y of cell row 0
+ABS_X_ORIGIN = 1024  # beam X of absolute screen coordinate 0 (cell col 0 = 18)
+ABS_Y_ORIGIN = 366   # beam Y of absolute screen coordinate 0 (= cell row 0)
 
 export {ANGLE_UNITS, ANGINC_UNITS,
-        AU_WIDTH, AU_HEIGHT, GRID, COL_PITCH, ROW_PITCH,
+        AU_WIDTH, AU_HEIGHT, AU_INCH, GRID, SCREEN_WRAP,
+        COL_PITCH, ROW_PITCH,
         COL_PITCH_L, ROW_PITCH_L,
         COL_ORIGIN, ROW_ORIGIN, ABS_X_ORIGIN, ABS_Y_ORIGIN}
+
+# ---------------------------------------------------------------------------
+# A character's beam position is the centre of its character cell.
+#
+# Generated display data puts the runs that draw characters on one lattice
+# and the runs that draw vectors on another, half a cell from it in both
+# axes: 391 of 397 character runs land together, 11 of 15 vector runs land
+# 10 units across and 13 in Y from them, which is the rounded half of the
+# 19-unit column and the 27-unit row.  The separation is what matters and
+# it does not depend on where the origin is put.  A box drawn round a block
+# of text has its edges between cells, so the vector lattice is the cell
+# boundary and the character lattice is the cell's middle.
+#
+# `mduVectorDisplay`'s character generator draws from the cell's corner
+# instead: it maps the 512-unit glyph mesh to [0.95, 1.85] across and
+# [0.10, 1.00] down in cell units and then places the mesh at `x - 1`.  So a
+# glyph of scale s has its middle this far from the drawing origin, and a
+# beam interpreter subtracts it to put the middle on the beam.
+GLYPH_MESH_COL = 1.40      # (0.95 + 1.85) / 2
+GLYPH_MESH_ROW = 0.55      # (0.10 + 1.00) / 2
+export glyphCentre = (scale = 1) ->
+  [GLYPH_MESH_COL * scale - 1, GLYPH_MESH_ROW * scale]
+
+# A position field is eleven bits -- 2048 codes -- and the screen is 1536
+# units around, so 512 codes are spare and they carry the negative half.
+# The OI301700 build listing assembles the IPL menu coordinates that way:
+#
+#     POS (P31,P1)    XPOS   95    ->  805F      character column 31
+#     POS  (P1,P2)    XPOS -475    ->  8625      character column  1
+#
+# -475 stores as 1573, and 95 - (-475) is 570, thirty columns of 19: column
+# 0 is at -494, which is COL_ORIGIN modulo the screen.  Display compools
+# write the same positions as 1042..1535 instead, so the two never use the
+# same code for different places -- a compool never stores 1536 or above and
+# the menu never stores 1024 to 1535.  Fold the spare codes down and both
+# land on the same lattice.
+export beamFold = (v) ->
+  v = v & (GRID - 1)
+  if v >= SCREEN_WRAP then v - (GRID - SCREEN_WRAP) else v
 
 # Beam register -> screen coordinate, in character cells with the origin at
 # the top left of the format area.  Both are modular: a column past the right
 # of the grid wraps through zero.
-export screenX = (x) -> ((x - ABS_X_ORIGIN + GRID) %% GRID) / COL_PITCH
-export screenY = (y) -> ((ABS_Y_ORIGIN - y + GRID) %% GRID) / ROW_PITCH
+export screenX = (x) -> ((x - ABS_X_ORIGIN) %% SCREEN_WRAP) / COL_PITCH
+export screenY = (y) -> ((ABS_Y_ORIGIN - y) %% SCREEN_WRAP) / ROW_PITCH
 
 # The same thing in character cells, which is what the renderer draws in:
 # cell column 0 reads 0, cell row 0 reads 0, and a beam parked between cells
 # reads a fraction.  These are the inverses of `cellX`/`cellY` below.
-export cellCol = (x) -> ((x - COL_ORIGIN + GRID) %% GRID) / COL_PITCH
-export cellRow = (y) -> ((ROW_ORIGIN - y + GRID) %% GRID) / ROW_PITCH
+# The screen holds 1536/19 = 80.8 columns, and the format area is the first
+# 52 of them, so a column past the right of the format wraps through zero --
+# that is deliberate and calibrated.  The eighteen units between the
+# absolute origin and character column 0 are the exception: they come out at
+# column 107, off the right of the display, when what is meant is a small
+# NEGATIVE column.  Anything past the format area folds back.
+COL_WRAP = SCREEN_WRAP / COL_PITCH
+FOLD_ABOVE = COL_WRAP - 12
+export cellCol = (x) ->
+  c = ((x - COL_ORIGIN) %% SCREEN_WRAP) / COL_PITCH
+  if c > FOLD_ABOVE then c - COL_WRAP else c
+export cellRow = (y) -> ((ROW_ORIGIN - y) %% SCREEN_WRAP) / ROW_PITCH
 
 # Beam modes in FCW2's low three bits.  Bits 1-0 select the generator and
 # bit 2 is the upright bit, which rotation clears: a vector reads 5 upright
@@ -134,8 +206,12 @@ export class FCW extends PackedBits
       when 'ROT'
         out.v.degrees = out.v.angle * 360 / ANGLE_UNITS
       when 'BRANCH'
-        # op 1's bottom bit is address bit 12 (see the table entry); the
-        # 12-bit field stays as `addr12` for the record, `addr` is the target
+        # `addr` is the target only in the upper 4K.  A branch word
+        # carries twelve address bits and takes its 4K sector from the
+        # interpreter's current one (see the table entry), so `addr12` is
+        # the field and `addr` is it read in sector 1 -- right for every
+        # display list, wrong for a jump into the format buffer.  The
+        # interpreter uses `addr12` and its sector register.
         out.v.addr = hw & 0x1fff
       when 'CHAR2'
         out.v.g1 = out.v.char1
@@ -222,10 +298,10 @@ export class FCW extends PackedBits
 
   # Character cell -> beam register.  Rounded: a fractional cell is a real
   # beam position, and the position field is an integer.
-  cellX: (col) -> Math.round(COL_ORIGIN + COL_PITCH * col) %% GRID
-  cellY: (row) -> Math.round(ROW_ORIGIN - ROW_PITCH * row) %% GRID
-  absX:  (n)   -> (ABS_X_ORIGIN + n) %% GRID
-  absY:  (n)   -> (ABS_Y_ORIGIN - n) %% GRID
+  cellX: (col) -> Math.round(COL_ORIGIN + COL_PITCH * col) %% SCREEN_WRAP
+  cellY: (row) -> Math.round(ROW_ORIGIN - ROW_PITCH * row) %% SCREEN_WRAP
+  absX:  (n)   -> (ABS_X_ORIGIN + n) %% SCREEN_WRAP
+  absY:  (n)   -> (ABS_Y_ORIGIN - n) %% SCREEN_WRAP
   
   positionRun: (col, row) -> [@noop(), 
                               @xPosition(@cellX(col)),
@@ -282,14 +358,14 @@ export class FCW extends PackedBits
       @opByMask[desc.mask][desc.maskedVal] = desc
       #console.log nom,desc
 
-    # When matching a halfword we search from more to less specific, so order
-    # the masks widest first.  
+    # Halfwords match from more to less specific, so the masks are
+    # ordered widest first.
     @orderedMasks = @orderedMasks.sort((a,b) -> b - a)
 
   makeCharToDEU: () ->
     @chrToDEU = {}
     for k,v of @DEUCharset
-      @chrToDEU[v] = k
+      @chrToDEU[v] ?= k
 
   encode: (data) ->
     desc = @descByOp[data.nm]
@@ -495,11 +571,15 @@ export class FCW extends PackedBits
     # ("load what follows at `target`"), and as the exit from a critical
     # format (0x111E) and from a display's static section (0x19EE).
     #
-    # DEU addresses are 13 bits over an 8K halfword memory: the opcode is
-    # 000 in bits 15-13 and bit 12 is address bit 12, so `addr` below is
-    # the whole 13 bits.  Display lists occupy the upper half, which is why
-    # every such word reads as op 1.  Known addresses: 0x19EE the display
-    # header, 0x1A06 the uplink indicator, 0x1A0E the dynamic portion. 
+    # DEU addresses are 13 bits over an 8K halfword memory but this word
+    # carries only twelve: the opcode is 0001 in bits 15-12, so an op-1
+    # word is always 0x1xxx and names an address within the current 4K
+    # sector.  Display lists live in the upper sector, which is why their
+    # branch words read as the whole address and why the upper sector is as
+    # far as a display list reaches; an op-2 word (below) carries the sector
+    # when it has to leave.  Known addresses: 0x19EE
+    # the display header, 0x1A06 the uplink indicator, 0x1A0E the dynamic
+    # portion.
     BRANCH: {
       d:'0001aaaaaaaaaaaa'
       nom:{ a:'addr12' }
@@ -512,8 +592,15 @@ export class FCW extends PackedBits
     # Always followed by a branch word giving the address.  Draw `count`
     # words from there, then carry on after the branch word -- a call with
     # an explicit length instead of a return instruction.  `sector` is the
-    # 4K page of the target; the branch word that follows carries the whole
-    # 13-bit address, which is where the target is read from.  Display
+    # 4K page of the target and the branch word carries the twelve bits
+    # below it.
+    #
+    # A count of zero is a sector-qualified jump, the only way out of the
+    # sector the interpreter is in: a
+    # display selects its resident critical-format background with
+    # `[0x2000, BRANCH deuloc]`, deuloc being the format's slot in the
+    # table at 0x0100 -- which is what a display deck's DEULOC= names.
+    # Display
     # lists occupy the upper half of the 8K memory, so the sector reads 1.
     SUBLIST: {
       d:'0010ssssnnnnnnnn'
@@ -544,7 +631,7 @@ export class FCW extends PackedBits
     }
     # FCW3 -- colour (MEDS only; a monochrome DEU has no palette) and
     # double intensity.  The palette is six bits and bit 7 enables it;
-    # `select` off leaves the DEU drawing in its own default colour.
+    # `select` off leaves the DEU drawing in its default colour.
     # Bit 6 is double intensity, and survives a colour change.
     FCW3: {
       d:'001101_psqcccccc'
@@ -559,7 +646,13 @@ export class FCW extends PackedBits
       nom:{ d:'dash', b:'blink', t:'typ', o:'ocr', a:'axisY', s:'sp',
             i:'intensity', k:'blank' }
     }
-    # Value display.
+    # VDISP -- probably "Virtual Display".
+    #   This is a late addition to the MEDS supported FCWs that's used
+    #   by several new/upgraded SPEC displays to store all or part of 
+    #   their static sections on the MDU.  (Like critical formats, but
+    #   VDISPs are treated as a sublist rather than a single static display)
+    #   The vdisp field indicates the id of the locally stored display
+    #   buffer to branch to.
     VDISP: {
       d:'001111vvvvvvvvvv'
       nom:{ v:'vdisp' }
@@ -690,10 +783,32 @@ export class FCW extends PackedBits
   }
 
   DEUCharset: {
-    # ref USA-003090/p.104
+    # ref USA-003090/Table 8-2, "DEU Character Set"
+    #
     # The mapping here is for convenience and doesn't directly define the
     # shape of each glyph: actual shapes are loaded from the font.svg by
     # the character generator.
+    #
+    # Four of the 128 entries carry a name in the table instead of a shape,
+    # and all four are in the first column:
+    #
+    #   0x00  NULL              draws nothing and does not advance
+    #   0x03  SELF TEST
+    #   0x08  BACKSPACE         undoes one advance, so a character can be
+    #                           overstruck: the DEU stand-alone self test's
+    #                           plus-or-minus is `+` BACKSPACE UNDERSCORE
+    #   0x0d  CARRIAGE RETURN   home on the advance axis, one minor
+    #                           increment along the other
+    #
+    # 0x03 is issued in the refresh stream, the only path the CPU has to the
+    # symbol generator.  The BITE test in the stand-alone self test
+    # (STS-83-0020V2-34/sect.4.6.8 para 17) sets DU VIDEO ERROR and the four
+    # analog BITE bits, hardware the CPU cannot otherwise address.  No
+    # display format held here carries 0x03.  What it draws or commands is
+    # in MC615-0022, which is not held.
+    #
+    # 0x5d OVERSCORE and 0x7d UNDERSCORE are full-cell rules, the marks
+    # BACKSPACE overstrikes with.  0x16 is the underscore flight formats use.
     0x00: '\0'
     0x01: ']'
     0x02: '['
@@ -819,7 +934,7 @@ export class FCW extends PackedBits
     0x7a: 'z'
     0x7b: 'σ'
     0x7c: '|'
-    0x7d: '' # UNDERSCORE
+    0x7d: '_' # UNDERSCORE, the full-cell rule; 0x16 is the common one
     0x7e: 'λ'
     0x7f: '∆'
   }

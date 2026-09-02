@@ -7,7 +7,8 @@ import {MDUScreen} from 'meds/mduScreen'
 import {FCW, wordsFromBytes} from 'meds/deuFCW'
 import * as FCWD from 'meds/deuFCW'
 import * as DEU from 'meds/deuProto'
-import {SPL, ERR_TEXT} from 'meds/deuSPL'
+import {SPL, ERR_TEXT, splFCWs, SPL_ROW} from 'meds/deuSPL'
+import {SelfTest, FRAME_HZ as SelfTestHz} from 'meds/deuSelfTest'
 
 dispose3D= (obj) ->
   if obj.children?
@@ -23,7 +24,8 @@ export class Screen_DPS extends MDUScreen
     if not @curData?
       @curData = {
         kybd: 'left'
-        gpcNo: 1
+        idpNo: null
+        bigX: false
         pollFail: false
         syntaxError: false
       }
@@ -32,10 +34,18 @@ export class Screen_DPS extends MDUScreen
   data: () ->
     return @curData
 
-  setGPCNo: (@gpcNo) ->
-    @group.remove @geo_gpcNo
-    @geo_gpcNo = @d.str(25,30.715,"#{@gpcNo}",@d.c2h.green,1.75)
-    @group.add @geo_gpcNo
+  setIDPNo: (idpNo) ->
+    @idpNo = idpNo
+    @curData.idpNo = idpNo if @curData?
+    return if not @group?
+    if @geo_idpNo?
+      @group.remove @geo_idpNo
+      dispose3D(@geo_idpNo)
+      @geo_idpNo = null
+    if idpNo?
+      @geo_idpNo = @d.str(IDP_NO_AT[0], IDP_NO_AT[1], "#{idpNo}", @d.c2h.green, 1.75)
+      @group.add @geo_idpNo
+    @d.dirty = true
 
   setKybd: (@kybd) ->
     @curData.kybd = @kybd if @curData?
@@ -47,20 +57,72 @@ export class Screen_DPS extends MDUScreen
       @group.add @geo_kybd_right
     @d.dirty = true
 
-  POLL_FAIL_COLOR = 48
-  POLL_FAIL_X = [[0, 1, 52, 27], [52, 1, 0, 27]]
-  POLL_FAIL_AT = [41, 26]
+  # Half a box height down and about four pixels up from the box origin.
+  IDP_NO_AT = [24.75, 30.665]
+
+  # The big “X” comes up when no display update data has arrived for three
+  # seconds.  POLL FAIL comes up, in the lower right-hand corner, when no
+  # poll or time update command has arrived for three seconds.  A powered
+  # IDP assigned to no GPC shows both.
+  # (USA005350 Rev.B §3.2.15.2 and Figure 3-48; the timers are `mdu.coffee`.)
+
+  # Where the format area sits in the view.
+  #
+  # A cell boundary at column c draws at world x = c+1 (`penX` below), so the
+  # 52-column format area spans 1 to 53.  The view runs 0.20 to 52.442456
+  # (`mduVectorDisplay`), a gutter of 0.80 on the left with column 51 0.56
+  # past the right-hand clip plane.  Centring the format area in the view
+  # leaves 0.121228 either side.
+  #
+  # The shift is on `@fmt`: the IDP box and the keyboard bars below it line
+  # up with the menu area's edgekey boxes, and the menu area does not move.
+  FMT_LEFT = 1 ; FMT_COLS = 52
+  VIEW_LEFT = 0.20 ; VIEW_WIDTH = 52.242456
+  FMT_SHIFT_X = VIEW_LEFT + (VIEW_WIDTH - FMT_COLS) / 2 - FMT_LEFT
+
+  # The character rows are numbered 1 at the top to 26 at the bottom.  Lines
+  # 1 and 2 carry the mission and event clocks, 25 the message line, and 26
+  # the scratch pad line, which POLL FAIL shares.
+  #
+  # The "X" is drawn on the vector lattice, which is the cell boundary: it
+  # runs corner to corner over the whole picture, from the absolute top of
+  # the format area (boundary row 0) to the bottom of line 26, and the full
+  # width, boundary column 0 to 52.  A character's beam is the middle of its
+  # cell and the glyph mesh runs to 1.00 of a cell below the origin, so the
+  # bottom of a row of text is 1 - glyphCentre's row offset below it.
+  FAIL_COLOR = 48
+  BIG_X_BOTTOM = SPL_ROW + 1 - FCWD.glyphCentre()[1]
+  BIG_X = [[0, 0, 52, BIG_X_BOTTOM], [52, 0, 0, BIG_X_BOTTOM]]
+  POLL_FAIL_AT = [41, SPL_ROW]
+
+  _bigXFCWs: () ->
+    fcws = [@fcw.colorMode(FAIL_COLOR), @fcw.attrMode({intensity: true})]
+    fcws = fcws.concat @fcw.vector(seg...) for seg in BIG_X
+    fcws
 
   _pollFailFCWs: () ->
-    fcws = [@fcw.colorMode(POLL_FAIL_COLOR), @fcw.attrMode({intensity: true})]
-    fcws = fcws.concat @fcw.vector(seg...) for seg in POLL_FAIL_X
-    fcws.concat @makeDFB("POLL FAIL", {xy: POLL_FAIL_AT})
+    [@fcw.colorMode(FAIL_COLOR), @fcw.attrMode({intensity: true})]
+      .concat @makeDFB("POLL FAIL", {xy: POLL_FAIL_AT})
 
+  setBigX: (bigX) ->
+    @curData.bigX = bigX if @curData?
+    return if not @fcw? or not @geo_bigX?
+    @geo_bigX = @drawFCWS((if bigX then @_bigXFCWs() else []), @geo_bigX)
+
+  # The scratch pad line is reset as POLL FAIL comes up and again as it goes
+  # away, JSC-18820/p.199 sect.4.6.61 "DEU Annunciated Messages":
+  # "the DEU will reset the SPL and display POLL FAIL on the  right-hand side 
+  # of the SPL", and on the first valid chained time-fill and poll "the POLL FAIL 
+  # message will be removed from the display and the DEU will reset the SPL"   
   setPollFail: (fail) ->
+    fail = !!fail
+    was = !!@curData?.pollFail
     @curData.pollFail = fail if @curData?
-    # POLL FAIL shares the scratch pad line, and takes 10 characters off what
-    # may be entered on it: 29 rather than 39.
-    @spl.pollFail = fail if @spl?
+    if @spl?
+      @spl.pollFail = fail
+      if fail != was
+        @spl.clear()
+        @updateScratchpad() if @geo_scratchpad?
     return if not @fcw? or not @geo_pollFail?
     @geo_pollFail = @drawFCWS((if fail then @_pollFailFCWs() else []),
                               @geo_pollFail)
@@ -68,14 +130,20 @@ export class Screen_DPS extends MDUScreen
   setSyntaxError: (err) ->
     @curData.syntaxError = err if @curData?
     if @geo_dps_scratch_err?
-      @group.remove @geo_dps_scratch_err
+      @fmt.remove @geo_dps_scratch_err
       dispose3D(@geo_dps_scratch_err)
       @geo_dps_scratch_err = null
     if err
       @geo_dps_scratch_err = @d.str 48, 27, "ERR", @d.c2h.red
-      @group.add @geo_dps_scratch_err
+      @fmt.add @geo_dps_scratch_err
     @d.dirty = true
 
+
+  # The two buffers a format can land in, from the DEU memory allocation
+  # (JSC-11174,Vol.1,Rev.D dwg 8.3): 3656 halfwords of format buffer at
+  # 0x0100, and 1527 of display buffer at 0x19EE.
+  FORMAT_BUFFER_WORDS = 3656
+  DISPLAY_BUFFER_WORDS = 1527
 
   # A fill of the unit's display memory: `words` load at `addr`, and the
   # screen redraws from the refresh entry point afterwards. 
@@ -84,17 +152,46 @@ export class Screen_DPS extends MDUScreen
       @bgFCWS[(addr + i) & (@bgFCWS.length - 1)] = w & 0xffff
     @refresh()
 
-  # Redraw the display from display memory.  The refresh starts at the display
-  # header and follows the branch words from there
+  # Redraw from display memory, following the branch words from the entry
+  # point: the message line, or `@refreshStart` when a critical format is
+  # standing alone, as the stand-alone self test does.  A display with an
+  # external background branches to it from the program the message line
+  # holds, and the message line falls through into the display header.
   refresh: () ->
+    seen = []
     @geo_dps_fcws = @drawFCWS(@bgFCWS, @geo_dps_fcws,
-                              {memory: @bgFCWS, start: DEU.ADDR.DISPLAY_HEADER})
+                              {memory: @bgFCWS,
+                               start: @refreshStart ? DEU.ADDR.MESSAGE_LINE,
+                               vdisp: seen})
+    # A resident background is a whole picture, opening with the same five
+    # setup words a display's static section does, so it draws in a
+    # separate pass.  An unknown code draws nothing.
+    words = []
+    for code in seen
+      bg = @vdispBG?[code]
+      if bg? then words = words.concat(Array.from(bg))
+      else console.log "DPS: no resident background for VDISP #{code}"
+    @geo_dps_vdisp = @drawFCWS(words, @geo_dps_vdisp)
 
   # Load a bare format control word stream at the refresh entry point --
-  # the debug path for a captured display, and what dev mode uses.
+  # the debug path for a captured display, and what dev mode uses.  A stream
+  # too long for the display buffer is a critical format, not a display, and
+  # loading it here would wrap it round the end of memory.
   setBGDFB: (words) ->
+    return @setCritFormat(words) if words.length > DISPLAY_BUFFER_WORDS
     @bgFCWS.fill(0)
+    @refreshStart = @displayEntry()
     @applyFill(DEU.ADDR.DISPLAY_HEADER, words)
+
+  # Load a critical format into the format buffer, which is
+  # 3656 halfwords at 0x0100 (JSC-11174,Vol.1,Rev.D dwg 8.3):
+  setCritFormat: (words) ->
+    if words.length > FORMAT_BUFFER_WORDS
+      console.log "DPS: critical format of #{words.length} halfwords " +
+                  "does not fit the format buffer"
+    @bgFCWS.fill(0)
+    @refreshStart = DEU.ADDR.CRITICAL_FORMAT
+    @applyFill(DEU.ADDR.CRITICAL_FORMAT, words)
 
   # ---------------------------------------------------------------------
   # The DEU beam interpreter.
@@ -115,7 +212,7 @@ export class Screen_DPS extends MDUScreen
   MAX_FCW_STEPS = 40000     # a runaway branch loop must not hang the frame
 
   drawFCWS: (fcws, targetGroup, opts = {}) ->
-    @group.remove targetGroup
+    @fmt.remove targetGroup
     dispose3D(targetGroup)
     targetGroup = new THREE.Object3D()
 
@@ -139,11 +236,18 @@ export class Screen_DPS extends MDUScreen
     slope = null
     lsiteHi = null                                        # first op 6 word
     repeatCount = 0
+    # The 4K sector a branch word's 12-bit address is taken in.  An op-1
+    # word is 0001aaaaaaaaaaaa: the 0x1000 bit is the OPCODE, not address
+    # bit 12, so twelve bits is all it carries and everything it can name
+    # is in the sector the interpreter is already running in.  An op-2
+    # word changes that (below), which is how a display list in the upper
+    # 4K reaches the format buffer at 0x0100.
+    sector = (opts.start ? DEU.ADDR.DISPLAY_HEADER) & 0x1000
 
     # A glyph is drawn at the beam, in the character-cell coordinates the rest
     # of the display is laid out in.  The +1 on each axis is the DPS format
-    # area's own origin.  The reference registers are NOT added here -- the
-    # position words below fold them in.
+    # area origin.  The position words below fold in the reference
+    # registers; they are not added here.
     penX = () -> FCWD.cellCol(beamX) + 1
     penY = () -> FCWD.cellRow(beamY) + 1
 
@@ -189,9 +293,14 @@ export class Screen_DPS extends MDUScreen
           carriageReturn()
         when 0x08                      # backspace: undo one advance
           if axisY then beamY -= majorStep else beamX -= majorStep
+        when 0x03
+          null
+          # SELF TEST, one of the four command codes in
+          # USA-003090/Table 8-2.  It commands the symbol generator;
+          # nothing reaches the screen and the beam does not advance.
         when 0x00
           null
-          # The empty half of a single-glyph word draws nothing AND does not
+          # The empty half of a single-glyph word draws nothing and does not
           # advance.  A display packs two glyphs to a word and puts an odd
           # trailing one in the LOW half with zero above it, so a zero that
           # advanced the beam would push every odd-length label one column
@@ -202,8 +311,11 @@ export class Screen_DPS extends MDUScreen
             # `data/deu_font.svg` holds no alternate glyphs, so an
             # ALTCHAR symbol draws its `DEUCharset` counterpart.
             trace? 'GLYPH', "'#{ch}'#{if altchar then ' ALTCHAR' else ''}"
-            add @d.str penX(), penY(), ch, penColor(),
-              (if large then FCWD.COL_PITCH_L / FCWD.COL_PITCH else 1.0),
+            # The beam is the middle of the character cell; the character
+            # generator draws from the cell's corner.  See `glyphCentre`.
+            sc = if large then FCWD.COL_PITCH_L / FCWD.COL_PITCH else 1.0
+            [gx, gy] = FCWD.glyphCentre(sc)
+            add @d.str penX() - gx, penY() - gy, ch, penColor(), sc,
               1.0, 1.0, @d.deuFont, angle, false
           advance()
 
@@ -256,8 +368,8 @@ export class Screen_DPS extends MDUScreen
     steps = 0
     while not done and pc >= 0 and pc < src.length and steps < MAX_FCW_STEPS
       steps++
-      # A spliced run ends when its word count runs out -- it has no
-      # terminator of its own -- so the return is checked before the fetch.
+      # A spliced run carries no terminator and ends when its word count
+      # runs out, so the return is checked before the fetch.
       if splice? and splice.left <= 0
         pc = splice.ret
         splice = null
@@ -274,7 +386,7 @@ export class Screen_DPS extends MDUScreen
         when 'REPT'
           repeatCount = v.count
         when 'BRANCH'
-          tgt = v.addr
+          tgt = sector | (v.addr12 & 0xfff)
           if splice?
             null                        # a branch inside a spliced run is
                                         # data, not a jump: taking it would
@@ -297,6 +409,15 @@ export class Screen_DPS extends MDUScreen
           # length-counted call has nowhere to keep a second return address;
           # a nested one is stepped over rather than followed, so a bad count
           # can never walk off with the program counter.
+          #
+          # A count of zero is a sector-qualified jump, the only way to
+          # leave the display buffer.  A
+          # branch word carries 13 bits, so a display list in the upper 4K
+          # cannot name the format buffer at 0x0100; the sector field says
+          # which 4K the target is in and the branch word supplies the rest.
+          # That pair is what selects a resident critical format -- a
+          # display's DEULOC= is the address of its slot in the table at
+          # 0x0100, and dfg emits exactly `[0x2000, Branch(DEULOC)]` for it.
           nxt = @fcw.decodeFCW(src[pc])
           if splice?
             if nxt?.nm == 'BRANCH'
@@ -304,7 +425,15 @@ export class Screen_DPS extends MDUScreen
               splice.left--             # the skipped word is still one of ours
           else if nxt?.nm == 'BRANCH' and v.count > 0
             splice = {left: v.count, ret: pc + 1}
-            pc = nxt.v.addr
+            pc = ((v.sector << 12) & 0x1000) | (nxt.v.addr12 & 0xfff)
+          else if nxt?.nm == 'BRANCH'
+            sector = (v.sector << 12) & 0x1000
+            tgt = sector | (nxt.v.addr12 & 0xfff)
+            if not visited[tgt]
+              visited[tgt] = true
+              pc = tgt
+            else
+              done = true
         when 'FCW1'
           dash = v.dash == 1
           blink = v.blink == 1
@@ -341,26 +470,32 @@ export class Screen_DPS extends MDUScreen
             majorStep = v.step
         when 'MININC', 'SPTYPE'
           minorStep = v.step
-        when 'XPOS'
-          # An X position word starts a new block: it re-homes the beam
-          # vertically as well as setting the column.  This is observable
-          # only where an X word stands alone; elsewhere a following Y word
-          # overrides it.
+        when 'XPOS', 'YPOS'
+          # A position word starts a new block: it sets and homes the
+          # axis it names and returns the beam to home on the other.  Either
+          # half shows only where a coordinate word stands alone -- an
+          # X,Y pair leaves the same state either way -- and each was
+          # measured on such a case.  X alone: the GPC IPL MENU's second
+          # column is a lone XPOS after eight carriage returns have taken
+          # the first down to BFS4, and PASS5 draws back on PASS1's row.
+          # Y alone: SPEC 60 (CS0600) writes its 50-character underscore
+          # row from a bare YC=9 five characters after CHAR=(PARAM); from
+          # the block's XC=2 home it fills columns 2-51 exactly, and five
+          # right of that it runs off the screen.  1041 of the display
+          # decks' 3246 YC directives carry no XC.
           #
           # The X/Y reference registers (XTRN/YTRN) are held: every position
           # word on the axis draws at reference + coordinate for as long as
           # FCW2's AC5+AC4 gate is set.
           if v.translate == 1
-            tx = v.x
-          else
-            beamX = (v.x + (if xyRef then tx else 0)) %% FCWD.GRID
+            if desc.nm == 'XPOS' then tx = FCWD.beamFold(v.x)
+            else                      ty = FCWD.beamFold(v.y)
+          else if desc.nm == 'XPOS'
+            beamX = (FCWD.beamFold(v.x) + (if xyRef then tx else 0)) %% FCWD.SCREEN_WRAP
             homeX = beamX ; beamY = homeY
-        when 'YPOS'
-          if v.translate == 1
-            ty = v.y
           else
-            beamY = (v.y + (if xyRef then ty else 0)) %% FCWD.GRID
-            homeY = beamY
+            beamY = (FCWD.beamFold(v.y) + (if xyRef then ty else 0)) %% FCWD.SCREEN_WRAP
+            homeY = beamY ; beamX = homeX
         when 'CIRCLE'
           drawCircle(v.radius)
         when 'LSITE1'
@@ -380,9 +515,15 @@ export class Screen_DPS extends MDUScreen
           for _ in [0...n]
             drawGlyph(v.g1)
             drawGlyph(v.g2)
-        # VDISP latches state this renderer does not draw.
+        when 'VDISP'
+          # A background the display unit holds, named by number: the
+          # GPC's whole static section for such a display is this one
+          # word.  The walk is over one word list and a resident
+          # background is another, so this collects the number and
+          # `refresh` draws it.  See `loadVdispBackgrounds`.
+          opts.vdisp?.push v.vdisp
 
-    @group.add targetGroup
+    @fmt.add targetGroup
     @d.dirty = true
 
     return targetGroup
@@ -390,8 +531,8 @@ export class Screen_DPS extends MDUScreen
 
   # "The flash rate for characters is 1 Hz with 5/8 sec 'on' time and 3/8
   # second 'off' time".  The IDP beats eight times a second, so a phase is
-  # five beats lit and three dark.  Driven by that beat and not by a timer
-  # of its own, so a display with a dead port stops flashing; see
+  # five beats lit and three dark.  There is no timer here: the beat
+  # drives it, so a display with a dead port stops flashing.  See
   # `mdu.recvFromPri`.
   #
   BLINK_ON_BEATS = 5
@@ -432,10 +573,14 @@ export class Screen_DPS extends MDUScreen
     @group = new THREE.Object3D()
     @group.position.y = -0.75               # DPS vertical position (was +1, shifted up 1.75)
 
-    @geo_gpcNo = @d.str(24.75,30.665,"#{@data().gpcNo}",@d.c2h.green,1.75)   # down 1/2 box height, up ~4px
-    @group.add @geo_gpcNo
-    @geo_gpcBox = @d.box 24.60,30.265 ,28.40,32.915
-    @group.add @geo_gpcBox
+    @fmt = new THREE.Object3D()
+    @fmt.position.x = FMT_SHIFT_X
+    @group.add @fmt
+
+    @geo_idpNo = null
+    @setIDPNo(@data().idpNo)
+    @geo_idpBox = @d.box 24.60,30.265 ,28.40,32.915
+    @group.add @geo_idpBox
 
 
     # kybd-active bar: 2px-tall filled quad, 1/4 up from the GPC box bottom,
@@ -446,22 +591,29 @@ export class Screen_DPS extends MDUScreen
     @setKybd @data().kybd
 
     @geo_dps_time = new THREE.Object3D()
-    @group.add @geo_dps_time
+    @fmt.add @geo_dps_time
+
+    @geo_dps_vdisp = new THREE.Object3D()
+    @fmt.add @geo_dps_vdisp
 
     @geo_scratchpad = new THREE.Object3D()
-    @group.add @geo_scratchpad
+    @fmt.add @geo_scratchpad
+
+    @geo_bigX = new THREE.Object3D()
+    @fmt.add @geo_bigX
 
     @geo_pollFail = new THREE.Object3D()
-    @group.add @geo_pollFail
+    @fmt.add @geo_pollFail
 
     # fresh group: stale refs from a previous build must not be removed from it
     @geo_dps_scratch_err = null
+    @setBigX @data().bigX
     @setPollFail @data().pollFail
     @setSyntaxError @data().syntaxError
 
     y=2
     @geo_dps_fcws = new THREE.Object3D()
-    @group.add @geo_dps_fcws
+    @fmt.add @geo_dps_fcws
 
     @_blinkOn ?= true
 
@@ -473,11 +625,9 @@ export class Screen_DPS extends MDUScreen
 
   # the header clock
   #
-  # The GPC ships SECONDS (two 48-bit extended floats and a conversion word,
+  # The GPC ships seconds (two 48-bit extended floats and a conversion word,
   # `DEU.parseTimeFill`) and the display converts, so the DDD/HH:MM:SS is
-  # drawn here rather than sent.
-  #
-  # It doesn't currently go into DEU display memory, but it probably should.
+  # drawn here and never reaches DEU display memory.
   #
   _clockText: (secs) ->
     secs = Math.max(0, Math.floor(secs))
@@ -492,8 +642,8 @@ export class Screen_DPS extends MDUScreen
     # on show.  Keep the value and draw it when there is something to draw
     # into.
     return if not @fcw? or not @geo_dps_time?
-    fcws = @makeDFB(@_clockText(missionSecs), {xy: [39, 0]})
-             .concat(@makeDFB(@_clockText(eventSecs), {xy: [39, 1]}))
+    fcws = @makeDFB(@_clockText(missionSecs), {xy: [39, 1]})
+             .concat(@makeDFB(@_clockText(eventSecs), {xy: [39, 2]}))
     @geo_dps_time = @drawFCWS(fcws, @geo_dps_time)
 
   # Text at a character cell -> the FCWs that draw it: a position run, then
@@ -505,29 +655,42 @@ export class Screen_DPS extends MDUScreen
   # SPL: the scratch pad line
   #
   # The rules live in `meds/deuSPL`
+  # With `--dcp` the IDP's control program composes the line into the message
+  # line buffer at 0x19BC and the beam draws it out of display memory like
+  # everything else, so this side channel stands down; see meds/deuDCP.
+  splIsLocal: () -> not @d.CONFIG?.dcp
+
+  # Where a refresh starts, as the DEU's symbol generator was told.  A
+  # critical format overrides it: that draws the whole screen and the
+  # message line is not part of it.
+  setRefreshStart: (addr) ->
+    @deuRefreshStart = addr
+    # A critical format stands alone and the message line is not part of
+    # it; the entry point is remembered and taken up again when the format
+    # comes down.
+    return if @refreshStart == DEU.ADDR.CRITICAL_FORMAT
+    return if @refreshStart == addr
+    @refreshStart = addr
+    @refresh()
+    @d.dirty = true
+
+  # Where a normal display refresh starts: whatever the DEU's control
+  # program last asked for, and the display header if it never has.
+  displayEntry: () -> @deuRefreshStart ? DEU.ADDR.MESSAGE_LINE
+
   updateScratchpad: () ->
+    if not @splIsLocal()
+      @geo_scratchpad = @drawFCWS([], @geo_scratchpad)
+      return
     @spl ?= new SPL(pollFail: @data().pollFail)
-    fcws = @fcw.positionRun(0, 27)
-    # The command initiator flashes until the command is complete.
-    # ERR flashes.  The blink attribute is a mode register, not a
-    # property of the text, so it has to be turned off again after each run.
-    span = @spl.initSpan
-    if span? and not @spl.complete
-      fcws = fcws.concat @makeDFB(@spl.line[0...span[0]])
-      fcws.push @fcw.attrMode({blink: true})
-      fcws = fcws.concat @makeDFB(@spl.line[span[0]...span[1]])
-      fcws.push @fcw.attrMode({})
-      fcws = fcws.concat @makeDFB(@spl.line[span[1]..])
-    else
-      fcws = fcws.concat @makeDFB(@spl.line)
-    if @spl.err
-      fcws.push @fcw.attrMode({blink: true})
-      fcws = fcws.concat @makeDFB(ERR_TEXT)
-      fcws.push @fcw.attrMode({})
-    @geo_scratchpad = @drawFCWS(fcws, @geo_scratchpad)
+    # The command initiator flashes until the command is complete, and so
+    # does ERR.  `splFCWs` is the words that draw it; the rules and the
+    # composition both live in meds/deuSPL.
+    @geo_scratchpad = @drawFCWS(splFCWs(@spl, @fcw), @geo_scratchpad)
     @d.dirty = true
 
   recvKey: (k) ->
+    return if not @splIsLocal()
     @spl ?= new SPL(pollFail: @data().pollFail)
     @spl.press k.gpcCode
     @updateScratchpad()
@@ -537,6 +700,7 @@ export class Screen_DPS extends MDUScreen
     @bgFCWS = new Uint16Array(DEU.DEU_MEMORY_WORDS)
 
     @loadCritFormats()
+    @loadVdispBackgrounds()
 
     @spl = new SPL(pollFail: @data().pollFail)
     @syntaxError = false
@@ -547,15 +711,26 @@ export class Screen_DPS extends MDUScreen
     pth=@d.CONFIG.NSTS_TOP+'data/'
     @critFormats[0] = @loadBGDFBFile pth+'0000-DEU_STAND_ALONE_SELF_TEST.dfb'
 
+  loadVdispBackgrounds: () ->
+    # searches data/VDISP-nnn-*.dfb for virtual displays loadable by VDISP
+    # nnn is the number used in the VDISP FCW.
+    @vdispBG = {}
+    pth = @d.CONFIG.NSTS_TOP + 'data/'
+    for f in fs.readdirSync(pth)
+      m = /^VDISP-(\d+)-.*\.dfb$/i.exec f
+      continue if not m?
+      @vdispBG[Number(m[1])] = @loadBGDFBFile(pth + f)
+
   dispCritFormat: (fmtNum) ->
-    @setBGDFB(@critFormats[0])
+    @setCritFormat(@critFormats[0])
 
   loadBGDFBFile: (path) -> wordsFromBytes fs.readFileSync(path)
 
   _dfbList: () ->
     pth = @d.CONFIG.NSTS_TOP + 'data/'
     if not @_dfbFiles?
-      @_dfbFiles = (f for f in fs.readdirSync(pth) when /\.dfb$/i.test(f)).sort()
+      @_dfbFiles = (f for f in fs.readdirSync(pth) \
+                    when /\.dfb$/i.test(f) and not /^VDISP-/i.test(f)).sort()
       @_dfbIndex = -1        # nothing selected yet
     @_dfbFiles
 
@@ -599,182 +774,56 @@ export class Screen_DPS extends MDUScreen
     return fname
 
   # ---------------------------------------------------------------------------
-  # DEU stand-alone self-test animation (debug mode).
-  # Loads the static 0000 self-test format, overwrites its terminating branch
-  # with animated elements, and rewrites their FCWs on a timer to animate the
-  # elements the  DEU updated live (boxed vectors, revolving letters, the
-  # two travelling squares, and the spinning "bug").
+  # The DEU stand-alone self test.
   #
-  # Written inDEU FCWs, so it is limited to what the DEU can express:
-  # characters rotate in quarter turns only and come in two sizes only, and
-  # intensity is one bit.
+  # Built from its specification: see
+  # `meds/deuSelfTest`, which turns STS-83-0020V2-34/sect.4.6.8 and its
+  # Figure 4.6.8-1 into format control words.  The static half loads into the
+  # format buffer, where a critical format belongs, and its trailing branch
+  # carries the beam into the display buffer, where the animated half is
+  # rewritten once a refresh frame.
   #
-  # Slot sizes (the layout in `enterSelfTest` depends on them):
-  #   position + glyph      3 words
-  #   angle + position + glyph  4 words
-  #   a vector              6 words  (enter vector mode, X, Y, slope,
-  #                                   extent, leave vector mode)
+  # The frame number comes from elapsed time at the symbol generator's 55 Hz,
+  # so every animated quantity stays an integer count of frames however the
+  # host's timer actually fires.  That is the point of the exercise: the
+  # specified rates are whole numbers of steps per frame, so if the model is
+  # right they come out exactly.
   # ---------------------------------------------------------------------------
-
-  ST_CHAR_WORDS = 3
-  ST_CHARROT_WORDS = 4
-  ST_VECTOR_WORDS = 6
-
-  _stXY: (idx, cx, cy) ->
-    @bgFCWS[idx]   = @fcw.xPosition(@fcw.cellX(cx))
-    @bgFCWS[idx+1] = @fcw.yPosition(@fcw.cellY(cy))
-
-  _stChar: (idx, cx, cy, ch) ->
-    @_stXY(idx, cx, cy)
-    @bgFCWS[idx+2] = @fcw.glyphSingle(@fcw.toGlyph(ch))
-
-  _stCharRot: (idx, cx, cy, ch, rot) ->
-    @bgFCWS[idx] = @fcw.rotation(rot * 180 / Math.PI)   # rot in radians
-    @_stChar(idx+1, cx, cy, ch)
-
-  _stLine: (idx, x0, y0, x1, y1) ->
-    @bgFCWS[idx + i] = w for w, i in @fcw.vector(x0, y0, x1, y1)
-    return
-
-  _stBoxRay: (idx, cx, cy, x0, y0, x1, y1, a) ->
-    dc = Math.cos(a) ; dr = Math.sin(a)*0.733
-    t = 1e9
-    if dc >  1e-6 then t = Math.min(t, (x1-cx)/dc)
-    if dc < -1e-6 then t = Math.min(t, (x0-cx)/dc)
-    if dr >  1e-6 then t = Math.min(t, (y1-cy)/dr)
-    if dr < -1e-6 then t = Math.min(t, (y0-cy)/dr)
-    @_stLine(idx, cx, cy, cx+dc*t, cy+dr*t)
+  ST_TICK_MS = 18                        # about one refresh frame
 
   enterSelfTest: () ->
     return if @selfTestOn
-    pth = @d.CONFIG.NSTS_TOP + 'data/'
-    @setBGDFB(@loadBGDFBFile(pth + '0000-DEU_STAND_ALONE_SELF_TEST.dfb'))
-    base = 0
-    base++ while base < @bgFCWS.length and
-                 @fcw.decodeFCW(@bgFCWS[base])?.nm != 'BRANCH'
-    base = 0 if base >= @bgFCWS.length
-    o = base
-    # leading attribute reset so animated elements draw normal/solid whatever
-    # state the static format left set
-    @bgFCWS[o] = @fcw.attrMode({})
-    o += 1
-    # This .dfb carries the four self-test circles as polygons; the .dsp
-    # that produced it is not in the tree.
-    @_stLayout = {}
-    @_stLayout.boxVec  = o ; o += 4*ST_VECTOR_WORDS   # (2) windmill: 4 half-lines
-    @_stLayout.letters = o ; o += 5*ST_CHARROT_WORDS+1 # (3) A,B,C,D,X + angle reset
-    @_stLayout.sqH     = o ; o += ST_CHAR_WORDS       # (9A) travelling square
-    @_stLayout.sqV     = o ; o += ST_CHAR_WORDS       # (9B) travelling square
-    @_stLayout.bug     = o ; o += 16*ST_VECTOR_WORDS  # (10) 16 vectors
-    # (8) 5 short + attributes + 5 long + attributes + connector
-    @_stLayout.eight   = o ; o += 11*ST_VECTOR_WORDS + 2
+    @_st ?= new SelfTest(@fcw)
+    st = @_st.staticWords()
+    @setCritFormat(st.concat([@fcw.branch(DEU.ADDR.DISPLAY_HEADER)]))
     @selfTestOn = true
-    @_stT0 = Date.now()
+    @_stFrame0 = Date.now()
     @tickSelfTest()
-    @_stTimer = window.setInterval((=> @tickSelfTest()), 50)
-    console.log "DEU self-test animation ON"
+    @_stTimer = window.setInterval((=> @tickSelfTest()), ST_TICK_MS)
+    console.log "DEU self test ON (#{st.length} halfwords of format)"
 
   exitSelfTest: () ->
     return if not @selfTestOn
     window.clearInterval(@_stTimer) if @_stTimer?
     @_stTimer = null
     @selfTestOn = false
-    @setBGDFB(@critFormats[0])   # back to the static self-test
-    console.log "DEU self-test animation OFF"
+    @setBGDFB(@critFormats[0])
+    console.log "DEU self test OFF"
 
   toggleSelfTest: () ->
     if @selfTestOn then @exitSelfTest() else @enterSelfTest()
 
+  selfTestFrame: () ->
+    Math.floor((Date.now() - @_stFrame0) * SelfTestHz / 1000)
+
   tickSelfTest: () ->
     return if not @selfTestOn
-    t = (Date.now() - @_stT0) / 1000
-    L = @_stLayout
-
-    # (2) box windmill: two crossed lines through the box centre, clipped to the
-    # box borders as they rotate (drawn as 4 half-lines).
-    bx0 = 19 ; by0 = 5 ; bx1 = 24.274 ; by1 = 8.866
-    bcx = (bx0+bx1)/2 ; bcy = (by0+by1)/2
-    spin2 = t * 0.9
-    for i in [0...4]
-      @_stBoxRay L.boxVec + i*ST_VECTOR_WORDS, bcx, bcy, bx0, by0, bx1, by1, spin2 + i*(Math.PI/2)
-
-    # (3) AB & CD patterns + X revolving about the circle centre (~33.84 deg/s
-    # clockwise, ~10.64 s). AB/CD are each a pair revolving about its own centre.
-    # Not yet: X should spin about its own centre, and A/B/C/D should have
-    # distinct heights (0.150"/0.125"), which needs the large/small character
-    # mode word interleaved with the glyphs.
-    lcx = 9 ; lcy = 12 ; Rorb = 7.0 ; rpair = 0.7 ; ASP = 0.733
-    wlet = t * (33.84 * Math.PI/180)  # glyphs are centred by the renderer
-    pab = wlet                        # clockwise (screen)
-    abx = lcx + Rorb*Math.cos(pab) ; aby = lcy + Rorb*ASP*Math.sin(pab)
-    tabc = -Math.sin(pab) ; tabr = ASP*Math.cos(pab)   # tangent = clockwise travel dir
-    @_stCharRot L.letters + 0*ST_CHARROT_WORDS, abx - rpair*tabc, aby - rpair*tabr, 'A', 0   # trails
-    @_stCharRot L.letters + 1*ST_CHARROT_WORDS, abx + rpair*tabc, aby + rpair*tabr, 'B', 0   # leads
-    pcd = wlet + Math.PI
-    cdx = lcx + Rorb*Math.cos(pcd) ; cdy = lcy + Rorb*ASP*Math.sin(pcd)
-    tcdc = -Math.sin(pcd) ; tcdr = ASP*Math.cos(pcd)
-    rcd = pcd + Math.PI/2             # base toward centre (flip sign if reversed)
-    @_stCharRot L.letters + 2*ST_CHARROT_WORDS, cdx - rpair*tcdc, cdy - rpair*tcdr, 'C', rcd
-    @_stCharRot L.letters + 3*ST_CHARROT_WORDS, cdx + rpair*tcdc, cdy + rpair*tcdr, 'D', rcd
-    @_stCharRot L.letters + 4*ST_CHARROT_WORDS, lcx, lcy, 'X', wlet
-    @bgFCWS[L.letters + 5*ST_CHARROT_WORDS] = @fcw.rotation(0)   # upright again for the squares
-
-    # Both squares start at the same point (col 50.27, row 16) at t=0 and, since
-    # 9B's period is exactly 1/4 of 9A's, they coincide there every 4th 9B cycle.
-    # (9A) horizontal: centre <-> 3.3975" right; starts at the far right
-    triA = 2*Math.abs((t/18.62) % 1 - 0.5)          # 1 at t=0 (rightmost)
-    @_stChar L.sqH, 26 + triA*(3.3975*7.143), 16.5, '¥'
-    # (9B) vertical at col 50.27; starts at its lowest (row 16.5)
-    triB = 1 - 2*Math.abs((t/(18.62/4)) % 1 - 0.5)  # 0 at t=0 (lowest)
-    @_stChar L.sqV, 26 + 3.3975*7.143, 16.5 - triB*6, '¥'
-
-    # (10) spinning 16-line "bug" (spec measurements).
-    # Lines run from r0..r1 inches from the centre of rotation (a hole in the
-    # middle). The array spins at 53.17 deg/s; its centre slides up-right then
-    # back along the 35.54 deg diagonal through screen centre over ~26.48 s.
-    CPI = 7.143 ; RPI = 5.236            # cols/in (ruler: 51 cols=7"), rows/in (=CPI*pxCol/pxRow)
-    r0 = 0.2051 ; r1 = 0.4102           # 0.8204" dia (spec), hole of 0.4102" dia
-    scx = 26 ; scy = 13.5               # screen centre = centre of the 51x26 grid
-    diag = 35.54 * Math.PI/180
-    amp = 0.9                           # inches of travel each way -- tune
-    s = amp * (1 - 2*Math.abs(2*((t/26.48) % 1) - 1))   # triangle in [-amp, +amp]
-    gx = scx + s*Math.cos(diag)*CPI
-    gy = scy - s*Math.sin(diag)*RPI
-    spinB = t * (53.17 * Math.PI/180)
-    for i in [0...16]
-      a = spinB + i*(2*Math.PI/16)
-      ca = Math.cos(a) ; sa = Math.sin(a)
-      @_stLine L.bug + i*ST_VECTOR_WORDS,
-        gx + r0*ca*CPI, gy - r0*sa*RPI,
-        gx + r1*ca*CPI, gy - r1*sa*RPI
-
-    # (8) ten varying-brightness lines, right-aligned, with a vertical connector.
-    # Exact spec lengths (in); longest 3.5" reaches the X (col 23) above STATUS
-    # with rightCol 48. The 5 shortest flash; the 5 longest alternate between
-    # the two intensities.
-    # the DEU has ONE intensity bit, so the ramp is a switch between normal
-    # and double intensity
-    LEN8 = [0.0068, 0.0137, 0.0273, 0.0547, 0.1094, 0.2188, 0.4375, 0.8750, 1.7500, 3.5000]
-    rightCol = 51 ; topRow = 19.5 ; sp8 = 0.45
-    flashOn = (Math.floor(t / 0.35) % 2) == 0
-    bright = ((1 - Math.cos(2*Math.PI*t/2.33)) / 2) > 0.5   # over ~2.33 s
-    # 5 shortest (k 0..4) at full intensity, flashing
-    for k in [0...5]
-      y = topRow + k*sp8
-      if flashOn
-        @_stLine L.eight + k*ST_VECTOR_WORDS, rightCol - LEN8[k]*CPI, y, rightCol, y
-      else
-        @_stLine L.eight + k*ST_VECTOR_WORDS, rightCol, y, rightCol, y   # flashed off
-    o8 = L.eight + 5*ST_VECTOR_WORDS
-    @bgFCWS[o8] = @fcw.attrMode({intensity: bright})
-    for k in [5...10]
-      y = topRow + k*sp8
-      @_stLine o8 + 1 + (k-5)*ST_VECTOR_WORDS, rightCol - LEN8[k]*CPI, y, rightCol, y
-    # back to normal intensity, then the vertical connector
-    o8b = o8 + 1 + 5*ST_VECTOR_WORDS
-    @bgFCWS[o8b] = @fcw.attrMode({})
-    @_stLine o8b + 1, rightCol, topRow, rightCol, topRow + 9*sp8
-
+    n = @selfTestFrame()
+    return if n == @_stLastFrame
+    @_stLastFrame = n
+    w = @_st.frameWords(n)
+    @bgFCWS[(DEU.ADDR.DISPLAY_HEADER + i) & (@bgFCWS.length - 1)] = x & 0xffff \
+      for x, i in w
     @refresh()
 
 

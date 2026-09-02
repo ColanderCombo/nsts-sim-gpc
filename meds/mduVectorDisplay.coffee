@@ -221,12 +221,17 @@ export class VectorDisplay
       @mats[0][v] = makeSDFLineMaterial(THREE, @sdfOpt({color: v}))
       @mats[1][v] = makeSDFLineMaterial(THREE, @sdfOpt({color: v}))
       @dashMats[v] = makeSDFLineMaterial(THREE, @sdfOpt({color: v, dashSize: 1.0, gapSize: 0.35}))
-    # graded-brightness green palette for DEU FEAT intensity (0..max).
-    # Fade via opacity (not toward black) so whatever is behind shows through.
+    # Graded-brightness ramps for DEU FEAT intensity (0..max), one per
+    # colour.  Fade via opacity (not toward black) so whatever is behind
+    # shows through.  One ramp per colour: the DEU's normal intensity is
+    # 0.72, so everything below full intensity takes this path.  Green is
+    # pre-built, being most of what a display draws; the rest are made on
+    # demand in `line`.
     @NINT = 32
-    @intMats = []
-    for i in [0...@NINT]
-      @intMats.push makeSDFLineMaterial(THREE, @sdfOpt({color: @c2h.green, opacity: i/(@NINT-1)}))
+    @intMats = {}
+    @intMats[@c2h.green] =
+      (makeSDFLineMaterial(THREE, @sdfOpt({color: @c2h.green, opacity: i/(@NINT-1)})) \
+       for i in [0...@NINT])
       
     
 
@@ -330,9 +335,8 @@ export class VectorDisplay
     @widthPx = @CONFIG.window.width
     @heightPx = @CONFIG.window.height
 
-    # Display coordinate system:
-    # This should probably be 1024x1024 to match the
-    # logical resolution of the original vector displays
+    # Display coordinate system.  The original vector displays have a
+    # logical resolution of 1024x1024.
     #
     # 51x26 (the character grid)
     #   + 0.50 x border
@@ -536,18 +540,29 @@ export class VectorDisplay
         mesh.renderOrder = order
         g.add mesh
       return g
-    # intensity < 1 fades via opacity (green palette; used by DEU FEAT intensity)
-    material = if intensity >= 0.999 then @mats[0][color] else @intMats[Math.max(0, Math.min(@NINT-1, Math.round(intensity*(@NINT-1))))]
-    # colors outside the c2h palette get a material built (and cached) on demand
-    material ?= (@mats[0][color] = makeSDFLineMaterial(THREE, @sdfOpt({color: color})))
+    # Intensity below full fades via opacity, in the stroke's colour.
+    # Colours outside the c2h palette get a material built (and cached) on
+    # demand, at either end.
+    if intensity >= 0.999
+      material = @mats[0][color] ?=
+        makeSDFLineMaterial(THREE, @sdfOpt({color: color}))
+    else
+      lvl = Math.max(0, Math.min(@NINT-1, Math.round(intensity*(@NINT-1))))
+      ramp = (@intMats[color] ?= [])
+      material = ramp[lvl] ?=
+        makeSDFLineMaterial(THREE, @sdfOpt({color: color, opacity: lvl/(@NINT-1)}))
     mesh = new THREE.Mesh(makeSDFLineGeometry(THREE, coords), @_clipMat(material, clip))
     mesh.frustumCulled = false   # quads are expanded in the vertex shader
     return mesh
 
   # Dashed variant of line() for DEU FEAT lineDash. Dash distances ride in
   # the geometry's segDist attribute (world units, like computeLineDistances).
+  # Built on demand: a colour outside the palette has no entry here and
+  # none in `@mats` either, and a missing material draws in THREE's default
+  # with no dash.
   dashedLine: (coords, color=@c2h.cyan) ->
-    material = @dashMats[color] ? @mats[0][color]
+    material = @dashMats[color] ?=
+      makeSDFLineMaterial(THREE, @sdfOpt({color: color, dashSize: 1.0, gapSize: 0.35}))
     mesh = new THREE.Mesh(makeSDFLineGeometry(THREE, coords), material)
     mesh.frustumCulled = false
     return mesh

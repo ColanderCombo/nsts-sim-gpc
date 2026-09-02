@@ -1445,7 +1445,7 @@ export class Screen_AE_PFD extends MDUScreen
         sg.add @d.str bcx-1.9, by1+0.15, "Accel", mat, scale=.75, advance=.75
       else
         # +0.20/+0.45 rather than +0.15/+0.40: nets out to 1px up on screen
-        # after the box's own 2px rise
+        # after the box's 2px rise
         sg.add @d.str bcx-0.68, by1+0.20, "N", mat, scale=.90, advance=.90, scalex=1.05
         sg.add @d.str bcx+0.72, by1+0.45, "Z", mat, scale=.65, advance=.65
       @_accCache[key] = sg
@@ -1550,7 +1550,7 @@ export class Screen_AE_PFD extends MDUScreen
     #     shape black-outlined
     #   over: thin dark-halo cross strokes, stopping VTIP short of the tips
     # The wing green is exactly as wide as the cross stroke + halo, so
-    # inboard the cross covers it and the wing's own black border stacks
+    # inboard the cross covers it and the wing's black border stacks
     # just outside the cross halo (reads as thicker dark edging); the last
     # bare VTIP of wing past the cross end reads as the thick green tips.
     # Pitch and yaw attitude are read against it at the display centre.
@@ -1559,9 +1559,8 @@ export class Screen_AE_PFD extends MDUScreen
     # vertical arm half-lengths (unchanged; top a tad longer than bottom)
     varmB = VCV - (2/3)*VTIP - 0.15
     varmT = varmB + 0.15
-    # error needle inner ends: originally kissing the cross/arm tips
-    # (derived from the shared old span VCV); per reference the needles
-    # run a little short of that now — NSET sets them back
+    # error needle inner ends: per reference the needles run a little
+    # short of the cross/arm tips — NSET sets them back
     NSET = 0.25
     @adiNIN = VCV - (2/3)*VTIP + NSET     # pitch needle (right)
     @adiNINv = @adiNIN - 0.15             # yaw needle (bottom)

@@ -29,6 +29,7 @@ async function bundle(rel) {
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [coffeePlugin({})],
+        loader: {'.asm': 'text'},   // meds/asm: SP-0 assembly source
         resolveExtensions: ['.coffee', '.js', '.ts', '.civet', '.json'],
         external: ['dgram', 'three', 'react', 'electron'],
         logLevel: 'error',
@@ -54,15 +55,18 @@ async function main() {
     // Cell column c sits at 1573 + 19c, row r at 364 - 27r on a 2048-unit
     // modular grid, and the normalising transforms take those back to cell
     // units.  Calibrated against live flight output: all 28 coordinate
-    // words in a running GPCIPL menu land exactly on a cell boundary.
-    eq(f.cellX(0), 1573, 'cell column 0');
-    eq(f.cellX(19), 1573 + 19 * 19, 'cell column 19');
-    eq(f.cellY(0), 364, 'cell row 0');
-    eq(f.cellY(1), 364 - 27, 'cell row 1');
+    // words in a display the GPC sends land exactly on a cell boundary.
+    // These are the display format generator's constants (src/dfg/fcw.py),
+    // whose output is byte-identical to the flight display compools, so a
+    // deck's XC=7 really is beam 1175 and beam 1175 really is column 7.
+    eq(f.cellX(0), 1042, 'cell column 0');
+    eq(f.cellX(19), 1042 + 19 * 19, 'cell column 19');
+    eq(f.cellY(0), 366, 'cell row 0');
+    eq(f.cellY(1), 366 - 27, 'cell row 1');
     // Column 51 is the right-hand edge of the format area; column 25 is the
     // beam origin, so the low columns are the ones that wrap.
-    eq(f.cellX(51), (1573 + 19 * 51) % 2048, 'cell column 51 wraps');
-    eq(f.cellX(25), 0, 'cell column 25 is beam zero');
+    eq(f.cellX(51), (1042 + 19 * 51) % 1536, 'cell column 51 wraps');
+    eq(f.cellX(26), 0, 'cell column 26 is beam zero');
     for (const c of [0, 5, 19, 35, 50]) {
         eq(Math.round(M.screenX(f.cellX(c)) - M.screenX(f.cellX(0))), c,
             `screenX round-trips cell column ${c}`);
@@ -165,6 +169,24 @@ async function main() {
     eq(f.decodeFCW(f.charMode({})).v.xyRef, 0,
         'a plain character mode word does not gate the reference');
 
+    // The position field is eleven bits and the screen is 1536 units, so
+    // 512 codes are spare and carry the negative half.  The IPL menu's own
+    // listing assembles character column 1 as `FL.11'-475'`,
+    // which stores 1573; a display compool writes the same position as
+    // 1061.  Fold, and both are column 1.
+    eq(M.beamFold(1573), 1061, 'the menu\'s -475 folds to the beam');
+    eq((M.beamFold(1573) - f.cellX(0)) / M.COL_PITCH, 1, '...which is column 1');
+    eq(M.beamFold(95), 95, 'a positive coordinate is left alone');
+    eq((M.beamFold(95) - f.cellX(0) + M.SCREEN_WRAP) % M.SCREEN_WRAP / M.COL_PITCH,
+       31, '...and 95 is column 31, as MENU12 says');
+    eq(M.beamFold(1422), 1422, 'a compool coordinate is left alone');
+    for (const v of [0, 19, 1042, 1535]) eq(M.beamFold(v), v, `${v} is a beam value`);
+    for (const v of [1536, 1573, 2047]) {
+        eq(M.beamFold(v), v - 512, `${v} is the negative half`);
+        ok(M.beamFold(v) >= 1024 && M.beamFold(v) < M.SCREEN_WRAP,
+           `...and lands in the left of the screen`);
+    }
+
     const col = f.decodeFCW(f.colorMode(31));
     eq(col.nm, 'FCW3', 'colour word is FCW3');
     eq(col.v.select, 1, 'an explicit colour sets select');
@@ -220,11 +242,11 @@ async function main() {
     //
     const xp = f.decodeFCW(f.xPosition(f.cellX(19)));
     eq(xp.nm, 'XPOS', 'X position');
-    eq(xp.v.x, 1573 + 19 * 19, 'X position value');
+    eq(xp.v.x, 1042 + 19 * 19, 'X position value');
     eq(xp.v.translate, 0, 'a beam move is not a translate');
     const yp = f.decodeFCW(f.yPosition(f.cellY(1)));
     eq(yp.nm, 'YPOS', 'Y position');
-    eq(yp.v.y, 364 - 27, 'Y position value');
+    eq(yp.v.y, 366 - 27, 'Y position value');
     // Coordinates never reach bit 11, which is what frees it to redirect
     // the write to the TRANSLATE register.
     ok(f.cellX(50) < 0x800 || f.cellX(50) >= 1536 - 0x800,

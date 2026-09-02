@@ -150,6 +150,11 @@ export class DEUUnit
     @stats.timeFills++
     @timeWords = words
     @time = DEU.parseTimeFill(words)
+    if @time? and @time.conv != DEU.TIME_CONV_SEEN
+      @_convReported ?= {}
+      unless @_convReported[@time.conv]
+        @_convReported[@time.conv] = true
+        @log "#{@name}: TIME CONVERSION WORD X'#{@time.conv.asHex(4)}'"
     @onTime(@time) if @time?
     {kind: 'time', time: @time, words: words}
 

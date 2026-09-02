@@ -7,11 +7,31 @@ export MDUMsg = {
   RESET_SPL: 0xff02     # the GPC reset the scratch pad line
   CLOCK:     0xff03     # the header clock
   POLL:      0xff04     # a GPC polled this unit
+  REFRESH:   0xff05     # where the DEU's symbol generator starts a refresh
+  OTP:       0xff06     # the operational test program's page is up (or down)
+  LOCAL_FILL:0xff07     # ...and a fill the DEU wrote ITSELF: the scratch pad
+                        # line and the test page.  Drawn like a FILL and
+                        # counted like nothing -- the big "X" watches for
+                        # display update FROM A GPC, and this is not it
   HEARTBEAT: 0xffff     # the IDP is alive
 }
 
 export MDUMsgName = {}
 MDUMsgName[v] = k for k, v of MDUMsg
+
+# The panel -> IDP messages on a keyboard bus.
+#
+# A keyswitch scan pattern is a complemented row/column strobe and never
+# falls below 0x8ffc (meds/deuKeyTable), so the low half of the word space
+# carries the panel's other discretes.  The major function switch is one:
+# drawing 8.3 gives DISCRETE DATA (MAJ FUNC) a break-in level and a channel
+# cell of its own, so the DEU reads it as a discrete.  The word is ours; the
+# discrete comes from the drawing.
+#
+export KYBDMsg = {
+  MAJOR_FUNC: 0x0100    # | deuProto.MAJOR_FUNC_CODE
+}
+export KYBD_MSG_MASK = 0xff00
 
 export MEDSConf = {
   mdus: {

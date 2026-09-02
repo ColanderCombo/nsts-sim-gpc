@@ -167,15 +167,6 @@ export class MDUMenuArea
       @_drawKeyItem(k)
 
   setEdgekeyFailed: (key,failed=true) ->
-    # Other indications of loss of communication between the IDP and
-    # GPC are the big “X” and POLL FAIL (Figure 3-48). Big “X”
-    # appears when the IDP does not receive display update data for
-    # 3 seconds. POLL FAIL appears in the lower right-hand corner
-    # when the IDP does not receive poll or time update commands for
-    # 3 seconds. Although they normally serve to indicate a problem,
-    # both of these are also displayed whenever a powered IDP is not
-    # assigned to any GPC (not a failure indication).
-    #   
     @edgekeyFailed[key] = failed
     for i in [0..5]
       if @edgekeyFailed[i]

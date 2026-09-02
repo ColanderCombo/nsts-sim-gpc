@@ -133,7 +133,7 @@ dpsDispToFcb = (path) ->
           emitPolyline dfb, [[c0[0],c0[1]],[c1[0],c0[1]],[c1[0],c1[1]],
                              [c0[0],c1[1]],[c0[0],c0[1]]]
 
-  # End the stream: branch back into the DEU's own program.
+  # End the stream: branch back into the DEU's program.
   dfb.push fcw.deuReturn()
   return dfb
 
