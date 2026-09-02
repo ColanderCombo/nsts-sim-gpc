@@ -16,11 +16,10 @@ OPTYPE_DATA = 1
 OPTYPE_BRCH = 2
 OPTYPE_SHFT = 4
 
-# IOP timeslice wakeup: 
-#  when the CPU is running, the IOP steps along with the CPU,
-#  and executes one instruction per CPU instruction.
-#  When the CPU is waiting, IOP_SLICE_NS paces things.
-# A BCE comes round once every 33 slices, and a BCE's own delay and 
+# IOP timeslice wakeup:
+#  the IOP is an independent processor, so it gets one slice per
+#  IOP_SLICE_NS of elapsed time, whether the CPU is executing or waiting.
+# A BCE comes round once every 33 slices, and the BCE delay and 
 # time-out counters have a resolution of 16.5 us  which puts the slice 
 # itself at half a microsecond:
 export IOP_SLICE_NS = 500
@@ -141,7 +140,11 @@ export class CPU
     @testFixedOverflow()
     return
 
+  # NSTS_PCO_TRACE prints every program-controlled I/O the CPU issues:
   sendToIOP: (cmd, data) ->
+    if process?.env?.NSTS_PCO_TRACE
+      process.stderr.write "PCO nia=#{@psw.getNIA().toString(16)} " +
+        "cmd=#{(cmd >>> 0).toString(16)} data=#{(data >>> 0).toString(16)}\n"
     @iop.recvFromCPU(cmd, data)
 
   recvFromIOP: () -> @iop.regCCData.get32()
@@ -532,51 +535,51 @@ export class CPU
 
                       regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)  # aligned index register value
 
+                      # The sector replaces the address' high-order bit.
+                      # Figure 2-17 draws that bit as a literal 1 because a
+                      # pointer into the upper sectors always has it set;
+                      # the sect.2.2.9 rule `g_EXPAND` implements holds here
+                      # too: "when the high-order bit of a 16-bit data
+                      # address is a 0, and no base register is used, an
+                      # implied DSR containing 0000 is selected":
+                      expand = (sector, index = 0) ->
+                          within = (address15 + index) & 0x7fff
+                          if address16 & 0x8000 then (sector << 15) + within
+                          else within
+
                       if c == 0
                           # C=0: use pointer's BSR/DSR for data, current PSW's BSR for branches
                           if v.opType == OPTYPE_BRCH
                               # Branch: use current PSW's BSR
                               if xc == 0
-                                  # Post-indexing
-                                  ea = (address15 + regx) & 0x7fff
-                                  ea = (@psw.getBSR() << 15) + ea
+                                  ea = expand(@psw.getBSR(), regx)   # post-indexing
                               else
-                                  # No post-indexing
-                                  ea = (@psw.getBSR() << 15) + address15
+                                  ea = expand(@psw.getBSR())
                           else
                               # Data instruction: use pointer's DSR
                               if xc == 0
-                                  # Post-indexing
-                                  ea = (address15 + regx) & 0x7fff
-                                  ea = (ptrDSR << 15) + ea
+                                  ea = expand(ptrDSR, regx)          # post-indexing
                               else
-                                  # No post-indexing: ptrDSR || address15
-                                  ea = (ptrDSR << 15) + address15
+                                  ea = expand(ptrDSR)
                       else
                           # C=1: selectively update PSW BSR/DSR based on CB/CD
                           if cd == 1
                               @psw.setDSR(ptrDSR)
                           if cb == 1
                               @psw.setBSR(ptrBSR)
-                          
+
                           if v.opType == OPTYPE_BRCH
                               # Branch: use (possibly updated) PSW's BSR
                               if xc == 0
-                                  # Post-indexing
-                                  ea = (address15 + regx) & 0x7fff
-                                  ea = (@psw.getBSR() << 15) + ea
+                                  ea = expand(@psw.getBSR(), regx)   # post-indexing
                               else
-                                  # No post-indexing
-                                  ea = (@psw.getBSR() << 15) + address15
+                                  ea = expand(@psw.getBSR())
                           else
                               # Data instruction: use (possibly updated) PSW's DSR
                               if xc == 0
-                                  # Post-indexing
-                                  ea = (address15 + regx) & 0x7fff
-                                  ea = (@psw.getDSR() << 15) + ea
+                                  ea = expand(@psw.getDSR(), regx)   # post-indexing
                               else
-                                  # No post-indexing
-                                  ea = (@psw.getDSR() << 15) + address15
+                                  ea = expand(@psw.getDSR())
                   
               #ea = pea + index & 0xffff
           else
@@ -585,11 +588,19 @@ export class CPU
 
       else
           # SRS or SI addressing
+          #
+          # The displacement is scaled to the operand: a fullword D2 counts
+          # fullwords, so it contributes an even offset by itself.  The
+          # base keeps its low bit -- "bit 15 of the operand effective
+          # address is always treated as zero when addressing fullword
+          # operands" belongs to RS extended addressing with B2 = 11, where
+          # the displacement is the address and no base is added.  A record
+          # of an odd number of halfwords puts every second instance on an
+          # odd boundary, and its leading address / sector pair is loaded as
+          # one fullword.
           base = @r(v.b).get32() >>> 16
           disp = v.d << (v.addrWidth-1)
           ea = base+disp
-          if v.addrWidth == 2
-              ea = ea & 0xfffe  # mask off bit 15 for fullwords
           ea = @g_EXPAND(ea, v.opType, @g_BASE_DSE(v, false))
 
           # console.log "SRS", base, disp , ea
@@ -603,7 +614,7 @@ export class CPU
   # halfword address is developed in the normal manner without expanding
   # to 19-bits."
   # Intermediate expansions (for indirect memory lookups) still expand
-  # so we can read the correct memory location.
+  # to reach the right memory location.
   g_EA_16: (v) ->
       # Raw 16-bit IC from PSW (not expanded to 19-bit)
       ic16 = @psw._getField1(@psw.pack1.desc.f.p)
@@ -699,12 +710,11 @@ export class CPU
               ea = pea & 0xffff
 
       else
-          # SRS or SI addressing: no expansion
+          # SRS or SI addressing: no expansion.  The base's low bit survives,
+          # as in g_EA above.
           base = @r(v.b).get32() >>> 16
           disp = v.d << (v.addrWidth - 1)
           ea = base + disp
-          if v.addrWidth == 2
-              ea = ea & 0xfffe
           ea = ea & 0xffff
 
       return ea
@@ -786,14 +796,14 @@ export class CPU
   # They return true when the store happened, so a multi-halfword
   # instruction (STM, SCAL, MVH) can stop at the halfword that faulted.
 
-  # The instruction unit's view of a store into its own file:
+  # The instruction unit's view of a store into the IU file:
   #
   # The IU prefetches ahead of the PC, so a store into the instruction
   # stream can land on a halfword that has already been fetched.  B STAT
   # bit 6 decides what happens then (POO sect.15, DIAG 7100/7101).  Set:
   # "the CPU hardware checks for conflicts within the IU file.  When
   # conflicts are detected, the file is purged", which a machine that
-  # always refetches from store gets for free.  Reset: "no checks for
+  # always refetches from store gets without modelling.  Reset: "no checks for
   # conflicts within the IU file are performed.  THE PIPELINE WILL NOT BE
   # PURGED", and the already-fetched halfword executes stale.
   #
@@ -884,17 +894,59 @@ export class CPU
   # decrements the high halfword in main store (bypassing store protect).
   # When the high halfword is 0000 at borrow time it wraps to FFFF and the
   # clock interrupt is raised.
+  #
+  # The borrow is an interrupt, and a masked one does not move main store:
+  # "When the low halfword ... passes from 0000 to FFFF an interrupt occurs
+  # which can cause the high halfword in main store (via microcode) to be
+  # decremented by one.  This interrupt is transparent to the programmer
+  # until the high halfword in main store equals 0000 ... If the interrupt
+  # is masked the high halfword will not be decremented by the microcode.
+  # The low halfword continues to count down.  The interrupt remains
+  # pending and if unmasked within 65 ms, the upper halfword will be
+  # decremented without a loss of a count."
+  #
+  # Software checksums a region containing 00B0/00B1 by masking the clocks
+  # first, and low core then holds still.
+  #
+  # The deferral covers the transparent decrement the note describes, where
+  # the high halfword is non-zero.  A borrow out of a high halfword already
+  # at 0000 is the 32-bit count running out, which is the program's clock
+  # interrupt: it latches and the halfword rolls to FFFF whatever the mask
+  # says, as any other interrupt latches while masked.  Software arms a
+  # counter by writing a value whose high halfword is zero -- a delay of a
+  # few microseconds as 0000/count, a flat zero to expire at once -- and
+  # reads 00B0/00B1 back a microsecond later expecting FFFF.
   tickCounter: (low, hiAddr, spec, ticks) ->
+      @_timerBorrowDue(hiAddr, spec)
       low -= ticks
       if low < 0
           low += 0x10000        # ticks <= 65535, so at most one borrow
-          hi = @ram.get16(hiAddr)
-          if hi == 0
-              @ram.set16(hiAddr, 0xffff, false)
-              @intPendingReg |= spec.bit
+          if @intEnabled(spec) or @ram.get16(hiAddr) == 0
+              @_timerBorrow(hiAddr, spec)
           else
-              @ram.set16(hiAddr, hi - 1, false)
+              # Pending, and the count is not lost: it is applied when the
+              # interrupt is unmasked.  One latch, so a second borrow while
+              # still masked is the "within 65 ms" the note allows for.
+              @timerBorrowPending ?= {}
+              @timerBorrowPending[hiAddr] = spec
       return low
+
+  # A borrow that was masked when it happened, applied once it is not.
+  _timerBorrowDue: (hiAddr, spec) ->
+      return unless @timerBorrowPending?[hiAddr]?
+      return unless @intEnabled(spec)
+      delete @timerBorrowPending[hiAddr]
+      @_timerBorrow(hiAddr, spec)
+      return
+
+  _timerBorrow: (hiAddr, spec) ->
+      hi = @ram.get16(hiAddr)
+      if hi == 0
+          @ram.set16(hiAddr, 0xffff, false)
+          @intPendingReg |= spec.bit
+      else
+          @ram.set16(hiAddr, hi - 1, false)
+      return
 
   TIMER_HI: (n) -> if n == 2 then 0x00B1 else 0x00B0
 
@@ -919,6 +971,11 @@ export class CPU
   loadTimer: (n, value) ->
       value = value >>> 0
       @ram.set16(@TIMER_HI(n), (value >>> 16) & 0xffff, false)
+      # "The write Counter N commands reset the corresponding clock
+      # interrupt latch, clearing any pending interrupts" (POO sect.10) --
+      # a borrow that was waiting on the mask goes with them, or it would
+      # decrement the halfword the load just set.
+      delete @timerBorrowPending[@TIMER_HI(n)] if @timerBorrowPending?
       if n == 2
           @counter2 = value & 0xffff
           @intPendingReg &= ~INT_CLK2.bit
@@ -963,7 +1020,7 @@ export class CPU
           # before them.  The IOP's two waiting mechanisms are otherwise
           # incommensurate: a bus control element's delay and time out are
           # measured in simulated time, while a master sequence
-          # controller's repeat instruction counts its own re-fetches.  A
+          # controller's repeat instruction counts re-fetches.  A
           # 1 ms step is about 2000 slices, so an @RAW waiting 848 repeats
           # would expire well inside a BCE's legitimate 10.7 ms #DLYI.
           if @iop?.processorsRunning?()
@@ -998,6 +1055,14 @@ export class CPU
       ## console.log "CPU @ #{asHex(@psw.getNIA())}: IN WAIT MODE"
       #console.log "CPU: #{insCnt} instructions executed."
 
+  unknownOp: (nia, hw1) ->
+      @unknownOps ?= {}
+      return if @unknownOps[nia]
+      @unknownOps[nia] = true
+      console.log "CPU: operation exception, X'#{hw1.asHex(4)}' at " +
+                  "#{nia.asHex(5)} is not an instruction"
+      return
+
   exec1: () ->
       # A held interrupt is taken before anything else runs: the swap it
       # was stopped in front of is the machine's next act.  Front ends that
@@ -1027,6 +1092,21 @@ export class CPU
           hw1 = @iuShadow.get(nia)   if @iuShadow.has(nia)
           hw2 = @iuShadow.get(nia+1) if @iuShadow.has(nia+1)
       [d,v] = Instruction.decode(hw1,hw2)
+
+      # A halfword that decodes to nothing is an operation exception: the
+      # CPU takes a program check with code PC_ILLEGAL_OP and the handler
+      # decides what happens next.  The halfword is skipped, so the old
+      # PSW's NIA points just past it, as for the program checks e()
+      # raises.
+      unless d?
+          @unknownOp(nia, hw1)
+          @incrNIA(1)
+          @signalIllegalOp()
+          @advanceTimeNs(250)
+          @checkInterrupts()
+          @prevDiscont = true
+          @iuShadow = null
+          return
 
       v.niaIncr = d.len
       d.len=d.origLen

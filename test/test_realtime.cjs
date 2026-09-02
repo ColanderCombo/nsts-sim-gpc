@@ -69,7 +69,8 @@ function note(s) { console.log(`      ${s}`); }
 
 (async () => {
     const { CPU }        = await bundle('cpu.coffee');
-    const { RTPacer }    = await bundle('rtpacer.coffee');
+    const { RTPacer, IDLE_CATCHUP_MAX_NS } = await bundle('rtpacer.coffee');
+    const CAP_US = IDLE_CATCHUP_MAX_NS / 1000;
     const { GUIHarness } = await bundle('guiharness.coffee');
 
     const poke16 = (c, a, v) => c.ram.set16(a, v, false);
@@ -126,19 +127,25 @@ function note(s) { console.log(`      ${s}`); }
     check('advanceIdle waits at idle entry', pacer.advanceIdle(), 'waiting');
     check('advanceIdle bought no time yet', cpu.timeNs, 0);
     // One call carries the wait state forward by at most
-    // IDLE_CATCHUP_MAX_NS (5 ms of simulated time), however long the host
-    // was away -- see the note on it: an unbounded catch-up is what let a
-    // stalled host dump tens of milliseconds of simulated time into a
-    // single call, past the window a bus receive gets, with no turn of the
-    // event loop anywhere inside it.  So an 8 ms absence buys 5 ms and the
-    // 5.001 ms wakeup lands on the call after it.
+    // IDLE_CATCHUP_MAX_NS, however long the host was away -- see the note
+    // on it: an unbounded catch-up is what let a stalled host dump tens of
+    // milliseconds of simulated time into a single call, past the window a
+    // bus receive gets, with no turn of the event loop anywhere inside it.
+    // The cap is asserted against the constant, not a literal: it must stay
+    // below the shortest time out flight software loads, and moving it is a
+    // deliberate act that should not need this test edited.
     await new Promise(r => setTimeout(r, 8));
     check('advanceIdle still waiting after one capped slice',
           pacer.advanceIdle(), 'waiting');
-    check('advanceIdle capped at 5 ms', cpu.execTimeUs(), 5000);
-    await new Promise(r => setTimeout(r, 3));
-    check('advanceIdle resumes on the next slice', pacer.advanceIdle(), 'resumed');
-    check('advanceIdle sim time ~5 ms', cpu.execTimeUs() >= 5000 && cpu.execTimeUs() < 9000, true);
+    check('advanceIdle capped at the constant', cpu.execTimeUs(), CAP_US);
+    // The 5.001 ms wakeup is reached a capped slice at a time.
+    let slices = 0;
+    while (pacer.advanceIdle() === 'waiting' && slices < 100) {
+        slices++;
+        await new Promise(r => setTimeout(r, 2));
+    }
+    check('advanceIdle reaches the wakeup', cpu.psw.getWaitState(), false);
+    check('advanceIdle sim time past the wakeup', cpu.execTimeUs() >= 5000, true);
 
     // The excess is dropped, not owed: after the cap the idle baseline is
     // re-taken, so the next slice asks only for the time since it.
@@ -147,9 +154,10 @@ function note(s) { console.log(`      ${s}`); }
     pacer.enterIdle();
     await new Promise(r => setTimeout(r, 40));
     pacer.advanceIdle();
-    check('capped slice bought 5 ms of a 40 ms absence', cpu.execTimeUs(), 5000);
+    check('a capped slice buys only the cap out of a 40 ms absence',
+          cpu.execTimeUs(), CAP_US);
     pacer.advanceIdle();
-    check('the other 35 ms are not owed', cpu.execTimeUs() < 7000, true);
+    check('the rest of the 40 ms is not owed', cpu.execTimeUs() < 3 * CAP_US, true);
 
     cpu = makeWaitingCPU(5000);
     cpu.psw._setField2(cpu.psw.pack2.desc.f.m, 0x00);

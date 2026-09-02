@@ -511,7 +511,7 @@ export INTERRUPT_METHODS =
   # DIAG 7000/7001 put an IIO command and its data on the H-BUS; sect.15
   # lists "the hexadecimal value for the H-BUS IIO command required to
   # select each of the micro sequences".  Only the ones with an externally
-  # visible effect are modelled: the page's own self tests report through
+  # visible effect are modelled: the page's self tests report through
   # the scan register, which stays zero on a machine with no faults.
   diagIIO: (cmd, data) ->
       switch cmd
@@ -545,7 +545,7 @@ export INTERRUPT_METHODS =
               # readback state only.
               @diagInterruptPageDiagnoseMode = (data != 0)
           else
-              # The page's own micro tests report through the scan
+              # The page's micro tests report through the scan
               # register, which a fault-free page leaves zero.  Anything
               # genuinely unmodelled announces itself once.
               return if cmd == 0x9011

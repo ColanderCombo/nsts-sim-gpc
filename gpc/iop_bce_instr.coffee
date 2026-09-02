@@ -103,7 +103,7 @@ export class BCEInstruction extends PackedBits
                     if desc.e?
                         desc.e(iop, v)
                     return
-        console.log "BCE: unknown instruction #{hw1.toString(16)}"
+        iop.unknownProcOp(hw1, hw2)
 
     ops: {
 #
@@ -284,8 +284,8 @@ export class BCEInstruction extends PackedBits
                         f:['#LBR@ ADDRESS']
                         d:'11111010000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
-                            v1 = v.a + 2*t.curPE
-                            t.ls.BASE().set32(v1)
+                            ea = v.a + 2*t.curPE
+                            t.ls.BASE().set32(t.g_EAF(ea) & 0x3ffff)
                             t.incrNIA(2)
                     }
 #
@@ -330,8 +330,8 @@ export class BCEInstruction extends PackedBits
                         f:['#BU@ ADDRESS']
                         d:'11111000000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
-                            v1 = v.a + 2*t.curPE
-                            t.setNIA(v1)
+                            ea = v.a + 2*t.curPE
+                            t.setNIA(t.g_EAF(ea) & 0x3ffff)
                     }
         # WAIT FOR INDEX
         #
@@ -563,8 +563,19 @@ export class BCEInstruction extends PackedBits
                         d:'11111100000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
                             # Transmit data long: count from memory at addr + 2*BCE#
+                            #
+                            # The table entry is a fullword, laid out as
+                            # MESSAGE OUT documents it below: displacement in
+                            # bits 5-15, transfer count in bits 16-31, so the
+                            # count is the low halfword.
+                            #
+                            # The displacement half is not applied here: the
+                            # data goes from the base register the program has
+                            # just loaded.  Every bus program seen carries
+                            # displacement zero in these entries, so nothing
+                            # observed distinguishes the two.
                             addr = v.a + 2 * t.curPE
-                            count = (t.g_EAH(addr) & 0xffff) + 1
+                            count = (t.g_EAF(addr) & 0xffff) + 1
                             base = t.ls.BASE().get32()
                             bce = t.curBCE()
                             for i in [0...count]
@@ -651,8 +662,10 @@ export class BCEInstruction extends PackedBits
                         d:'11111011000000aaaaaaaaaaaaaaaaaa'
                         e:(t,v)->
                             # Receive data long: count from memory at addr + 2*BCE#
+                            # The same fullword table #TDL reads: the count is
+                            # the low halfword, the high one the displacement.
                             addr = v.a + 2 * t.curPE
-                            count = (t.g_EAH(addr) & 0xffff) + 1
+                            count = (t.g_EAF(addr) & 0xffff) + 1
                             base = t.ls.BASE().get32()
                             if t.bceReceive(base, count)
                                 t.incrNIA(2)
@@ -759,6 +772,10 @@ export class BCEInstruction extends PackedBits
                             # Enter wait state: clear Busy/Wait bit
                             t.procSet(t.regBusyWait, t.curPE, 0)
                             t.incrNIA(1)
+                            b = t.bce[t.curPE - 1]
+                            t.bceEvent(t.curPE, "#WAT  starved=#{b?.starveTurns ? 0} " +
+                                                "paced=#{b?.pacedTurns ? 0}")
+                            if b? then b.starveTurns = b.pacedTurns = 0
                     }
         # INSTRUCTION - SELF TEST
         #

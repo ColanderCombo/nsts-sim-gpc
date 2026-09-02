@@ -225,7 +225,7 @@ export class FloatIBM
     bytes[7] = 0x3f
     bytes[6] |= 0xf0
 
-    # We're left with a 53-bit mantissa right-justified in bytes 1-7:
+    # A 53-bit mantissa, right-justified in bytes 1-7:
     #
     low32 = ((bytes[3]) << 24) | bytes[2] << 16 | bytes[1] << 8 | bytes[0]
     high32 = ((bytes[6] & 0x1f) << 16 | bytes[5] << 8 | bytes[4]) | 0
@@ -250,7 +250,8 @@ export class FloatIBM
 #
 # Returns CC: 0 = equal, 1 = a > b, 3 = a < b.  Used by CER/CE/CEDR/CED.
 export compE_anomalous = (x, y) ->
-  # Snapshot fields up-front so we never mutate the caller's operands.
+  # Fields are snapshotted up front; the caller's operands are not
+  # mutated.
   aSign = x.gSign() < 0
   aExp  = x.gExp() + 64
   aMant = x.gFracBits().toUnsigned()
@@ -304,7 +305,7 @@ export compE_anomalous = (x, y) ->
   # 60-bit form equals exactly 0x8000000.  Documented for CEDR/CED
   # (long compare); POO 8.12 does not list this anomaly for short
   # compare, so SP-shaped operands still see it (they go through the
-  # same compare logic) but we don't add a separate SP threshold.
+  # same compare logic), and there is no separate SP threshold.
   ANOMALY = Long.fromBits(0x08000000, 0, true)
   if rMant.equals(ANOMALY) then return 0
 
@@ -344,7 +345,8 @@ export compE = (x, y) -> _addsubE(x, y, true).result
 #   SIGNIFICANCE - result = true zero.  Caller always writes back, CC 00.
 #                  Mask bit 23 only gates the interrupt.
 _addsubE = (xIn, yIn, subtract_b) ->
-  # Snapshot fields up-front so we never mutate the caller's operands.
+  # Fields are snapshotted up front; the caller's operands are not
+  # mutated.
   aSign = xIn.gSign() < 0
   aExp  = xIn.gExp() + 64    # work in biased characteristic 0..127
   aMant = xIn.gFracBits().toUnsigned()
@@ -436,7 +438,7 @@ _addsubE = (xIn, yIn, subtract_b) ->
   return _packAddsubResult(aSign, aExp, aMant, true)
 
 # Pack addsub helper.  Returns {result, exc}.  needsRenorm=true means
-# we may have an unnormalized mantissa (the "one operand zero" path).
+# the mantissa may be unnormalized (the "one operand zero" path).
 _packAddsubResult = (sign, biasedExp, mant, needsRenorm) ->
   if needsRenorm
     if mant.isZero()
@@ -450,8 +452,8 @@ _packAddsubResult = (sign, biasedExp, mant, needsRenorm) ->
   result = new FloatIBM()
   if biasedExp > 127
     # EXP_OVERFLOW: per POO, operation is terminated, operands unchanged.
-    # We still pack a wrapped value for caller's trace use (caller is
-    # contractually obliged not to write back).
+    # A wrapped value is still packed for the caller's trace; the caller
+    # does not write it back.
     if sign then result.sSign(-1)
     result.sExp((biasedExp & 0x7F) - 64)
     result.sFrac(mant)
@@ -800,8 +802,8 @@ export cvfx = (x) ->
   if x.gFracBits().isZero()
     return {result: 0, exc: FP_EXC.OK}
 
-  # Take a working copy so we don't mutate the caller (gFracBits is a
-  # snapshot: but unNormalizeToExp / sExp / sFrac would mutate `x`).
+  # A working copy, so the caller is not mutated: gFracBits is a
+  # snapshot, but unNormalizeToExp / sExp / sFrac would write to `x`.
   work = new FloatIBM()
   work.setFrom64(x.to64x(), x.to64y())
   # Renormalize to ensure top hex of fraction is set.

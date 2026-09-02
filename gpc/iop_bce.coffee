@@ -149,10 +149,27 @@ import {BCEInstruction} from 'gpc/iop_bce_instr'
 # How many words of bus traffic each MIA keeps for the display:
 MIA_LOG_MAX = 64
 
+# One word on a serial bus, in nanoseconds, from the programming note to
+# the BCE's delay instruction: "Each count of 1 represents a delay of 16.5
+# microseconds, the execution time of a BCE micro instruction.  Each count
+# of 2 represents a delay of 33 microseconds, the minimum time for a word
+# transmission over a serial bus."  Bus programs are written to it: a skip
+# past the rest of a mass memory block is a delay of two counts per
+# halfword.
+#
+# A receiver presents halfwords to its BCE at that rate, however fast the
+# host modelling the subsystem answered.  The queue behind the MIA is a
+# socket buffer, so a whole transfer can land in it in one datagram, and
+# software paces itself against the transfer -- a per-block handshake
+# through a status location, say.  Metering here needs no time sync with
+# the sending process.
+export BUS_WORD_NS = 33000
+
 export class MIA
   constructor: (@bceNum, @iop) ->
     @txLog = []
     @rxLog = []
+    @tap = null
     @dataOutBuf = 0
     @dataOutAvail = false
     @dataOutIsCmd = false
@@ -168,32 +185,62 @@ export class MIA
     @miaParity = false
 
     @recvQueue = []
+    # Diagnostic only: how many transmissions this receiver has been handed.
+    @deliverCount = 0
+    # How many of the queued words belong to each transmission still
+    # waiting, oldest first: a mass memory block, a display unit's poll
+    # response.  A transmission is a run of words with dead bus either
+    # side of it, and that boundary is where a receiver resynchronises.
+    @recvRuns = []
+    # Whether the run at the head has had a word taken from it.  Only a
+    # run already being received loses the words that go by unheard.
+    @runStarted = false
+    # Simulated time at or after which the next received word may be
+    # taken; see BUS_WORD_NS.
+    @rxNextNs = 0
 
     @_setupBus()
 
   _setupBus: () ->
     config = bceNumToBusConfig[@bceNum]
     return unless config
+    @busName = config.name
+    @busNom = config.nom
     @bus = new Bus(config.name, config)
     @bus.onReceive @_onRecv, this
 
   _onRecv: (self, busID, msg, remote) ->
     return unless msg.data16?
-    for i in [0...msg.data16.length]
-      hw = msg.data16[i] & 0xffff
-      self.recvQueue.push(hw)
-      self._log(self.rxLog, hw)
+    self.deliver(msg.data16)
+    return
+
+  # One transmission arrives: a run of words with dead bus either side.
+  # The caller may be the bus or a test standing in for a subsystem.
+  deliver: (words) ->
+    return unless words?.length
+    # Nothing was on the bus, so the first word of this transmission is
+    # due now rather than at some deadline left over from the last one.
+    @rxNextNs = @_nowNs() unless @recvQueue.length
+    @deliverCount += 1
+    for i in [0...words.length]
+      hw = words[i] & 0xffff
+      @recvQueue.push(hw)
+      @_log(@rxLog, hw)
+    @recvRuns.push(words.length)
     return
 
   # Push one word onto a traffic ring, stamped with the simulated time the
-  # CPU had reached
+  # CPU had reached.  `tap`, when one is attached, sees every word as it is
+  # logged, which is more than the ring holds.
   _log: (ring, value, isCmd = false) ->
-    ring.push({
+    entry = {
       seq: ring.length + (@_dropped ? 0) + 1
       timeNs: @iop?.cpu?.timeNs ? 0
       value: value & 0xffff
       cmd: !!isCmd
-    })
+    }
+    ring.push(entry)
+    @tap?(this, (if ring == @txLog then 'tx' else 'rx'), entry)
     while ring.length > MIA_LOG_MAX
       ring.shift()
       @_dropped = (@_dropped ? 0) + 1
@@ -201,6 +248,9 @@ export class MIA
 
   clearState: () ->
     @recvQueue = []
+    @recvRuns = []
+    @runStarted = false
+    @rxNextNs = 0
     @dataOutBuf = 0
     @dataOutAvail = false
     @dataOutIsCmd = false
@@ -223,14 +273,90 @@ export class MIA
 
   flushRecv: () ->
     @recvQueue = []
+    @recvRuns = []
+    @runStarted = false
+    @rxNextNs = 0
     return
 
+  _nowNs: () ->
+    @iop?.cpu?.timeNs ? 0
+
+  # How many words are left in the transmission at the head.  Words put
+  # straight into the queue with no run behind them (a test, ground
+  # equipment) count as one open run.
+  _runLeft: () ->
+    if @recvRuns.length then @recvRuns[0] else @recvQueue.length
+
+  _take: () ->
+    hw = @recvQueue.shift() & 0xffff
+    if @recvRuns.length
+      @recvRuns[0] -= 1
+      if @recvRuns[0] <= 0
+        @recvRuns.shift()
+        @runStarted = false        # the next run starts clean
+    hw
+
+  # The words that went by while nobody was listening.
+  #
+  # A bus program skips the rest of a mass memory block by delaying: the
+  # transport streams on and what the receiver does not capture is gone.
+  # The queue here is a socket buffer, which would otherwise hold it all
+  # for the next receive.
+  #
+  # Called where a receive begins.  A receiver is enabled for the length of
+  # a commanded transfer and captures every word of it, so words are lost
+  # only outside one.
+  #
+  # Dropping stops at the end of the transmission being received.  A block
+  # has dead bus either side of it, which is what the delay is sized to
+  # land in -- two counts per halfword left in the block plus half the
+  # block gap, so the receiver comes back mid-gap.  A run nothing has been
+  # taken from yet is untouched, which holds the resynchronisation exact
+  # however the simulated clock and the sender's clock drift.
+  #
+  # One word survives: the MIA's receive buffer holds the last word it
+  # latched, and a bus program that has read part of a block starts its
+  # next sequence with a one-halfword receive that clears it.
+  #
+  # Returns how many words were lost.
+  dropStale: () ->
+    return 0 unless @runStarted and @recvQueue.length
+    missed = Math.floor((@_nowNs() - @rxNextNs) / BUS_WORD_NS)
+    return 0 unless missed > 0
+    n = Math.min(missed, @_runLeft() - 1)
+    return 0 unless n > 0
+    @_take() for [1..n]
+    @rxNextNs = @_nowNs()
+    n
+
   dataAvailable: () ->
-    @recvQueue.length > 0
+    return false unless @recvQueue.length > 0
+    @_nowNs() >= @rxNextNs
+
+  # A receive begins: an idle bus owes the receiver nothing, so the first
+  # word of this transfer is due now rather than at a deadline left over
+  # from the last one.
+  #
+  # The clamp is once per receive.  A BCE's turn comes round once in 33
+  # slices, 16.5 us, and a word is due every 33, so clamping at every word
+  # quantises the schedule to the turn -- a word falling due a little after
+  # a turn waits for the one after that, and the average rate settles at 49
+  # us a word.  Clamping once per receive lets the debt accrue inside the
+  # transfer, so a turn that comes round late takes the two words it is
+  # owed and the average holds at the bus rate.
+  #
+  # dropStale() measures the words that went by unheard as the distance
+  # between this deadline and now, so without the clamp a receive is
+  # charged for the whole of the sender's schedule.
+  rxBegin: (nowNs) ->
+    @rxNextNs = Math.max(@rxNextNs, nowNs)
+    return
 
   getData: () ->
     return 0 unless @recvQueue.length > 0
-    @recvQueue.shift() & 0xffff
+    @rxNextNs += BUS_WORD_NS
+    @runStarted = true
+    @_take()
 
   xmitWord: (halfword) ->
     return unless @bus

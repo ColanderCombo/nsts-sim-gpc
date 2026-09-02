@@ -397,9 +397,6 @@ class Instruction extends PackedBits
                 @opByMask[desc.mask] = {}
             @opByMask[desc.mask][desc.maskedVal] = desc
             
-        # When matching a halfword to an instruction we search from more to
-        # less specific. "<ore specific" is the number of bits a
-        # pattern pins down:
         bitCount = (m) ->
             n = 0
             v = m >>> 0
@@ -1031,7 +1028,7 @@ class Instruction extends PackedBits
                         hi1 = (v1 >>> 16) & 0xffff
                         lo2 = v2 & 0xffff
                         # "...while simultaneously...": naming one register
-                        # twice swaps its own halves.
+                        # twice swaps its halves.
                         if v.x == v.y
                             t.r(v.x).set32(((lo2 << 16) | hi1) >>> 0)
                         else
@@ -1925,8 +1922,9 @@ class Instruction extends PackedBits
                     xts:[3.75,7,10,6.75,10,8,9.5]
                     xtc:[1.6,1.8,2.6,1.7,1.8]
                     e:(t,v) ->
+                        link = t.psw.psw1.get32()
                         branch = t.g_EA(v)
-                        t.r(v.x).set32(t.psw.psw1.get32())
+                        t.r(v.x).set32(link)
                         # BALR R1, 0 -> no branch
                         t.psw.setNIA(branch)
 
@@ -4669,7 +4667,7 @@ class Instruction extends PackedBits
         # AP-101S 8.17: MEDR/MED is "MULTIPLY (EXTENDED OPERANDS)",
         # quasi-extended.  Each operand's 56-bit fraction is truncated
         # to 31 bits with rounding into bit 31 from bit 32 BEFORE the
-        # multiply.  We use mulQeE (not the full-precision mulE).
+        # multiply, so this is mulQeE and not mulE.
         MEDR:   {
                     n:'Multiply Long'
                     f:['MEDR R1,R2'],
@@ -5264,20 +5262,25 @@ class Instruction extends PackedBits
                                 t.ram.setStoreProtect(ea, false)
                             when 0b001  # Reset protect bits for both halfwords in fullword
                                 t.storeProtectOverride = false
-                                # "When M1 is 001 or 011, the low-order bit of
-                                # the EA should be 0 and will be ignored" -- so
-                                # clear bit 0 and nothing else:
-                                fwAddr = ea & ~1
-                                t.ram.setStoreProtect(fwAddr, false)
-                                t.ram.setStoreProtect(fwAddr + 1, false)
+                                # A deviation from POO 9.2, whose programming
+                                # note reads "When M1 is 001 or 011, the
+                                # low-order bit of the EA should be 0 and will
+                                # be ignored."  The pair taken is (EA, EA+1),
+                                # so an odd EA pairs upward.  Software
+                                # unprotects a buffer with ISPB 1 stepping an
+                                # index by two from an odd base, and pairing
+                                # downward would leave its last halfword
+                                # protected.  Even EAs are identical either
+                                # way.
+                                t.ram.setStoreProtect(ea, false)
+                                t.ram.setStoreProtect(ea + 1, false)
                             when 0b010  # Set protect bit for halfword at EA
                                 t.storeProtectOverride = false
                                 t.ram.setStoreProtect(ea, true)
                             when 0b011  # Set protect bits for both halfwords in fullword
                                 t.storeProtectOverride = false
-                                fwAddr = ea & ~1
-                                t.ram.setStoreProtect(fwAddr, true)
-                                t.ram.setStoreProtect(fwAddr + 1, true)
+                                t.ram.setStoreProtect(ea, true)
+                                t.ram.setStoreProtect(ea + 1, true)
                             else
                                 # Illegal M1 (100-111): leaves the store protect
                                 # override on -- protected locations can then be
@@ -5423,6 +5426,7 @@ class Instruction extends PackedBits
                         r1val = t.r(v.x).get32()
                         r2val = t.r(v.y).get32()
                         destAddr = (r1val >>> 16) & 0xffff
+                        destField = destAddr        # as R1 carries it
                         count = r1val & 0xffff
                         if count & 0x8000
                             # negative count -> noop (2.25 less on DSR path)
@@ -5458,7 +5462,7 @@ class Instruction extends PackedBits
                             # A violation terminates the instruction (Forced
                             # ENDOP), so R1 is not updated either.
                             return if not t.storeHW(destAddr + count, hw)
-                        t.r(v.x).set32((destAddr << 16) | 0)
+                        t.r(v.x).set32((destField << 16) | 0)
                 }
 
         # SET PROGRAM MASK
@@ -5636,6 +5640,7 @@ class Instruction extends PackedBits
                     t:OPTYPE_BRCH
                     xts:[18.125,21.5,24.5,21.25,24.5,22.5,24]
                     e:(t,v) ->
+                        link = t.psw.psw1.get32()
                         # Compute branch address first
                         branchAddr = t.g_EA(v)
                         # Get SSD from R1: PTR (bits 0-15), INC (bits 16-31)
@@ -5648,7 +5653,7 @@ class Instruction extends PackedBits
                         sa = (ptr + inc) & 0xffff
                         #console.log "SCAL SA=#{sa.asHex(8)}"
                         # Save PSW1 (first 2 halfwords) at SA
-                        return if not t.storeFW(sa, t.psw.psw1.get32())
+                        return if not t.storeFW(sa, link)
                         for i in [0..7]
                             return if not t.storeFW(sa + 2 + i * 2, t.r(i).get32())
                         # Update SSD: PTR = SA, INC = 18
@@ -5819,11 +5824,8 @@ class Instruction extends PackedBits
                         r1 = t.r(1).get32()
                         if t.halUCP?.handleSVC(ea, r1)
                             return
-                        # Standard SVC: save PSW, load new PSW from interrupt vector.
-                        # This swap is part of the instruction, not an end-of-instruction
-                        # acceptance, so it does not pass the stop-before-swap hold in
-                        # cpu.checkInterrupts
                         t.psw.setIntCode(ea)
+                        t.psw.setIntCodeSector(ea >>> 15)
                         t.ram.set32(0x58,t.psw.psw1.get32())
                         t.ram.set32(0x5a,t.psw.psw2.get32())
                         t.psw.load(t.ram.get32(0x5c),

@@ -266,12 +266,18 @@ export class MSCInstruction
                         t.incrNIA(2)
                 }
         # LOAD ACC WITH HALFWORD (long, absolute)
+        # POO II-34: "The addressed halfword is placed in the lower 16 bits
+        # of the MSC Accumulator, with the upper 16 bits sign-extended."
+        # An MSC program decides whether the I/O it is monitoring is still
+        # in the future by loading a time-to-go halfword and branching on
+        # its sign, and that halfword goes negative once the window has
+        # passed.
         '@LH':  {
                     f:['@LH ADDRESS']
                     d:'1111i100000010aaaaaaaaaaaaaaaaaa'
                     e:(t,v)->
                         ea = t.mscLongEA(v.a, v.i)
-                        v1 = t.g_EAH(ea)
+                        v1 = signExtend(t.g_EAH(ea), 16)
                         t.ls.setACC(v1)
                         t.incrNIA(2)
                 }
@@ -570,6 +576,7 @@ export class MSCInstruction
                         # Check if BCE is waiting (not busy, not halted)
                         if bceNum > 0 and bceNum <= 24
                             if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
+                                t.mscBCEFault(v.nm, bceNum)
                                 # BCE busy or halted - set status bit 13, program exception
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 13))  # bit 13
@@ -605,6 +612,7 @@ export class MSCInstruction
                             bceNum = t.ls.getACC() & 0x1f
                         if bceNum > 0 and bceNum <= 24
                             if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
+                                t.mscBCEFault(v.nm, bceNum)
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 13))
                                 t.ls.MST().set32(st)
@@ -636,6 +644,7 @@ export class MSCInstruction
                             bceNum = t.ls.getACC() & 0x1f
                         if bceNum > 0 and bceNum <= 24
                             if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
+                                t.mscBCEFault(v.nm, bceNum)
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 12))  # bit 12
                                 t.ls.MST().set32(st)
@@ -647,6 +656,7 @@ export class MSCInstruction
                                 t.ls.curPage = bceNum
                                 t.ls.PC().set32(ea & 0x3ffff)
                                 t.ls.curPage = savedPage
+                                t.bceEvent(bceNum, "@LBP  loaded pc #{(ea & 0x3ffff).toString(16)}")
                         else
                             st = t.ls.MST().get32()
                             st = st | (1 << (17 - 12))
@@ -669,6 +679,7 @@ export class MSCInstruction
                             bceNum = t.ls.getACC() & 0x1f
                         if bceNum > 0 and bceNum <= 24
                             if t.procGet(t.regBusyWait, bceNum) or not t.procGet(t.regProcEnable, bceNum)
+                                t.mscBCEFault(v.nm, bceNum)
                                 st = t.ls.MST().get32()
                                 st = st | (1 << (17 - 12))
                                 t.ls.MST().set32(st)
@@ -680,6 +691,7 @@ export class MSCInstruction
                                 t.ls.curPage = bceNum
                                 t.ls.PC().set32(ea)
                                 t.ls.curPage = savedPage
+                                t.bceEvent(bceNum, "@LBP@ loaded pc #{ea.toString(16)}")
                         else
                             st = t.ls.MST().get32()
                             st = st | (1 << (17 - 12))
@@ -759,6 +771,7 @@ export class MSCInstruction
                         # Check for busy conflict on BCE bits 1-24
                         conflict = acc & bw & t.PROC_ALL_BCE
                         if conflict
+                            t.mscSIOConflict(conflict)
                             st = t.ls.MST().get32()
                             st = st | (1 << (17 - 11)) | (1 << (17 - 16))  # bits 11, 16
                             t.ls.MST().set32(st)
@@ -767,6 +780,7 @@ export class MSCInstruction
                             t.regProgExcept.set32(pe)
                         bw = bw | acc
                         t.regBusyWait.set32(bw)
+                        t.bceEvent(t.IOP_TRACE_BCE, "@SIO  acc #{(acc >>> 0).toString(16)}") if t.IOP_TRACE_BCE?
                         t.incrNIA(1)
                 }
         # EXCHANGE ACC AND X
@@ -977,11 +991,17 @@ export class MSCInstruction
                         t.mscRepeat(v, (t.regIndicator.get32() & m) == m)
                 }
         # REPEAT UNTIL ALL WAITING
+        #
+        # (II-80): "Since processor 0 corresponds to the MSC, (which is 
+        # busy during instruction execution), the MSC execution of an 
+        # @RAW instruction will correspond to a loop until the maximum
+        # repeat count is reached."  A @RAW whose mask includes bit 0 is
+        # a plain delay of COUNT iterations. 
         '@RAW':   {
                     f:['@RAW COUNT']
                     d:'1101i000dddddddd'
                     e:(t,v)->
-                        m = t.ls.getACC() & t.PROC_ALL_BCE
+                        m = t.ls.getACC() & t.PROC_ALL
                         t.mscRepeat(v, (t.regBusyWait.get32() & m) == 0)
                 }
         # REPEAT UNTIL ANY INDICATOR

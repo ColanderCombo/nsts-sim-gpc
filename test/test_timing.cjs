@@ -159,21 +159,79 @@ function check(label, got, want) {
 
     // Interval timer: 1 tick per accumulated microsecond
     //
+    // The borrow out of the hardware counter is an interrupt, and only an
+    // unmasked one moves the high halfword in main store, so the timer
+    // tests run with PSW bits 32-33 set.  The masked case is below.
+    const clocksOn = (c) => c.psw.setIntMask(0xc0);
     cpu = new CPU();
+    clocksOn(cpu);
     cpu.counter1 = 2;
     cpu.ram.set16(0x00B0, 0, false);
     for (let i = 0; i < 12; i++) execTime(cpu, 0x01E2);  // 12 x .25us = 3us
     check('counter1 low wrapped', cpu.counter1, 0xFFFF);
     check('counter1 high wrapped', cpu.ram.get16(0x00B0), 0xFFFF);
-    check('clk1 interrupt pending', cpu.intPending.clk1, true);
+    // Unmasked, so the machine takes it rather than leaving it pending.
+    check('clk1 interrupt raised', cpu.intCount > 0, true);
 
     // high halfword decrements without interrupt when nonzero
     cpu = new CPU();
+    clocksOn(cpu);
     cpu.counter2 = 1;
     cpu.ram.set16(0x00B1, 5, false);
     for (let i = 0; i < 8; i++) execTime(cpu, 0x01E2);   // 2us -> one borrow
     check('counter2 high decremented', cpu.ram.get16(0x00B1), 4);
     check('clk2 not pending', cpu.intPending.clk2, false);
+
+    // A MASKED borrow leaves main store alone (POO 2.5.2): "the high
+    // halfword will not be decremented by the microcode.  The low halfword
+    // continues to count down.  The interrupt remains pending and if
+    // unmasked within 65 ms, the upper halfword will be decremented
+    // without a loss of a count."  Software that has to checksum a region
+    // holding 00B0/00B1 relies on it -- it masks the clocks first.
+    cpu = new CPU();
+    cpu.psw.setIntMask(0);               // everything masked
+    cpu.counter1 = 1;
+    cpu.ram.set16(0x00B0, 5, false);
+    for (let i = 0; i < 8; i++) execTime(cpu, 0x01E2);   // 2us -> one borrow
+    check('a masked borrow still counts the hardware halfword down',
+          cpu.counter1 < 0x10000 && cpu.counter1 > 0xfff0, true);
+    check('...but does not touch main store', cpu.ram.get16(0x00B0), 5);
+    clocksOn(cpu);                       // unmasked within 65 ms
+    for (let i = 0; i < 8; i++) execTime(cpu, 0x01E2);
+    check('...and the count is not lost when it is unmasked',
+          cpu.ram.get16(0x00B0), 4);
+
+    // ...but the TERMINAL borrow is not a decrement of anything: a high
+    // halfword of 0000 means the 32-bit count has run out, which is the
+    // program's clock interrupt.  It latches while masked the way any
+    // interrupt does, and main store rolls to FFFF at once.  Software arms
+    // a counter by writing a value whose high halfword is zero and reads
+    // 00B0/00B1 straight back, so deferring this one reads a whole count
+    // low.
+    cpu = new CPU();
+    cpu.psw.setIntMask(0);               // everything masked
+    cpu.counter2 = 1;
+    cpu.ram.set16(0x00B1, 0, false);
+    for (let i = 0; i < 8; i++) execTime(cpu, 0x01E2);   // 2us -> one borrow
+    check('a masked borrow out of a zero high halfword rolls it anyway',
+          cpu.ram.get16(0x00B1), 0xFFFF);
+    check('...and latches the clock interrupt', cpu.intPending.clk2, true);
+    check('...without taking it while masked', cpu.intCount, 0);
+
+    // Loading the counter resets the latch, so a borrow waiting on the mask
+    // does not then decrement the halfword the load just set.
+    cpu = new CPU();
+    cpu.psw.setIntMask(0);
+    cpu.counter1 = 1;
+    cpu.ram.set16(0x00B0, 5, false);
+    for (let i = 0; i < 8; i++) execTime(cpu, 0x01E2);   // one masked borrow
+    cpu.r(1).set32(0x00090020);          // hi = 9, lo = 0x20
+    cpu.r(2).set32(0x40000000);          // cmd 01000 = write counter 1
+    execTime(cpu, 0xD9E2);
+    clocksOn(cpu);
+    for (let i = 0; i < 8; i++) execTime(cpu, 0x01E2);
+    check('a load clears a borrow that was waiting on the mask',
+          cpu.ram.get16(0x00B0), 9);
 
     // ICR write counter 1 loads it and clears the pending latch
     //
@@ -324,7 +382,7 @@ function check(label, got, want) {
     pacer = new RTPacer(cpu, 1.0, 60);
     check('idleWait timeout', await pacer.idleWait(), 'timeout');
 
-    // Host slower than real time must NOT dump its deficit into a wait
+    // Host slower than real time must not dump its deficit into a wait
     // period: idle advance is measured from idle entry, so a 3ms counter
     // still takes ~3ms of wall time to fire even with 25ms of prior debt.
     cpu = makeWaitingCPU(3000);

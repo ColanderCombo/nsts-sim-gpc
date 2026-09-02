@@ -119,6 +119,7 @@ export class RegisterFile
 export class ProgramStatusWord
     # IBM-75-A97-001/p.21
     # IBM-6246156/p.29
+    # AP-101S specific: IBM-85-C67-001/p.49
     #
     #  0:15 Next Instruction Address
     # 16:17 Condition Code
@@ -131,28 +132,32 @@ export class ProgramStatusWord
     # 24:27 Branch Status Register
     # 28:31 Data Sector Register
     # 32:29 System mask for external interrupts
-    #    32     Real-Time Clock 1 Mask
-    #    33     Real-Time Clock 2 Mask
+    #    32     Counter 1 Mask
+    #    33     Counter 2 Mask
     #    34     Instruction Monitor Mask
-    #    35     IOP Grp 1 Exception Mask
-    #    36     IOP Grp 2 Exception Mask
-    #    37     IOP Programmed Interrupt Mask
-    #    38         SPARE
-    #    39         SPARE
-    # 40:43 RESERVED
-    #    40     P08 XDSDCN
-    #    41     P09 BDSDCN
-    #    42     P10 SPR1N
-    #    43     P11 SPR2N
+    #    35     External Interrupt 0 Mask (IOP Grp 1)
+    #    36     External Interrupt 1 Mask (IOP Grp 2)
+    #    37     External Interrupt 2 Mask (IOP Programmed)
+    #    38     External Interrupt 3 Mask
+    #    39     External Interrupt 4 Mask
+    # 40:43 AP-101B: RESERVED
+    #                40     P08 XDSDCN
+    #                41     P09 BDSDCN
+    #                42     P10 SPR1N
+    #                43     P11 SPR2N
+    #       AP-101S: Reserved for SVC High Order EA Bits
+    #                "EA-High - For an SVC instruction, the 4-bit extension
+    #                 to make the 19-bit effective address is saved in the
+    #                 in the old PSW bits 40-43.
     #    44 Register set controls which of two sets of general registers
     #    45 Machine Check Mask
     #    46 Wait State Bit         (0 = process state, 1 = wait state)
     #    47 Problem/Supervisor Bit (0 = supervisor,    1 = problem)
+    # 48:63 Interrupt Code
     #
     #  All mask bits above (20, 22, 23, 32:39, 45) are:
     #       0 = interrupt inhibited
     #       1 = interrupt allowed.
-    # 48:63 Interrupt Code
     #
     @DESC1: 'ppppppppppppppppccrvf_usbbbbdddd'
     @DESC2: 'mmmmmmmmeeeercwpiiiiiiiiiiiiiiii'
@@ -243,6 +248,10 @@ export class ProgramStatusWord
 
     getIntCode: () -> @_getField2(@pack2.desc.f.i)
     setIntCode: (v) -> @_setField2(@pack2.desc.f.i,v)
+
+    # The sector that goes with the interrupt code's 16-bit address.
+    getIntCodeSector: () -> @_getField2(@pack2.desc.f.e)
+    setIntCodeSector: (v) -> @_setField2(@pack2.desc.f.e, v & 0xF)
 
     load: (p1,p2) ->
         @psw1.set32(p1)

@@ -213,8 +213,7 @@ RECV_TRACE = do ->
   if /^\d+$/.test(v) and +v > 1 then +v else true
 
 # NSTS_BUS_TIMEOUT_TRACE prints every BCE receive time out with how long it
-# waited on BOTH clocks -- the machine's own (simulated) and the host's
-# (wall).  
+# waited on both clocks, simulated and wall.
 TIMEOUT_TRACE = process?.env?.NSTS_BUS_TIMEOUT_TRACE?
 
 # GO/NO-GO timer resolution: "bit 31 (LSB) = 0.768 msec", 12 bits, so
@@ -232,27 +231,47 @@ MTO_TICK_NS = 16500
 # constants that fix it.
 MSC_REPEAT_TICK_NS = 2 * 16500
 
+# NSTS_IOP_FAULT_TRACE reports the MSC program exceptions the POO defines for
+# a BCE register load, or a start, naming a processor that is not in the wait
+# state.  Flight software takes some of these in normal operation, so it is a
+# switch and not a permanent log.
+IOP_FAULT_TRACE = process?.env?.NSTS_IOP_FAULT_TRACE?
+# How many of each (operation, processor) pair to report before falling
+# silent.  The default shows that a fault happens; raise it to see when an
+# intermittent one does.
+IOP_FAULT_MAX = do ->
+  v = process?.env?.NSTS_IOP_FAULT_MAX
+  if v? then parseInt(v, 10) else 3
+
 # The shortest a receive time out is allowed to be, in simulated time.
 #
-# This is not part of the machine.  A subsystem here is a model in
-# another process reached over a socket, and the host delivers its answer
-# when it next gets round to it -- which for a simulation running near
-# real time is a millisecond or two of simulated time, and for one
-# running from a loop that only yields every few thousand instructions is
-# more.  Software loads time outs as short as fifteen counts (247
-# us) before a two-word status read, and nothing out of process can be
-# held to that
+# The floor is zero: the time out the software loaded governs, as it does on
+# the machine.  A floor above the loaded time out holds a bus control element
+# busy past the point the software gives up on the transaction, and the
+# sequence that follows wedges it: the software halts the element while it is
+# still busy; the MSC's LOAD BCE PROGRAM COUNTER is refused (POO 6246556A,
+# MSC section 3.4 -- a busy or halted element is not loaded and the MSC takes
+# a program exception); and the START I/O that follows restarts the element
+# wherever its program counter stopped, the halfword after the STORE STATUS /
+# WAIT tail of the abandoned program, which STORE STATUS had just zeroed.  The
+# element then executes zeros, never advancing, and its bus is silent for the
+# rest of the run.
 #
-# So a floor, well under the seconds-long time outs that bound a tape
-# transfer and well over the host's own latency.  Set it to 0 for exact 
-# hardware behaviour when the subsystem is in this process.
-RECV_TIMEOUT_FLOOR_NS = 20000000      # 20 ms
+# The round trip through the host costs one to five milliseconds of simulated
+# time, against the 303 counts (5.0 ms) the software loads for a display
+# unit's poll, so an ordinary poll times out several times a minute and each
+# one is an I/O error the hardware would not raise.
+# NSTS_RECV_TIMEOUT_FLOOR_MS sets a floor for comparison.
+RECV_TIMEOUT_FLOOR_NS = do ->
+  v = process?.env?.NSTS_RECV_TIMEOUT_FLOOR_MS
+  return 0 unless v?
+  Math.round(parseFloat(v) * 1e6)
 
 class IOPLocalStore
   constructor: () ->
     # 0 = MSC, 1-24 = the BCEs, 25 = the diagnostic / self-test
-    # processor.  25 has no program of its own, but it HAS a local store
-    # page: the MSC and BCE self-test micro programs leave their
+    # processor.  25 runs no program and has a local store page: the
+    # MSC and BCE self-test micro programs leave their
     # signature in it (POO: "MSC self-test modifies Proc 25's locations
     # in Local Store"), and software reads it back through READ LOCAL
     # STORE region 25 to confirm the test ran.
@@ -559,12 +578,67 @@ export class IOP
 
     @onProcStep?(page, pc, hw1, hw2) if @traceProcs?[page]
 
-    # Decode and execute - procs manage their own NIA
+    # Decode and execute - each proc manages its NIA
     if page == 0  # MSC
       @msc.exec(@, hw1, hw2)
     else  # BCE
       bce = @bce[page - 1]
       bce.exec(@, hw1, hw2)
+
+  # A focused trace of everything that touches one BCE's state, in order:
+  # who halted or enabled it, who loaded its program counter, who started it.
+  # `GPC_IOP_BCE=<n>`; off entirely when the variable is absent.
+  IOP_TRACE_BCE: (if process?.env?.GPC_IOP_BCE? then parseInt(process.env.GPC_IOP_BCE, 10) else null)
+
+  bceEvent: (bceNum, what) ->
+    return unless @IOP_TRACE_BCE? and bceNum == @IOP_TRACE_BCE
+    pc = (@ls.at(bceNum, 0, 2)?.get32() ? 0) & LS_WORD_MASK
+    en = @procGet(@regProcEnable, bceNum)
+    bw = @procGet(@regBusyWait, bceNum)
+    console.log "BCE#{bceNum} #{(@cpu.timeNs / 1e6).toFixed(3)} ms  #{what}" +
+                "   [en=#{en} busy=#{bw} pc=#{pc.toString(16)}]"
+
+  # The MSC's BCE register-load instructions require their BCE to be in the
+  # WAIT state and enabled; a busy or halted one is a program exception, and
+  # the load does not happen -- the BCE keeps whatever program counter and
+  # base register it had.  The bit in the MSC status register is the whole of
+  # the report on real hardware, so a BCE restarted on a stale program
+  # counter shows nothing from the outside.
+  mscBCEFault: (op, bceNum) ->
+    return unless IOP_FAULT_TRACE
+    @iopFaults ?= {}
+    key = "#{op}:#{bceNum}"
+    @iopFaults[key] = (@iopFaults[key] ? 0) + 1
+    return if @iopFaults[key] > IOP_FAULT_MAX
+    pc = (@ls.at(bceNum, 0, 2)?.get32() ? 0) & LS_WORD_MASK
+    why = if @procGet(@regBusyWait, bceNum) then 'busy' else 'halted'
+    console.log "IOP: #{(@cpu?.timeNs ? 0) / 1e6} ms  #{op} BCE #{bceNum} " +
+                "refused -- #{why}, PC left at #{pc.toString(16)}"
+
+  # START I/O naming a BCE that is already busy is the same class of error.
+  mscSIOConflict: (mask) ->
+    return unless IOP_FAULT_TRACE
+    who = (p for p in [1..24] when (mask & @procBit(p)) != 0)
+    @iopFaults ?= {}
+    key = "sio:#{who.join(',')}"
+    @iopFaults[key] = (@iopFaults[key] ? 0) + 1
+    return if @iopFaults[key] > 3
+    console.log "IOP: @SIO conflict, BCE #{who.join(', ')} already busy"
+
+  # A processor whose fetch decodes to nothing leaves its program counter
+  # where it was, so it stands on the same halfword for the rest of the run
+  # and takes millions of these at one site.  Reported once per site.
+  unknownProcOp: (hw1, hw2) ->
+    page = @ls.curPage
+    pc = @ls.PC().get32() & LS_WORD_MASK
+    @unknownOps ?= {}
+    key = "#{page}:#{pc}"
+    return if @unknownOps[key]
+    @unknownOps[key] = true
+    who = if page == 0 then 'MSC' else "BCE #{page}"
+    h1 = (hw1 & 0xffff).toString(16).padStart(4, '0')
+    h2 = (hw2 & 0xffff).toString(16).padStart(4, '0')
+    console.log "#{who}: unknown instruction #{h1} #{h2} at #{pc.toString(16)}"
 
   # Redundancy management: the GO/NO-GO timer is RM's, and this is where
   # it advances.  Called once per CPU instruction
@@ -597,8 +671,16 @@ export class IOP
     pc = @ls.PC().get32() & LS_WORD_MASK
     st = bce.recv
     unless st? and st.pc == pc
+      # A receive begins here.  Whatever went by on the bus since the last
+      # word was taken is gone -- that is how a bus program skips the rest
+      # of a mass memory block, by delaying past it.
+      dropped = bce.mia.dropStale()
+      @onDropStale?(p, pc, dropped) if dropped
+      bce.mia.rxBegin(@cpu?.timeNs ? 0)
       st = bce.recv = {pc: pc, addr: addr & LS_WORD_MASK, left: count,
                        sinceNs: @cpu?.timeNs ? 0, gotAny: false,
+                       deliverAt: bce.mia.deliverCount,
+                       turnsAt: @cpu?.ioTurns ? 0,
                        sinceWall: if TIMEOUT_TRACE then Date.now() else 0}
 
     while st.left > 0 and bce.mia.dataAvailable()
@@ -619,13 +701,24 @@ export class IOP
       # A real receiver is inhibited except while a commanded transfer is
       # running, so surplus words a subsystem put on the bus would not be
       # captured, and keeping them makes them the leading words of the next
-      # transaction.  Flushing them here is arguably right, and is
-      # deliberately not done: it breaks the mass memory path,
-      # where a block arrives as one datagram of 512 halfwords and a bus
-      # program that took a block in more than one receive would lose the
-      # rest of it.
+      # transaction.  They are kept: flushing here breaks the mass
+      # memory path, where a block arrives as one datagram of 512
+      # halfwords and a bus program that took a block in more than one
+      # receive would lose the rest of it.
       #
       return true
+
+    # Where a receive's time went, for GPC_IOP_BCE.  A turn that found
+    # nothing on the bus is starved: the subsystem's process has not
+    # answered yet, which is the host's speed showing through.  One that
+    # found words but took none, or took its one word and still has more
+    # to go, is paced by the bus rate.  The two count separately because a
+    # long transfer's time can go either way.
+    if @IOP_TRACE_BCE? and p == @IOP_TRACE_BCE
+      if bce.mia.recvQueue.length == 0
+        bce.starveTurns = (bce.starveTurns ? 0) + 1
+      else
+        bce.pacedTurns = (bce.pacedTurns ? 0) + 1
 
     if ((@cpu?.timeNs ? 0) - st.sinceNs) >= @recvTimeoutNs(p)
       if TIMEOUT_TRACE
@@ -634,6 +727,9 @@ export class IOP
         process.stderr.write "BCE#{p} RECV TIMEOUT pc=#{pc.toString(16)} " +
           "left=#{st.left} gotAny=#{st.gotAny} " +
           "sim=#{simMs.toFixed(2)}ms wall=#{wallMs}ms " +
+          "delivered=#{bce.mia.deliverCount - (st.deliverAt ? 0)} " +
+          "turns=#{(@cpu?.ioTurns ? 0) - (st.turnsAt ? 0)} " +
+          "queued=#{bce.mia.recvQueue.length} " +
           "mto=#{(@recvTimeoutNs(p)/1e6).toFixed(2)}ms\n"
       @bceErrorTerminate(p)
     return false
@@ -695,7 +791,7 @@ export class IOP
 
   # One IOP step taken while the CPU is idle: the processors and their
   # transfers run, but redundancy management does not, because the caller
-  # is already ticking the GO/NO-GO timer on its own schedule.
+  # is already ticking the GO/NO-GO timer on a schedule of its choosing.
   execIdle: () ->
     @execDMAQueue()
     @execProcessors()
@@ -734,7 +830,7 @@ export class IOP
   # MSC short-format effective address: PC-relative with optional indexing.
   # "PC refers to the updated program counter value i.e., the address of
   # the next instruction" , and the short formats are one halfword, so the 
-  # base is the instruction's own address plus one.  
+  # base is the address of the instruction plus one.
   # The displacement is two's complement, range -1024 to +1023 halfwords.
   mscEA: (disp, indexed) ->
     if disp & 0x400
@@ -893,7 +989,7 @@ export class IOP
   # Set one of the Group 1 bits and interrupt the CPU on External 0.  The
   # five conditions are grouped onto the one level, so this is a pulse to
   # the CPU's pending latch and not a level: the register is cleared by
-  # the handler's own read, which can leave the CPU with an External 0
+  # the read in the handler, which can leave the CPU with an External 0
   # pending and the register already zero:
   signalGroup1: (bit) ->
     @setIntReg(0, (@intReg(0) | bit) >>> 0)
@@ -1119,7 +1215,7 @@ export class IOP
 
   # The local store address lines and the queue control bits.
   # Used by both the CPU's local store PCI/PCO and by a 
-  # processor's own instruction fetch (the queue is what an
+  # an instruction fetch by a processor (the queue is what an
   # instruction is fetched into).
   checkQueueParity: () ->
     return false unless @parityEnabled and @forceQueueParity
@@ -1335,7 +1431,7 @@ export class IOP
   # between.  "A time out value of zero will cause the Repeat instruction
   # to test once, and only once."
   # A repeat instruction's count is a count of time, not of re-fetches.
-  # Software's own waits pin the rate down: a table of counts to wait for a
+  # The waits software loads pin the rate down: a table of counts for a
   # bus control element to finish holds 0x350 where its comment says 31 ms
   # and 157 where it says 5.2 ms, which is 36.6 and 33.1 us a count, or two
   # of the 16.5 us resolution the IOP's delays and time outs are quoted in.
@@ -1348,7 +1444,7 @@ export class IOP
       @mscRepeatPC = pc
       # "The lower 8-bits, bits 8 through 15, and the I-bit are used to
       # compute a count": the I bit adds the index register's count above
-      # the instruction's own eight, the way it extends a displacement.
+      # the eight in the instruction, the way it extends a displacement.
       count = v.d
       count += (@ls.X().get32() & LS_WORD_MASK) if v.i
       @mscRepeatLeft = count
@@ -1454,17 +1550,17 @@ export class IOP
         # accompanied by the HALT command word."  STAT5 is an enable
         # register, so halting is clearing the named bits.
         @regProcEnable.set32((@regProcEnable.get32() & ~data) >>> 0)
+        @bceEvent(@IOP_TRACE_BCE, "CPU: CONFIGURE HALT   mask #{(data >>> 0).toString(16)}") if @IOP_TRACE_BCE?
       when 0x87200000 # CONFIGURE PROCESSORS ENABLE
         # And "1 = ENABLE if accompanied by the ENABLE command word".
         @regProcEnable.set32((@regProcEnable.get32() | data) >>> 0)
+        @bceEvent(@IOP_TRACE_BCE, "CPU: CONFIGURE ENABLE mask #{(data >>> 0).toString(16)}") if @IOP_TRACE_BCE?
       when 0x84400000 # MASTER RESET
         # The master reset table (POO Appendix I): STAT1 = GO, STAT4 =
         # WAIT, STAT5 = HALT for the MSC and every BCE, transmitters and
         # receivers disabled, discrete outputs inactive.  GO is 1 and
         # enabled is 1, so "all GO" is every processor bit set and "all
-        # halted" is none of them -- 0xffffff80 and 0, not the 0xfffff800
-        # that used to be here (that constant is the sign-extension mask
-        # from mscEA below, and it is four processors short either way).
+        # halted" is none of them: 0xffffff80 and 0.
         @regProgExcept.set32(PROC_ALL)
         @regBusyWait.set32(0x00000000)
         @regProcEnable.set32(0x00000000)
@@ -1522,7 +1618,7 @@ export class IOP
         # the mask puts that processor back to GO, 0 leaves it alone.
         @regProgExcept.set32((@regProgExcept.get32() | data) >>> 0)
       when 0x92040000 # LOAD MSC BUSY
-        # The MSC's own bit in STAT4, which is the top bit of the word
+        # The MSC bit in STAT4, which is the top bit of the word
         @procSet(@regBusyWait, PROC_MSC, 1)
         # And the copy of it the MSC reads back with @LMS: bit 17 of
         # the 18-bit MSC status register, "the Busy/Wait bit for the MSC".
@@ -1589,6 +1685,9 @@ export class IOP
         bank = (dataSelect >>> 3) & 0x3
         word = (dataSelect) & 0x7
         reg = @ls.at(region, bank, word)
+        if @IOP_TRACE_BCE? and region == @IOP_TRACE_BCE and isOutput
+          @bceEvent(region, "CPU: LOAD LOCAL STORE bank #{bank} word #{word} " +
+                            "= #{(data & 0x3ffff).toString(16)}")
         if reg?
           # A local store word is 18 bits, "scaled to the LSB portion of the
           # 32-bit data word". 

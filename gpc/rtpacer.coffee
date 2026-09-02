@@ -19,21 +19,27 @@ yieldToIO = -> new Promise (res) -> setImmediate(res)
 # forward by.
 #
 # The wait state is paced by converting elapsed wall time into simulated
-# time, so whatever the host was doing instead of calling us comes back as
-# a lump advanced in a single call, with no turn of the event loop inside
+# time, so whatever the host was doing between calls comes back as a
+# lump advanced in a single call, with no turn of the event loop inside
 # it.  Nothing reaches a socket while that runs, and a receive time out is
 # measured in the simulated time it just burned: an 85 ms refresh at factor
 # 0.35 lands 30 ms of simulated time at once, past the 20 ms floor a bus
 # receive gets, so a reply already at the socket arrives to a transaction
 # that has been error-terminated.
 #
-IDLE_CATCHUP_MAX_NS = 5000000     # 5 ms of simulated time
+# Stays below the shortest time out a bus transaction runs under, as
+# GUIHarness bounds a chunk in simulated time: the lump is advanced in one
+# call, no datagram is delivered inside it, and a receive's time out is spent
+# in simulated time.  A display unit's poll allows 5.0 ms, which one 5 ms
+# lump would spend entirely.
+export IDLE_CATCHUP_MAX_NS = 1000000     # 1 ms of simulated time
 
 export class RTPacer
   constructor: (@cpu, @factor = 1.0, @idleTimeoutMs = 10000) ->
     @wallStart = Date.now()     # pacing baseline (re-based after idle)
     @simStartNs = @cpu.timeNs
     @wallBirth = @wallStart     # fixed start, for reporting
+    @lastCapped = false
 
   # Milliseconds of wall time the simulation is ahead of the wall clock
   # (negative when the simulation is behind).
@@ -48,6 +54,7 @@ export class RTPacer
       await sleep(ahead)
     else
       await yieldToIO()
+    @cpu.ioTurns = (@cpu.ioTurns ? 0) + 1
     return
 
   # Wall time spent so far, for reporting.
@@ -60,6 +67,11 @@ export class RTPacer
 
   enterIdle: ->
     @idleStartWall = Date.now()
+    # The pacing baseline above is re-taken whenever a slice is capped, so
+    # it cannot also time the wait state: with a cap short enough to matter
+    # nearly every slice caps, and an idle time out measured from it would
+    # never expire.  This one is taken once and left alone.
+    @idleEnteredWall = @idleStartWall
     @idleStartSim = @cpu.timeNs
     return
 
@@ -80,6 +92,7 @@ export class RTPacer
       owedNs = targetNs - (@cpu.timeNs - @idleStartSim)
       capped = owedNs > IDLE_CATCHUP_MAX_NS
       owedNs = IDLE_CATCHUP_MAX_NS if capped
+      @lastCapped = capped
       @cpu.advanceIdleNs(owedNs)
       if capped
         @idleStartWall = Date.now()
@@ -88,7 +101,7 @@ export class RTPacer
     if not @cpu.psw.getWaitState()
       @rebase()          # post-wake execution paces at the normal rate
       return 'resumed'
-    return if Date.now() - @idleStartWall > @idleTimeoutMs then 'timeout' else 'waiting'
+    return if Date.now() - (@idleEnteredWall ? @idleStartWall) > @idleTimeoutMs then 'timeout' else 'waiting'
 
   # Sit in the wait state at the real-time rate until an interrupt clears
   # it.  Blocking form of advanceIdle(), for the batch/CLI runners
@@ -97,4 +110,9 @@ export class RTPacer
     loop
       why = @advanceIdle()
       return why unless why == 'waiting'
-      await sleep(1)
+      # Behind the wall clock: come straight back round.  A millisecond of
+      # setTimeout per capped slice would hold the wait state below real
+      # time and it could never make the lost time back -- the same reason
+      # GUIHarness resumes with no delay while it is behind.
+      if @lastCapped then await yieldToIO() else await sleep(1)
+      @cpu.ioTurns = (@cpu.ioTurns ? 0) + 1

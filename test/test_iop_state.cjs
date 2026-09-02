@@ -36,7 +36,7 @@ async function bundle(entry) {
         `iopstate.${path.basename(entry, '.coffee')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SRC,
-        entryPoints: [path.join(SRC, 'gpc', entry)],
+        entryPoints: [path.join(SRC, entry.includes('/') ? entry : `gpc/${entry}`)],
         bundle:   true,
         platform: 'node',
         format:   'cjs',
@@ -59,14 +59,17 @@ function check(label, got, want) {
     const { AP101 }           = await bundle('ap101.coffee');
     const { MSCInstruction }  = await bundle('iop_msc_instr.coffee');
     const { BCEInstruction }  = await bundle('iop_bce_instr.coffee');
+    const { BUS_WORD_NS }     = await bundle('iop_bce.coffee');
+    const D                   = await bundle('com/discretes.coffee');
+    const { BusMsg }          = await bundle('com/bus.civet');
 
     const PCO_MASTER_RESET = 0x84400000;
     const PCI_READ_RM      = 0x08140000;
     const PCO_ENABLE       = 0x87200000;
     const PCO_HALT         = 0x86200000;
 
-    const mkGPC = () => {
-        const g = new AP101({ machine: 'ap101s' });
+    const mkGPC = (gpcId) => {
+        const g = new AP101({ machine: 'ap101s', gpc: gpcId });
         for (let a = 0; a < 0x2000; a++) g.cpu.mainStorage.setStoreProtect(a, false);
         return g;
     };
@@ -515,6 +518,18 @@ function check(label, got, want) {
             if (g.iop.ls.curPage === BCE) seen++;
         }
     };
+    // A MIA presents one received word per bus word time, so a transfer of
+    // more than one word only finishes if the simulated clock moves.  Steps
+    // the BCE a word time at a time and stops once the receive in progress
+    // has taken everything queued.
+    const runRecv = (g, steps) => {
+        for (let i = 0; i < steps; i++) {
+            runBCE(g, 1);
+            g.cpu.timeNs += BUS_WORD_NS;
+            const b = g.iop.bce[BCE - 1];
+            if (b.recv === null && b.mia.recvQueue.length === 0) break;
+        }
+    };
     const armBCE = (g, pc) => {
         g.iop.recvFromCPU(PCO_MASTER_RESET, 0);
         g.iop.recvFromCPU(PCO_ENABLE, 0xffffff80);        // every processor
@@ -563,18 +578,99 @@ function check(label, got, want) {
     check('a receive with no words does not advance',
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x400);
     check('...and writes nothing', gpc.cpu.mainStorage.get16(0x1000), 0);
-    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x1111, 0x2222);
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222]);
     runBCE(gpc, 2);
+    check('a word takes a word time, so only one of the two is taken',
+          gpc.cpu.mainStorage.get16(0x1001), 0);
+    runRecv(gpc, 3);
     check('...takes the words that have arrived',
           gpc.cpu.mainStorage.get16(0x1001), 0x2222);
     check('...and still waits for the last one',
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x400);
-    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x3333);
-    runBCE(gpc, 2);
+    gpc.iop.bce[BCE - 1].mia.deliver([0x3333]);
+    runRecv(gpc, 2);
     check('...then completes and advances past the long format',
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
     check('...having written every word',
           gpc.cpu.mainStorage.get16(0x1002), 0x3333);
+
+    // The receiver, not the sender, sets the rate.  A subsystem modelled in
+    // another process schedules on the wall clock and can deliver a whole
+    // transfer in one datagram; the MIA still hands its BCE one word per
+    // bus word time of SIMULATED time, so a bus program that paces itself
+    // against the transfer stays in step with it.
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);          // MTO = 16.5 ms
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 3); // #RDLI 3 -> 4 halfwords
+    gpc.cpu.timeNs = 0;
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222, 0x3333, 0x4444]);
+    runBCE(gpc, 8);
+    check('a transfer that arrived all at once still takes a word at a time',
+          gpc.iop.bce[BCE - 1].recv.left, 3);
+    gpc.cpu.timeNs = BUS_WORD_NS - 1;
+    runBCE(gpc, 4);
+    check('...with nothing to take a word time early',
+          gpc.iop.bce[BCE - 1].recv.left, 3);
+    gpc.cpu.timeNs = BUS_WORD_NS;
+    runBCE(gpc, 1);
+    check('...and the next word a word time later',
+          gpc.iop.bce[BCE - 1].recv.left, 2);
+
+    // A bus is a wire, not a queue: what goes by unheard is gone.  This is
+    // how a bus program skips the rest of a mass memory block -- it DELAYS
+    // through it and reads again -- so a receiver that kept the words
+    // would resume where it stopped instead of at the next block.
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(0x3ffff);       // a long maximum time out
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    // The shape a bus program uses: read part of a block, delay past the
+    // rest of it, CLEAR THE MIA BUFFER with a one-halfword receive, then
+    // read the next block.  The clearing read is not optional -- the wire
+    // is lost but the MIA still holds the last word it latched.
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 1); // #RDLI 1 -> 2 halfwords
+    poke(gpc, 0x402, 0xc000 | 20);                 // #DLYI 20 -> 330 us
+    poke(gpc, 0x403, 0xf300); poke(gpc, 0x404, 0); // #RDLI 0 -> clear the MIA
+    poke(gpc, 0x405, 0xf300); poke(gpc, 0x406, 1); // #RDLI 1 -> 2 halfwords
+    gpc.cpu.timeNs = 0;
+    const wire = gpc.iop.bce[BCE - 1].mia;
+    wire.deliver([0xa1a1, 0xa2a2, 0xa3a3, 0xa4a4, 0xa5a5, 0xa6a6]);
+    runRecv(gpc, 4);
+    check('the first receive takes the front of the transmission',
+          gpc.cpu.mainStorage.get16(0x1001), 0xa2a2);
+    let lost = 0;
+    gpc.iop.onDropStale = (p, pc, n) => { lost += n; };
+    gpc.cpu.timeNs += 20 * 16500;                  // the delay
+    wire.deliver([0xb1b1, 0xb2b2]);                // the next block arrives
+    runRecv(gpc, 8);
+    // Six words in block A, two read, one left in the MIA for the clearing
+    // receive to take: three go by unheard.
+    check('...and all but one word of it went by unheard', lost, 3);
+    check('...the clearing receive took the one the MIA latched, so the',
+          wire.recvQueue.length, 0);
+    // Every receive here writes at BASE -- nothing moved it -- so each one
+    // lands on top of the last, which is what makes the words visible.
+    check('...next receive starts at the next transmission',
+          gpc.cpu.mainStorage.get16(0x1000), 0xb1b1);
+    check('...and takes all of it', gpc.cpu.mainStorage.get16(0x1001), 0xb2b2);
+    gpc.iop.onDropStale = null;
+    // A transmission nothing has been taken from yet is never eaten: that
+    // is what makes the resynchronisation exact however the sender's clock
+    // and the simulated clock are drifting.
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(0x3ffff);
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 1);
+    gpc.cpu.timeNs = 0;
+    gpc.iop.bce[BCE - 1].mia.deliver([0xc1c1, 0xc2c2]);
+    gpc.cpu.timeNs = 100e6;                        // a long time later
+    runRecv(gpc, 4);
+    check('a transmission nobody has started keeps every word',
+          gpc.cpu.mainStorage.get16(0x1000), 0xc1c1);
+    check('...all of it', gpc.cpu.mainStorage.get16(0x1001), 0xc2c2);
 
     // #MOUT / #MIN carry their own command word
     //
@@ -629,8 +725,8 @@ function check(label, got, want) {
     check('...the poll command', sent[0] & 0x7ffff, 0x02000);
     check('...and then waits', gpc.iop.ls.at(BCE, 0, 2).get32(), 0x400);
     check('...without asking again', sent.length, 1);
-    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x1111, 0x2222, 0x3333);
-    runBCE(gpc, 2);
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222, 0x3333]);
+    runRecv(gpc, 4);
     check('...takes the response', gpc.cpu.mainStorage.get16(0x1002), 0x3333);
     check('...and steps past all four halfwords',
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x404);
@@ -675,8 +771,8 @@ function check(label, got, want) {
     poke(gpc, 0x400, 0xf900); poke(gpc, 0x401, 0x0800);  // #MIN@ 0x800
     idxTables(gpc, 4, 2);                           // BASE + 4, 3 halfwords
     gpc.cpu.timeNs = 0;
-    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x1111, 0x2222, 0x3333);
-    runBCE(gpc, 2);
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222, 0x3333]);
+    runRecv(gpc, 5);
     check('#MIN@ transmits the command from its table', sentIdx.length, 1);
     check('...the command bits below the address',
           sentIdx[0] & 0x7ffff, 0x70007);
@@ -684,6 +780,47 @@ function check(label, got, want) {
           gpc.cpu.mainStorage.get16(0x1006), 0x3333);
     check('...leaving the halfword below the displacement alone',
           gpc.cpu.mainStorage.get16(0x1003), 0);
+    check('...and steps past two halfwords',
+          gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
+
+    // #TDL and #RDL take their count out of the same fullword table, and it
+    // is the low halfword that holds it.  Reading the high one gets the
+    // displacement -- zero in the display bus programs -- which made every
+    // long transfer one halfword and left the subsystem waiting for the rest
+    // of a message that never came.
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    poke(gpc, 0x400, 0xfc00); poke(gpc, 0x401, 0x0800);  // #TDL 0x800
+    idxTables(gpc, 0, 6);                           // displacement 0, 7 halfwords
+    runBCE(gpc, 1);
+    queued = gpc.iop.dmaQueue.filter((r) => r.bce === gpc.iop.bce[BCE - 1]);
+    check('#TDL queues transfer count + 1 words', queued.length, 7);
+    check('...from BASE', queued[0].addr, 0x1000);
+    check('...and steps past two halfwords',
+          gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
+
+    // A displacement in the high half must not be mistaken for the count.
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);
+    poke(gpc, 0x400, 0xfc00); poke(gpc, 0x401, 0x0800);
+    idxTables(gpc, 0x1ff, 165);                     // 166 halfwords, big displacement
+    runBCE(gpc, 1);
+    queued = gpc.iop.dmaQueue.filter((r) => r.bce === gpc.iop.bce[BCE - 1]);
+    check('#TDL reads the count, not the displacement', queued.length, 166);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);          // MTO = 16.5 ms
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    poke(gpc, 0x400, 0xfb00); poke(gpc, 0x401, 0x0800);  // #RDL 0x800
+    idxTables(gpc, 0x1ff, 2);                       // 3 halfwords
+    gpc.cpu.timeNs = 0;
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222, 0x3333]);
+    runRecv(gpc, 5);
+    check('#RDL receives transfer count + 1 words into BASE',
+          gpc.cpu.mainStorage.get16(0x1002), 0x3333);
     check('...and steps past two halfwords',
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
 
@@ -715,12 +852,12 @@ function check(label, got, want) {
     gpc.iop.ls.at(BCE, 1, 3).set32(0x3ffff);
     gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);
     poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 3);  // #RDLI 3 -> 4 halfwords
-    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x1111, 0x2222);
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222]);
     runBCE(gpc, 2);
     check('a part-finished receive is in progress',
           gpc.iop.bce[BCE - 1].recv !== null, true);
     gpc.iop.procSet(gpc.iop.regBusyWait, BCE, 0);   // the MSC stops it
-    gpc.iop.bce[BCE - 1].mia.recvQueue.push(0x3333);
+    gpc.iop.bce[BCE - 1].mia.deliver([0x3333]);
     runBCE(gpc, 2);
     check('stopping the BCE abandons it', gpc.iop.bce[BCE - 1].recv, null);
     check('...and drops the words nobody took',
@@ -741,6 +878,137 @@ function check(label, got, want) {
     check('@RBI resets the BCE the accumulator names',
           gpc.iop.procState(18).indicator, false);
     check('...and not processor 0', gpc.iop.procState(0).indicator, true);
+
+    // #BU@ and #LBR@ take their 18-bit value from a table of one fullword
+    // per BCE, the way #CMD takes its command word and the MSC's @BU@
+    // takes its return address.  The table base is biased so that
+    // ADDRESS + 2 x BCE# lands on the entry.
+    gpc = mkGPC();
+    gpc.iop.recvFromCPU(PCO_MASTER_RESET, 0);
+    gpc.iop.recvFromCPU(PCO_ENABLE, 0xffffff80);
+    gpc.iop.regBusyWait.set32(0xffffff80);
+    poke(gpc, 0x400, 0x0000); poke(gpc, 0x401, 0x0620);   // table entry, BCE 18
+    poke(gpc, 0x500, 0xf800); poke(gpc, 0x501, 0x03dc);   // #BU@  X'3dc'
+    poke(gpc, 0x600, 0xfa00); poke(gpc, 0x601, 0x03dc);   // #LBR@ X'3dc'
+    gpc.iop.ls.at(18, 0, 2).set32(0x500);
+    while (gpc.iop.ls.curPage !== 18 || gpc.iop.ls.at(18, 0, 2).get32() === 0x500)
+        gpc.iop.exec();
+    check('#BU@ branches through its table entry, not to it',
+          gpc.iop.ls.at(18, 0, 2).get32() >>> 0, 0x620);
+    gpc.iop.ls.at(18, 0, 2).set32(0x600);
+    while (gpc.iop.ls.curPage !== 18 || gpc.iop.ls.at(18, 0, 2).get32() === 0x600)
+        gpc.iop.exec();
+    check('#LBR@ loads the base register from its table entry',
+          gpc.iop.ls.at(18, 2, 3).get32() >>> 0, 0x620);
+    check('...and advances two halfwords',
+          gpc.iop.ls.at(18, 0, 2).get32() >>> 0, 0x602);
+
+    // A mass memory unit's READY discrete: a wire from another box, so a
+    // master reset leaves it wherever the unit has it.  The loader polls
+    // it to tell an operation that has started from one that has
+    // finished, and nothing else reports that a POSITION is under way.
+    const PCI_READ_DISC_A = 0x08180000;
+    const MM1_READY = 0x02000000, MM2_READY = 0x01000000;
+    gpc = mkGPC();
+    const discA = () => {
+        gpc.iop.recvFromCPU(PCI_READ_DISC_A, 0);
+        return gpc.iop.regCCData.get32() >>> 0;
+    };
+    check('an idle unit reads ready', (discA() & MM1_READY) !== 0, true);
+    gpc.iop.setMassMemoryReady(1, false);
+    check('a busy unit drops its ready bit', (discA() & MM1_READY) !== 0, false);
+    check('...and only its own', (discA() & MM2_READY) !== 0, true);
+    gpc.iop.recvFromCPU(PCO_MASTER_RESET, 0);
+    check('a master reset does not put the unit back to ready',
+          (discA() & MM1_READY) !== 0, false);
+    gpc.iop.setMassMemoryReady(1, true);
+    check('and the unit can raise it again', (discA() & MM1_READY) !== 0, true);
+
+    // The wire protocol.  Set/reset of a bit mask, not a whole register:
+    // a crew panel, a mass memory and the orbiter all own bits of the
+    // same word, and one of them publishing the word would take the
+    // others' bits with it.
+    check('IBM bit 0 is the top of the register', D.bitMask(0) >>> 0, 0x80000000);
+    check('...and bit 6 is a mass memory', D.bitMask(6) >>> 0, MM1_READY);
+    const round = (op, reg, mask) =>
+        D.decodeDiscrete(D.encodeDiscrete(op, reg, mask));
+    let m = round(D.SET, D.REG_A, 0x8001c000);
+    check('a set survives the four halfwords',
+          `${m.op} ${m.reg} ${(m.mask >>> 0).toString(16)}`, '1 1 8001c000');
+    m = round(D.RESET, D.REG_B, 0x00000003);
+    check('...and so does a reset of register B',
+          `${m.op} ${m.reg} ${(m.mask >>> 0).toString(16)}`, '2 2 3');
+    check('a set adds bits', D.applyDiscrete(0x00ff0000, round(D.SET, D.REG_A, 0xf0000000)) >>> 0,
+          0xf0ff0000);
+    check('a reset takes them away',
+          D.applyDiscrete(0xf0ff0000, round(D.RESET, D.REG_A, 0xf0000000)) >>> 0, 0x00ff0000);
+    // Traffic that is not a discrete message must not be guessed at: a
+    // register is a level, and a corrupted one stays wrong forever.
+    const junk = (n, ...ws) => {
+        const msg = new BusMsg(n);
+        ws.forEach((w, i) => { msg.data16[i] = w; });
+        return msg;
+    };
+    check('a short datagram is not a discrete', D.decodeDiscrete(junk(2, 1, 1)), null);
+    check('nor is an unknown operation', D.decodeDiscrete(junk(4, 7, 1, 0, 1)), null);
+    check('nor an unknown register', D.decodeDiscrete(junk(4, 1, 9, 0, 1)), null);
+
+    // The crew panel's mode switch, arriving the way the panel sends it.
+    // Nothing in the model acts on the mode yet -- the software reads it.
+    gpc = mkGPC();
+    const HALT = 0, STANDBY = 1, RUN = 2;
+    gpc.iop.recvDiscrete({op: D.SET, reg: D.REG_A, mask: D.bitMask(STANDBY)});
+    check('STANDBY reaches discrete input A',
+          (discA() & D.bitMask(STANDBY)) !== 0, true);
+    // A rotary switch makes one position and breaks the others.
+    gpc.iop.recvDiscrete({op: D.RESET, reg: D.REG_A,
+                          mask: D.bitMask(HALT) | D.bitMask(STANDBY)});
+    gpc.iop.recvDiscrete({op: D.SET, reg: D.REG_A, mask: D.bitMask(RUN)});
+    check('moding to RUN makes RUN', (discA() & D.bitMask(RUN)) !== 0, true);
+    check('...and breaks STANDBY', (discA() & D.bitMask(STANDBY)) !== 0, false);
+    check('...without disturbing the mass memory',
+          (discA() & MM1_READY) !== 0, true);
+    gpc.iop.recvFromCPU(PCO_MASTER_RESET, 0);
+    check('and a master reset leaves the switch where the panel has it',
+          (discA() & D.bitMask(RUN)) !== 0, true);
+    check('...while restoring the bits nobody drives',
+          (discA() & 0x08000000) !== 0, true);
+
+    // --- the GPC self-ID ------------------------------------------------
+    //
+    // Discrete input B bits 0-2, most significant first, are the number the
+    // machine answers to, and the flight prologue's decode table is just
+    // binary: 001 = 1 through 101 = 5.  The value is fixed at construction.
+    // Nothing on the vehicle drives the bits, so they survive a master
+    // reset -- but a device that takes them over still wins, the same rule
+    // every other input bit follows.
+    const PCI_READ_DISC_B = 0x081c0000;
+    const discB = () => {
+        gpc.iop.recvFromCPU(PCI_READ_DISC_B, 0);
+        return gpc.iop.regCCData.get32() >>> 0;
+    };
+    gpc = mkGPC();
+    check('a machine given no self-ID is GPC 0', gpc.iop.readGpcId(), 0);
+    check('...and carries 000 in B bits 0-2', (discB() & 0xe0000000) >>> 0, 0);
+    for (const [id, bits] of [[1, 0x20000000], [2, 0x40000000], [3, 0x60000000],
+                              [4, 0x80000000], [5, 0xa0000000]]) {
+        gpc = mkGPC(id);
+        check(`GPC ${id} sets B bits 0-2`, (discB() & 0xe0000000) >>> 0, bits);
+        check(`...and reads back as ${id}`, gpc.iop.readGpcId(), id);
+    }
+    gpc = mkGPC(3);
+    gpc.iop.recvFromCPU(PCO_MASTER_RESET, 0);
+    check('the self-ID survives a master reset', gpc.iop.readGpcId(), 3);
+    check('...and does not disturb the CRT select field',
+          (discB() & 0x01000000) !== 0, true);
+    let threw = null;
+    try { mkGPC(6); } catch (e) { threw = e; }
+    check('there is no GPC 6', threw !== null, true);
+    // A device driving the bits owns them, as it does anywhere else.
+    gpc.iop.recvDiscrete({op: D.SET, reg: D.REG_B, mask: 0x80000000});
+    gpc.iop.recvFromCPU(PCO_MASTER_RESET, 0);
+    check('a driven ID bit outlives the reset that would restore the self-ID',
+          (discB() & 0x80000000) !== 0, true);
 
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

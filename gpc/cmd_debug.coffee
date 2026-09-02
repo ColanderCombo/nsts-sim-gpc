@@ -80,7 +80,7 @@ export class GPCDebugger
     target = Instruction.icRelTarget(d, v, addr)
     return "" unless target?
     label = @age.sym.getLabelAt?(target)
-    "   #{C.dim}; -> X'#{target.asHex(4)}'" + (if label then " <#{label}>" else "") + C.reset
+    "   #{C.dim}; -> X'#{target.asHex(5)}'" + (if label then " <#{label}>" else "") + C.reset
 
   formatAddrPlain: (addr) ->
     label = @age.sym.getLabelAt?(addr)
@@ -178,8 +178,6 @@ export class GPCDebugger
 
     unless d?
       @out @_formatTraceLine(@age.stepCount, nia, hw1, hw2, "??? (invalid)", 1, [])
-      @stopReason = "invalid instruction 0x#{hw1.asHex(4)} at #{@formatAddrPlain(nia)}"
-      return 'error'
 
     try
       @age.gpc.exec1()

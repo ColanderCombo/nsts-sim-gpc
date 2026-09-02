@@ -616,6 +616,27 @@ function check(label, got, want) {
     check('...and writes', cpu.ram.get16(0x2000, false), 0xbeef);
     check('...and raises nothing', cpu.intPendingReg, 0);
 
+    // An undecodable halfword is an operation exception
+    //
+    // The CPU does not stop: it takes a program check with PC_ILLEGAL_OP,
+    // skips the halfword, and the handler decides what happens next.
+    // C6C6 is the mass memory fill pattern, which is what a CPU that has
+    // branched into unloaded storage actually walks through.
+    cpu = mkCPU();
+    cpu.psw.setNIA(0x800);
+    handler(cpu, byKey.programCheck.new, 0xd00);
+    poke16(cpu, 0x800, 0xc6c6);
+    poke16(cpu, 0x801, 0xc6c6);
+    cpu.exec1();
+    check('an undecodable halfword is taken as a program check',
+          cpu.psw.getNIA(), 0xd00);
+    check('...with the illegal operation code',
+          cpu.ram.get32(byKey.programCheck.old + 2, false) & 0xffff,
+          intrMod.PC_ILLEGAL_OP);
+    // NIA is bits 0:15 of PSW1, so the old PSW's copy is its high halfword.
+    check('...and the old PSW points past the halfword, not at it',
+          (cpu.ram.get32(byKey.programCheck.old, false) >>> 16) & 0xffff, 0x801);
+
     // A fullword store tests both halves before writing either.
     cpu = mkCPU();
     cpu.mainStorage.setStoreProtect(0x2000, false);
@@ -714,6 +735,29 @@ function check(label, got, want) {
     check('...and lands where the pointer said',
           cpu.ram.get32(zconTarget & ~1, false) >>> 0, 0xffffffff);
     check('the ISPB raised nothing', cpu.intPending.programCheck, false);
+
+    // A fullword ISPB on an ODD effective address pairs UPWARD
+    //
+    // POO 9.2's note says the low-order bit "should be 0 and will be
+    // ignored".  Read as "mask it off", the pair is (EA-1, EA) and the
+    // instruction cannot cover a buffer that begins on an odd halfword.
+    // Flight code unprotects a destination with ISPB 1 stepping its index
+    // by two from an odd base, and the downward reading leaves one halfword
+    // inside the buffer protected, which the MVH two instructions later
+    // faults on.  Pairing (EA, EA+1) covers the buffer exactly.
+    cpu = mkCPU();
+    cpu.psw.setNIA(0x800);
+    for (let a = 0x800; a < 0x802; a++) cpu.mainStorage.setStoreProtect(a, false);
+    poke16(cpu, 0x800, 0xE9FB);            // ISPB 1,X'2001'  (M1 = 001, odd EA)
+    poke16(cpu, 0x801, 0x2001);
+    for (const a of [0x2000, 0x2001, 0x2002]) cpu.mainStorage.setStoreProtect(a, true);
+    cpu.exec1();
+    check('an odd fullword ISPB takes the halfword at the EA',
+          cpu.ram.getStoreProtect(0x2001), false);
+    check('...and the one above it',
+          cpu.ram.getStoreProtect(0x2002), false);
+    check('...and not the one below, which is outside the buffer',
+          cpu.ram.getStoreProtect(0x2000), true);
 
     // Instructions that store more than one halfword
     //

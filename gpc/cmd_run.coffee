@@ -375,11 +375,12 @@ export class BatchRunner
       [d, v] = Instruction.decode(hw1, hw2)
       instrLen = if d? then d.origLen else 1
 
+      # Not decodable: exec1 raises the operation exception and steps over
+      # the halfword, the way the hardware does.  Only the trace line is
+      # ours to write.
       if not d?
         if @traceEnabled
           @write @_formatTraceLine(step, nia, hw1, hw2, "??? (invalid)", 1, [])
-        stopReason = "invalid instruction 0x#{hw1.asHex(4)} at 0x#{nia.asHex(4)}"
-        break
 
       watchBefore = null
       if hasWatchpoints
@@ -579,8 +580,6 @@ export class BatchRunner
       if not d?
         if @traceEnabled
           @write @_formatTraceLine(@step, nia, hw1, hw2, "??? (invalid)", 1, [])
-        @stopReason = "invalid instruction 0x#{hw1.asHex(4)} at 0x#{nia.asHex(4)}"
-        break
 
       # Check I/O trap: if input is needed from terminal, the callback
       # will call promptInput which returns (async), breaking out of execLoop.

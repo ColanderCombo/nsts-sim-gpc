@@ -25,7 +25,7 @@ C =
   bgRed:   '\x1b[41m'
 
 # No-op color palette: every field an empty string.
-# Auto-generated from C's keys so we can't get out of sync.
+# Generated from C's keys, so the two cannot drift apart.
 P = {}
 P[k] = '' for own k of C
 

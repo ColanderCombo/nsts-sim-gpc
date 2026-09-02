@@ -10,6 +10,22 @@ CHUNK_MS = 200
 # Instructions between wall-clock/pacing checks inside a chunk:
 POLL_STEPS = 64
 
+# The most simulated time one chunk may cover before the event loop is given
+# a turn.
+#
+# CHUNK_MS bounds a chunk in wall time, and in real-time mode a chunk also
+# ends once simulated time has run ahead of the wall clock.  Neither bounds a
+# machine that is behind: aheadMs() is negative, so the loop runs flat out to
+# the wall deadline, a fifth of a second of straight-line execution with no
+# turn of the event loop.
+#
+# Nothing reaches a socket in that time, and a bus transaction's time out is
+# spent in simulated time: a display unit's poll allows 303 counts (5.0 ms),
+# so a receive beginning inside such a chunk error-terminates with its reply
+# still unread in the host's socket.  Hence a simulated-time budget as well,
+# well under the shortest time out flight software loads.
+CHUNK_SIM_NS = 1000000            # 1 ms of simulated time
+
 # The share of wall time the GUI refresh is allowed while the machine runs.
 REFRESH_DUTY = 0.2
 
@@ -287,9 +303,15 @@ export class GUIHarness extends AGEHarness
       cost = Date.now() - now
       nextShow = Date.now() + Math.round(cost * (1 - REFRESH_DUTY) / REFRESH_DUTY)
 
-    resume = (delay) => setTimeout(tick, delay)
+    # setTimeout(0) is clamped to a millisecond, which would hold the
+    # machine to real time and stop it ever making back a lost chunk;
+    # setImmediate turns the loop for a fraction of that.  Either way the
+    # poll phase runs first, so a reply at the socket is taken before the
+    # next chunk.
+    resume = (delay) => if delay > 0 then setTimeout(tick, delay) else setImmediate(tick)
 
     tick = () =>
+      @gpc.cpu.ioTurns = (@gpc.cpu.ioTurns ? 0) + 1
       return finish() unless @running
       return finish() if @halUCP.waitingForInput
 
@@ -304,7 +326,11 @@ export class GUIHarness extends AGEHarness
         why = @pacer.advanceIdle()
         if why == 'waiting'
           show()
-          return resume(1)
+          # Behind the wall clock: come straight back so the capped lumps
+          # above can make the time back.  A millisecond of setTimeout per
+          # millisecond of simulated time would hold the wait state below
+          # real time and it would never catch up.
+          return resume(if @pacer.aheadMs() > 0 then 1 else 0)
         @idling = false
         if why == 'held'
           return finish(@_heldNote(@gpc.cpu.heldInterrupt()))
@@ -315,6 +341,7 @@ export class GUIHarness extends AGEHarness
           return finish(@_interruptNote(entry))
 
       deadline = Date.now() + CHUNK_MS
+      simDeadlineNs = @gpc.cpu.timeNs + CHUNK_SIM_NS
       n = 0
       loop
         nia = @gpc.cpu.psw.getNIA()
@@ -338,7 +365,8 @@ export class GUIHarness extends AGEHarness
           return finish()
 
         # Break on an accepted interrupt (armed from the interrupt pane):
-        # the hook records it, we stop at the handler's first instruction.
+        # the hook records it and the run stops at the handler's first
+        # instruction.
         if @_intBreak?
           entry = @_intBreak
           @_intBreak = null
@@ -354,6 +382,7 @@ export class GUIHarness extends AGEHarness
         n++
         if n % POLL_STEPS == 0
           break if @pacer? and @pacer.aheadMs() > 1
+          break if @gpc.cpu.timeNs >= simDeadlineNs
           break if Date.now() >= deadline
 
       show()

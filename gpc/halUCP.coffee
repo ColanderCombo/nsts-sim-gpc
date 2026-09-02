@@ -75,8 +75,7 @@ export class HalUCP
   # The I/O ops perform conversion to/from the GPC format in IOBUF.
   #
   # Strings may be in ASCII, EBCDIC or DEU format on the GPC.
-  # Example HAL programs are in ASCII, so we're defaulting to that
-  # for now.
+  # The example HAL programs are ASCII, which is the default here.
   #
   constructor: (@cpu) ->
     @trapAddrs = null       # { outrap, intrap, cntrap }
@@ -125,8 +124,8 @@ export class HalUCP
     # IOINIT records the default positioning (down 1 line, col 1) 
     # into @deferred[ch] but deferrs emission until the write. 
     # Subsequent SKIP/LINE/PAGE/TAB/COLUMN at the start of a WRITE 
-    # modify the deferred state.  When we encounter an actual field,
-    # we commit the moves.
+    # modify the deferred state.  The moves are committed at the first
+    # actual field.
     #
     #   * @firstWrite[ch]      false after the first WRITE has been issued
     #                          on that channel (12.2: first WRITE
@@ -219,7 +218,7 @@ export class HalUCP
       # fixup. _tryOnErrorDispatch performs a
       # SRET-equivalent unwind and sets NIA to the handler address.
       @_tryOnErrorDispatch(errGroup, errNum)
-      # Whether or not dispatch succeeded, we've handled the SVC.
+      # The SVC is handled whether or not dispatch succeeded.
       # On success: PSW now points to the handler.
       # On failure: the NIA still points past the SVC -> standard fixup runs.
       return true
@@ -376,7 +375,7 @@ export class HalUCP
 
   # Notify that an interactive input cycle (prompt newline + user Enter)
   # has moved the shared terminal cursor to a fresh line.  The next
-  # WRITE on outputChannel should NOT emit its default line advance
+  # WRITE on outputChannel should not emit its default line advance
   # because the terminal is already at column 1 of a new line.
   notifyInteractiveInput: (outputChannel) ->
     ch = outputChannel
@@ -418,7 +417,7 @@ export class HalUCP
       @outputCallback?(' '.repeat(pos.toCol - @column[ch]), ch)
       @column[ch] = pos.toCol
     # Backward column movement (pos.toCol < @column[ch]) is not supported on
-    # a stream-based device; we silently leave the cursor where it is.
+    # a stream-based device; the cursor stays where it is.
 
   # Emit one data field through @outputCallback, applying the inter-field
   # separator and line-wrap rules from the WRITE statement spec:
@@ -588,7 +587,7 @@ export class HalUCP
             @deferred[ch] = { downLines: 0, toCol: 1 }
           else if @suppressNextAdvance?[ch]
             # Interactive input already moved the terminal to a fresh line;
-            # suppress the default line advance so we don't get a blank line.
+            # suppress the default line advance, which would blank a line.
             delete @suppressNextAdvance[ch]
             @deferred[ch] = { downLines: 0, toCol: 1 }
           else
@@ -807,7 +806,7 @@ export class HalUCP
 
   # After extracting a field, consume the trailing separator so the next
   # call starts clean.  Whitespace is always consumed.  A single comma is
-  # consumed (it separated this field from the next).  Semicolons are NOT
+  # consumed (it separated this field from the next).  Semicolons are not
   # consumed -- they must be seen by the next call to trigger termination.
   _consumeTrailingSeparator: () ->
     buf = @inputRecord
@@ -913,9 +912,9 @@ export class HalUCP
 
   # Signal end-of-file on an input channel while the program is blocked
   # in a READ. HAL/S programs can install an ON ERROR$(IO:5) handler to
-  # catch this; if one is present we unwind the one-deep SCAL frame and
-  # branch to the handler. If not, the program is stuck in a READ that
-  # can never complete -- halt cleanly so it's obvious.
+  # catch this; with one present the one-deep SCAL frame is unwound and
+  # control branches to the handler.  Without one the program is stuck in
+  # a READ that can never complete, so the machine halts cleanly.
   provideEof: () ->
     return unless @waitingForInput
     # IO = 10, EOF = 5.

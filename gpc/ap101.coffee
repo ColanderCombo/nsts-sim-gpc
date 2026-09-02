@@ -7,7 +7,7 @@
 fs = require 'fs'
 path = require 'path'
 import {LRU} from 'com/lru'
-import {CPU} from 'gpc/cpu'
+import {CPU, IOP_SLICE_NS} from 'gpc/cpu'
 import {IOP} from 'gpc/iop'
 import {MemoryBus} from 'gpc/membus'
 import {MCM} from 'gpc/mcm'
@@ -44,8 +44,13 @@ export class AP101 extends LRU
     return @machine
 
   exec1: () ->
+    t0 = @cpu.timeNs
     @cpu.exec1()
-    @iop.exec()
+    @iopSliceNs = (@iopSliceNs ? 0) + (@cpu.timeNs - t0)
+    while @iopSliceNs >= IOP_SLICE_NS
+      @iopSliceNs -= IOP_SLICE_NS
+      @iop.exec()
+    return
 
   reset: () ->
     # Register File
