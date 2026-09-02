@@ -8,9 +8,9 @@ Space Shuttle Flight Computers.
 
 A single `gpc` command provides several entry points: a batch mode
 that executes the provided code and emits a trace, a terminal-based
-interactive debugger, an Electron GUI debugger, and a static
-disassembler/dumper. All four read the same `.fcm` ('flight computer
-memory') files.
+interactive debugger, the same debugger headless on a socket, an
+Electron GUI debugger, and a static disassembler/dumper. All of them
+read the same `.fcm` ('flight computer memory') files.
 
 The repository also contains a simulator for MEDS, the Multifunction
 Electronic Display System ("glass cockpit") that replaced the original
@@ -73,6 +73,8 @@ AP-101 GPC Simulator
 Commands:
   run [options] <fcm-file>        Run an AP-101 program in batch mode
   debug|dbg [options] <fcm-file>  Interactive AP-101 debugger
+  dbg-serve [options] [fcm-file]  Headless debugger on a socket
+  dbg-client [options] [cmd...]   Send a command to a dbg-serve session
   gui [options] [fcm-file]        Electron GUI debugger
   dump [options] <fcm-file>       FCM dump report — symbol table and disassembly
   disasm [options] <fcm-file>     Disassemble an FCM memory image
@@ -208,6 +210,198 @@ interrupted program's and the old-PSW slot still holds what was there
 before.  The next `step` performs the swap alone, landing on the
 handler's first instruction without executing it; `run` performs it and
 carries on. 
+
+  ## GPC.sh dbg-serve \<fcm\> / GPC.sh dbg-client \<command\>
+
+The same debugger with a socket in place of the terminal.  `dbg-serve` holds
+the machine in a process that outlives any one command; `dbg-client` sends it
+one command and prints the answer.  A debugging session is then a sequence of
+separate shell commands against a machine that keeps its place between them,
+which is what makes it drivable from a script, a Makefile, or an agent.
+
+```
+GPC.sh dbg-serve prog.fcm &              # hold a session, port 4444
+GPC.sh dbg-client break MYPROC           # ... set a breakpoint by symbol
+GPC.sh dbg-client continue               # ... run until it hits
+GPC.sh dbg-client regs                   # ... look around
+GPC.sh dbg-client mem MYVAR 8
+GPC.sh dbg-client --json regs R6         # ... structured, for a program
+GPC.sh dbg-client shutdown
+```
+
+With no command arguments the client reads one command per line from stdin,
+so a whole session is one invocation:
+
+```
+printf 'break MYPROC\ncontinue\nregs\ntracelog 20\n' | GPC.sh dbg-client
+```
+
+`help` lists the commands and `help <command>` describes one.  The vocabulary
+follows the REPL debugger's: `step`, `next`, `continue`, `until`, `pause`,
+`break`/`bclear`/`breakpoints`, `watchmem` (data breakpoints, on change or on
+any write), `watch`, `mem`/`writemem`, `regs`/`setreg`, `disasm`, `sym`,
+`sections`, `resolve`, `ints` and the `int*` controls, `timers`, `iop`,
+`iopdisasm`, `realtime`, `output` and `input`.  Addresses are hex, a symbol,
+or either with a `+`/`-` offset (`IOINIT+0x10`).
+
+Beyond it: `trace`/`tracelog`, `busmon`/`buslog`/`bus`,
+`discretes`/`discmon`/`disclog`/`discset`, `log`/`logstop`,
+`logpoint`/`logpoints`, `find`, and the symbol layers
+`symload`/`symswitch`/`symlayers`.
+
+### Watching the machine
+
+`trace on` records the instructions that execute into a ring, and `tracelog`
+prints it back disassembled — the last N instructions before a stop, without
+the cost of streaming every one of them.
+
+`busmon on` taps every word crossing every BCE's bus, `buslog` prints it back
+grouped into transactions, and `bus` lists what this GPC is attached to with
+its transmit/receive enables and counts.  The tap sees more than the MIA's own
+64-word ring keeps, and `--bus DK1,MM1` narrows it.
+
+```
+GPC.sh dbg-client busmon on --limit 4000
+GPC.sh dbg-client buslog 20              # ... as transactions
+GPC.sh dbg-client buslog 40 --words      # ... word by word
+```
+
+`discretes` shows the discrete input and output registers decoded to named
+lines (`halt`, `standby`, `run`, `ipl`, `mm1ready`, `gpcid0`…), `discmon on`
+records every change to them, and `disclog` prints those back.  Discrete
+inputs arrive from other processes at any time, so the monitor hooks the
+receive path and sees them whether or not the machine is running; the outputs
+are written by a PCO and are sampled once per instruction.  `discset run`
+drives a line directly, standing in for the box that owns it.
+
+Traffic is dense, so a monitor fills its ring and any open log but does not
+push events at connected clients unless asked: add `--events` to have it
+broadcast as well.
+
+### Recording to a file
+
+`log <file>` records what the session publishes, one line per record, stamped
+with **both clocks** — the host's wall clock, for lining a run up against
+anything outside this process, and the machine's simulated time, which is the
+only one that means anything between two events inside it.
+
+```
+GPC.sh dbg-client log run.ndjson --kinds bus,discrete,stopped
+GPC.sh dbg-client log run.txt --format text     # a padded line per record
+GPC.sh dbg-client log                           # what is being recorded
+GPC.sh dbg-client logstop
+```
+
+`--kinds` selects what is recorded; with none, everything the session
+publishes. `ndjson` gives `{kind, stamp, body}` per line; `text` gives a
+column-aligned line for reading.
+
+### Breakpoints that do not stop
+
+`logpoint <addr> [message]` records an arrival — location, hit count, the
+general registers — and lets the run carry on.  It is the way to see a path
+taken thousands of times without stopping at any of it.
+
+`break` takes `--ignore N` to pass the first N arrivals (the hit count still
+counts them) and `--once` to remove itself after firing.  `breakpoints` lists
+hit counts.
+
+### Symbols for an overlay
+
+A load or an overlay puts different code at addresses another load already
+named, so one symbol table per image does not describe the machine.  Symbol
+tables are layered over the image's own, each optionally scoped to an address
+range, and a lookup takes the topmost enabled layer covering the address.
+
+```
+GPC.sh dbg-client symload OVL_A.sym.json --name A --lo 10000 --hi 1ffff
+GPC.sh dbg-client symload OVL_B.sym.json --name B --lo 10000 --hi 1ffff
+GPC.sh dbg-client symswitch A      # A is in force; B stands down
+GPC.sh dbg-client symlayers        # what is loaded and which are in force
+GPC.sh dbg-client symunload B
+```
+
+`symswitch` enables one layer and disables every other layer whose range
+overlaps it, which is the state after a load: the addresses belong to what was
+loaded last, and the layers describing what used to be there stay on the stack
+to switch back to.  `sym` and `sections` report which layer a name came from,
+and `resolve` names it for one address.
+
+### Searching memory
+
+```
+GPC.sh dbg-client find 4142 4344                    # a run of halfwords
+GPC.sh dbg-client find --text ERROR --encoding ebcdic
+GPC.sh dbg-client find --text ABC --start 10000 --end 1ffff
+```
+
+### Server options
+
+```
+  --port <n>              TCP port to listen on (default: 4444)
+  --host <addr>           address to bind (default: 127.0.0.1)
+  --no-tcp                do not listen on TCP; requires --socket
+  --socket <path>         also listen on a unix socket
+  --name <name>           session name, for the session file
+  --session-file <path>   where to record the endpoint
+  --break <addr>          set a breakpoint before starting (repeatable)
+  --trace                 start with the instruction trace ring on
+  --max-steps <n>         step budget for one continue
+```
+
+The server records its endpoint in `<tmpdir>/gpc-dbg/<name>.json`, and a
+client given no `--port`/`--socket` connects to whichever session started
+last.  `--name` picks among several.
+
+### The protocol
+
+One JSON object per line, both ways.  A request:
+
+```json
+{"id": 1, "cmd": "step", "args": {"count": 10}, "text": true}
+```
+
+and its reply, `text` carrying the rendered form when the request asked for
+it:
+
+```json
+{"id": 1, "ok": true, "result": {"reason": "step", "steps": 10, ...}}
+{"id": 1, "ok": false, "error": {"code": "badArgs", "message": "..."}}
+```
+
+Execution commands reply when the machine stops, so replies can arrive out of
+order; each carries the id of its request.  Queries are answered while a run
+is in progress, and `pause` stops one.
+
+Events are pushed to every connection, unsolicited:
+
+```json
+{"event": "stopped", "seq": 12, "body": {"reason": "breakpoint", ...}}
+```
+
+`stopped`, `continued`, `running` (progress at each refresh interval),
+`output` (program output as it is written), and `input` (the program is
+waiting for a read).  Stop reasons are DAP's vocabulary where one applies —
+`entry`, `step`, `breakpoint`, `data breakpoint`, `pause`, `exception` — with
+`halt`, `interrupt`, `interrupt held`, `input` and `step budget` added for the
+states an AP-101 has and a hosted process does not.
+
+A line that is not JSON is taken as a command line — `step 10` — and answered
+with `text` filled in.  It carries no id, so its reply has `id: null`; a
+client issuing more than one command at a time sends JSON.  `mode text`
+switches a connection to plain-text replies, each closed by a blank line,
+which is what makes the server usable from `nc`:
+
+```
+$ nc 127.0.0.1 4444
+mode text
+break MYPROC
+continue
+```
+
+Nothing in the protocol is specific to a terminal client, and the GUI is not
+a terminal client: `gpc gui` runs **no machine of its own**, and every pane
+it draws is filled from one of these commands.  See **GPC.sh gui** below.
 
   ## GPC.sh gui \[fcm\]
 

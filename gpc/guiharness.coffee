@@ -195,6 +195,8 @@ export class GUIHarness extends AGEHarness
       @notify(@_interruptNote(@lastInterrupt)) if @gpc.cpu.intCount > intsBefore
       held = @gpc.cpu.heldInterrupt()
       @notify(@_heldNote(held)) if held?
+      stop = @_afterStep(nia)
+      @notify(stop) if stop?
     @_intBreak = null
     @disasmViewAddr = null  # auto-follow NIA after step
     @updateDisplay()
@@ -277,6 +279,7 @@ export class GUIHarness extends AGEHarness
     @idling = false
     @_intBreak = null
     @pacer = if @realTime then @_newPacer() else null
+    @onRunStart()
     @updateToolbar()
 
     lastShown = Date.now()
@@ -287,6 +290,7 @@ export class GUIHarness extends AGEHarness
       @idling = false
       @pacer = null
       @notify(note) if note?
+      @onRunStop(note ? null)
       @updateDisplay()
 
     # Refresh no more often than one chunk
@@ -353,6 +357,9 @@ export class GUIHarness extends AGEHarness
         @stepCount++
         @_syncStep()
         return finish() unless @_exec1(nia)
+
+        stop = @_afterStep(nia)
+        return finish(stop) if stop?
 
         # Stop-before-swap: this instruction's interrupt is decided but not
         # taken, and the machine is still standing on the interrupted
@@ -443,3 +450,15 @@ export class GUIHarness extends AGEHarness
   #
   updateDisplay: () ->
   updateToolbar: () ->
+
+  #
+  # Driver hooks
+  #
+  # `_afterStep` runs after each instruction step() or run() completes; a
+  # string return stops the run and becomes its note.  `onRunStart` and
+  # `onRunStop` bracket a run(), the latter carrying the note that ended it
+  # (null when the stop has none).
+  #
+  _afterStep: (nia) -> null
+  onRunStart: () ->
+  onRunStop: (note) ->

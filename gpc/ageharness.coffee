@@ -260,9 +260,12 @@ export class AGEHarness
 
   # Step counter sync
 
+  # Both MCMs carry the count: on an AP-101B the halfword an access-tracking
+  # view or a data breakpoint asks about can live in either LRU.
   _syncStep: () ->
     s = @stepCount
     @gpc.cpu.mainStorage.step = s
+    @gpc.iop.mainStorage.step = s
     for rf in @gpc.cpu.regFiles
       rf.step = s
     @gpc.cpu.psw.step = s
@@ -270,8 +273,8 @@ export class AGEHarness
   # Breakpoint persistence
 
   # localStorage is only available in a browser/Electron renderer context.
-  # We detect that via `typeof window`; accessing globalThis.localStorage
-  # in plain Node 22+ triggers a noisy experimental-shim warning, so avoid it.
+  # `typeof window` is the test: reading globalThis.localStorage in plain
+  # Node 22+ raises an experimental-shim warning.
   _storage: () ->
     if typeof window != 'undefined' and window.localStorage?
       window.localStorage

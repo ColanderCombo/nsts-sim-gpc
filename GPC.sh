@@ -6,6 +6,8 @@
 # Usage:
 #   GPC.sh run <fcm>       — batch execution
 #   GPC.sh debug <fcm>     — interactive REPL debugger
+#   GPC.sh dbg-serve <fcm> — headless debugger on a socket
+#   GPC.sh dbg-client ...  — send a command to a dbg-serve session
 #   GPC.sh gui [fcm]       — Electron GUI debugger
 #   GPC.sh dump <fcm>      — FCM dump report
 #   GPC.sh disasm <fcm>    — disassembly listing
