@@ -15,7 +15,12 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ "$1" = "gui" ]; then
+    # electron-esbuild build cleans dist/, and the mmu and gpcmd bundles
+    # live there too -- a GPC needs both beside it to have anything on its
+    # busses to talk to, so put them back.
     "${DIR}/node_modules/.bin/electron-esbuild" build || exit $?
+    node "${DIR}/esbuild/esbuild.mmu.config.js"   || exit $?
+    node "${DIR}/esbuild/esbuild.gpcmd.config.js" || exit $?
 fi
 node "${DIR}/esbuild/esbuild.gpc.config.js" || exit $?
 exec node "${DIR}/dist/gpc.js" "$@"

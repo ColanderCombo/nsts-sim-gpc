@@ -32,14 +32,19 @@ if process.platform == 'linux'
 // process.exit from their own action handlers.
 // ----------------------------------------------------------------
 import {Command} from 'commander'
-{AGEHarness} from '../../gpc/ageharness.coffee'
 {addCommand: addRunCmd}    from '../../gpc/cmd_run.coffee'
 {addCommand: addDebugCmd}  from '../../gpc/cmd_debug.coffee'
 {addCommand: addDumpCmd}   from '../../gpc/cmd_dump.coffee'
 {addCommand: addDisasmCmd} from '../../gpc/cmd_disasm.coffee'
+{addGUIOptions, guiCliOpts as buildGuiOpts, startGUISession} from '../../gpc/guibackend.coffee'
 
 guiRequested .= false
 guiCliOpts   .= null
+// The debugger session lives in this process unless `gpc gui` already
+// started one and passed its endpoint.  See gpc/guibackend.
+guiFcmPath   .= null
+guiOpts      .= null
+guiBackend   .= null
 
 medsRequested .= false
 medsCliOpts   .= null
@@ -48,12 +53,11 @@ addLocalGuiCmd := (program: any) : void =>
   cmd := program.command('gui')
     .description('Electron GUI debugger')
     .argument('[fcm-file]', 'FCM memory image to load (optional; GUI can also load later)')
-  AGEHarness.addOptions(cmd)
+  addGUIOptions(cmd)
   cmd.action (fcmPath: string, o: any) : void =>
-    guiCliOpts = Object.assign(AGEHarness.optsFrom(o), {
-      fcmPath: if fcmPath then path.resolve(fcmPath) else null
-      symbols: if o.symbols then path.resolve(o.symbols) else null
-    })
+    guiCliOpts = buildGuiOpts(fcmPath, o)
+    guiFcmPath = fcmPath
+    guiOpts = o
     guiRequested = true
 
 addLocalMedsCmd := (program: any) : void =>
@@ -174,21 +178,38 @@ createWindow := async () : Promise<void> =>
   else
     await win.webContents.loadURL 'http://localhost:9080'
 
+// The window needs an endpoint before it loads, so the session comes up
+// first and the window second.  `gpc gui` has already done this and passed
+// the endpoint in; the packaged app and `npm run gui:dev` arrive with none
+// and start one here.
+openGuiWindow := async () : Promise<void> =>
+  if not guiCliOpts?.endpoint
+    try
+      guiBackend = await startGUISession(guiFcmPath, guiOpts ?? {})
+      guiCliOpts ??= {}
+      guiCliOpts.endpoint = guiBackend.endpoint
+    catch err
+      console.error "gpc gui: cannot start a session:", err
+      app.quit()
+      return
+  await createWindow()
+
 startGui := () : void =>
   Menu.setApplicationMenu(null)
   registerWindowIpc()
 
   app.on 'ready', () : void =>
-    createWindow()
+    openGuiWindow()
   app.on 'window-all-closed', () : void =>
     app.quit()
   app.on 'before-quit', () : void =>
+    guiBackend?.server?.shutdown()
     // Force-destroy so lingering UDP sockets don't keep renderers alive.
     for w of BrowserWindow.getAllWindows()
       w.destroy()
   app.on 'activate', () : void =>
     if BrowserWindow.getAllWindows().length == 0
-      createWindow()
+      openGuiWindow()
 
 // ----------------------------------------------------------------
 // MEDS runner — multi-window LRU launcher (`meds` subcommand)
@@ -197,8 +218,8 @@ startGui := () : void =>
 // Each windowed LRU (an MDU display) gets its own frameless
 // BrowserWindow running the LRU-mode renderer; headless "shared"
 // LRUs (IDPs) are bundled into the first windowed LRU's renderer —
-// they only need a JS context to join the UDP bus mesh, and MUST
-// NOT render into #root or they'd clobber the MDU's React root.
+// they only need a JS context to join the UDP bus mesh, and must
+// not render into #root or they'd clobber the MDU's React root.
 // ----------------------------------------------------------------
 
 class MedsRunner

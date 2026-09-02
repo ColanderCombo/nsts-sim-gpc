@@ -399,9 +399,8 @@ break MYPROC
 continue
 ```
 
-Nothing in the protocol is specific to a terminal client, and the GUI is not
-a terminal client: `gpc gui` runs **no machine of its own**, and every pane
-it draws is filled from one of these commands.  See **GPC.sh gui** below.
+The GUI is another client of this protocol: every pane it draws is filled
+from one of these commands.  See **GPC.sh gui** below.
 
   ## GPC.sh gui \[fcm\]
 
@@ -419,9 +418,21 @@ Options:
   --rt-factor <x>                 real-time speed multiplier (2 = 2x real speed)
   --rt-idle-timeout <s>           stop after this many wall seconds in wait
                                   state with no wakeup
+  --max-steps <n>                 step budget for one Run (default: 10000000)
+  --attach                        do not start a session; join one already
+                                  running
+  --port <n>                      TCP port: of the session to attach to, or to
+                                  listen on (default: an ephemeral one)
+  --name <name>                   session name, used for the session file
+  --no-session-file               do not record the endpoint anywhere
   --no-sandbox                    pass --no-sandbox to Electron (required on
                                   some Linux systems)
 ```
+
+The window drives a debug session, so `gpc dbg-client` can work on the same
+machine from a terminal — breakpoints, memory, bus and discrete monitoring —
+while the panes watch.  `--attach` joins a `dbg-serve` already running instead
+of starting a session, and the session outlives the window.
 
 Simulated CPU time is tracked per instruction so a debugging session sees 
 the same interrupt sequence a straight run does.  The toolbar's **Real-time** 

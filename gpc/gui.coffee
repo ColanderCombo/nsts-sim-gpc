@@ -1,7 +1,22 @@
+# DebugGUI: the debugger's front end
+#
+# The machine runs in a `gpc dbg-serve` process.  This window sends
+# commands, listens for events, and draws a mirror of the session
+# (gpc/guimirror) that answers every accessor the panes were written
+# against.  The session runs at full speed in that process and the window
+# redraws from whatever the last snapshot carried, at whatever rate it can
+# manage; neither waits for the other.
+#
+# Local to the window: the symbol table (static, and every pane wants it
+# synchronously), the dock layout, the breakpoint list in localStorage, and
+# which section or watch is selected.
+
 fs = require 'fs'
 path = require 'path'
-import {GUIHarness} from 'gpc/guiharness'
 import React from 'react'
+import {SymbolTable} from 'gpc/symbolTable'
+import {DebugClient, resolveEndpoint, describeEndpoint} from 'gpc/dbgclient'
+import {GUIMirror} from 'gpc/guimirror'
 import 'cde/cde-window'
 import 'cde/toolbar'
 import 'cde/bit-field'
@@ -24,41 +39,355 @@ import 'gpc/gui/gpc-terminal'
 # the CLI asked for that isn't in this list is added to the menu at startup.
 RT_FACTORS = [0.1, 0.25, 0.5, 1, 2, 5, 10]
 
+# What a refresh asks the session for.  Everything, in one round trip: a
+# pane's redraw is synchronous and cannot wait on a second one.
+SNAP_WANT = ['regs', 'ints', 'intlog', 'iop', 'breakpoints', 'halucp']
 
-export class DebugGUI extends GUIHarness
-  constructor: (CONFIG) ->
-    super(Object.assign({}, CONFIG, gpc: CONFIG?.config?.cliOpts?.gpc))
+# The most consecutive fetch-and-draw passes one refresh may take.  A draw
+# that reads memory the snapshot did not carry needs one more pass; two is
+# the cost of the view having moved, and the bound is what stops a pane
+# whose reads never settle from spinning.
+MAX_PASSES = 2
+
+
+export class DebugGUI
+  constructor: (@CONFIG) ->
     @ipcRenderer = require('electron').ipcRenderer
     if not @ipcRenderer
       throw new Error("DebugGUI: require('electron').ipcRenderer failed!")
 
+    @client = null
+    @mirror = null
+    @caps = null
+    @sym = new SymbolTable()
+    @fcmName = null
 
-  # Resolve the LRU config down to an opts object for configureFromOpts.
-  # Accepts either the modern `cliOpts` blob (from `gpc gui`) or the legacy
-  # bare `fcmFile`/`symbolsFile`/`entryPoint` keys.  Returns opts with an
-  # absolute fcmPath field, or { fcmPath: null } if nothing is configured.
-  _resolveLoadOpts: (lruConf) ->
-    resolve = (p) =>
-      return null unless p
-      if path.isAbsolute(p) then p else path.join(@CONFIG.NSTS_TOP, p)
+    # Session state, as the last snapshot or event reported it.
+    @running = false
+    @stepCount = 0
+    @statusNote = null
+    @speedRatio = null
+    @realTime = false
+    @rtFactor = 1.0
+    @idling = false
+    @waitingForInput = false
+    @stopReason = 'entry'
+    @intHeld = false
+    @waitState = false
+    @breakOnInterrupt = false
+    @holdInterrupt = false
 
-    if lruConf.cliOpts?.fcmPath
-      # `gpc gui` passed a full options blob; fcmPath is already absolute.
-      return Object.assign({}, lruConf.cliOpts, {
-        fcmPath: resolve(lruConf.cliOpts.fcmPath)
-        symbols: resolve(lruConf.cliOpts.symbols)
-      })
+    # GUI-local
+    @breakOnInput = false
+    @selectedSection = null
+    @selectedWatch = null
+    @watchAddresses = null
 
-    if lruConf.fcmFile
-      # Legacy config shape with bare fcmFile/symbolsFile/entryPoint keys.
-      return {
-        fcmPath: resolve(lruConf.fcmFile)
-        symbols: resolve(lruConf.symbolsFile)
-        start: lruConf.entryPoint?.toString(16)
-      }
+    @_inflight = false
+    @_again = false
+    @_connected = false
+    @_warnedTruncated = false
 
-    return { fcmPath: null }
+  #
+  # Where the session is
+  #
+  # `gpc gui` starts one and passes its endpoint; `--attach` passes the one
+  # to join.  With neither -- a window opened by hand -- fall back on the
+  # session file, the same way `gpc dbg-client` does.
+  _endpoint: () ->
+    o = @CONFIG.config?.cliOpts ? {}
+    return o.endpoint if o.endpoint?
+    resolveEndpoint(o)
 
+  start: () ->
+    ep = @_endpoint()
+    console.log("DebugGUI: connecting to #{describeEndpoint(ep)}")
+    @client = new DebugClient(ep)
+    @_wireEvents()
+    @client.connect().then((welcome) =>
+      @_connected = true
+      console.log("DebugGUI: connected, protocol #{welcome.protocol}")
+      @client.send('capabilities')
+    ).then((caps) =>
+      @_openSession(caps)
+    ).catch (e) =>
+      console.error("DebugGUI: #{e.message}", e)
+      @notify("no session at #{describeEndpoint(ep)}: #{e.message}")
+      @updateToolbar()
+    return
+
+  # The session is up: take its symbols, size the mirror to its machine,
+  # hand back the breakpoints this image had last time, and build the dock.
+  _openSession: (caps) ->
+    @caps = caps
+    @fcmName = caps.fcmName ? null
+    if caps.symbols?.path
+      try
+        @sym.load(caps.symbols.path)
+        console.log("DebugGUI: symbols from #{caps.symbols.path}")
+      catch e
+        console.warn("DebugGUI: cannot read #{caps.symbols.path}: #{e.message}")
+    m = caps.machine ? {}
+    totalHW = ((m.cpuWords ? 256 * 1024) + (m.iopWords ? 0)) * 2
+    @mirror = new GUIMirror({
+      totalHW: totalHW
+      write: (cmd, args) => @client.post(cmd, args)
+    })
+    @_restoreBreakpoints()
+    @_wireDOM()
+    @refresh()
+    return
+
+  #
+  # Session events
+  #
+  _wireEvents: () ->
+    @client.on 'stopped', (b) =>
+      @running = false
+      @_takeStop(b)
+      @refresh()
+    @client.on 'continued', (b) =>
+      @running = true
+      @statusNote = null
+      @updateToolbar()
+    # One per chunk of a run: the session's refresh tick.
+    @client.on 'running', (b) =>
+      @running = true
+      @stepCount = b.steps
+      @speedRatio = b.speedRatio
+      @refresh()
+    @client.on 'output', (b) =>
+      @_terminal()?.appendText(b.text)
+      process.stderr.write(b.text) if b.category == 'stderr'
+    @client.on 'input', (b) =>
+      @waitingForInput = true
+      @_terminal()?.activateInput()
+      @updateToolbar()
+    @client.on 'closed', =>
+      @running = false
+      @notify('the session closed')
+      @updateToolbar()
+    return
+
+  _takeStop: (b) ->
+    return unless b?
+    @stopReason = b.reason
+    @statusNote = b.description ? null
+    @stepCount = b.steps ? @stepCount
+    @waitState = !!b.waitState
+    @waitingForInput = !!b.waitingForInput
+    @intHeld = b.heldInterrupt?
+    @speedRatio = null
+    return
+
+  #
+  # Refresh
+  #
+  # One pass is: ask for the memory the last draw read, fill the mirror,
+  # draw.  A draw that reached past what was asked for leaves the mirror
+  # stale, and one more pass settles it.  Requests do not queue -- a run
+  # emits a progress event per chunk and the window redraws at whatever rate
+  # it can, dropping the ones in between.
+  #
+  refresh: () ->
+    return unless @mirror? and @client?.connected
+    if @_inflight
+      @_again = true
+      return
+    @_pass(MAX_PASSES)
+    return
+
+  _pass: (left) ->
+    @_inflight = true
+    req = {
+      windows: @mirror.windows()
+      want: SNAP_WANT
+      intlogcount: 40
+    }
+    dis = @mirror.iopDisasmWanted()
+    req.iopdisasm = dis if dis.length > 0
+    # A refresh that could not carry everything the panes read leaves some
+    # of them showing values that are quietly out of date.  Reported once.
+    if @mirror.truncated > 0 and not @_warnedTruncated
+      @_warnedTruncated = true
+      @notify("#{@mirror.truncated} halfwords past the refresh ceiling: " +
+              "some panes will show stale values")
+    @client.send('guisnap', req).then((snap) =>
+      @_inflight = false
+      @mirror.apply(snap)
+      @_takeSnap(snap)
+      @_draw()
+      if @mirror.stale() and left > 1
+        @_pass(left - 1)
+      else if @_again
+        @_again = false
+        @_pass(MAX_PASSES)
+    ).catch (e) =>
+      @_inflight = false
+      console.warn("DebugGUI: guisnap failed: #{e.message}")
+
+  _takeSnap: (snap) ->
+    @running = !!snap.running
+    @stepCount = snap.steps
+    @speedRatio = snap.speedRatio
+    @realTime = !!snap.realTime
+    @rtFactor = snap.rtFactor ? @rtFactor
+    @idling = !!snap.idling
+    @statusNote = snap.statusNote ? @statusNote
+    @_takeStop(snap.status) if not @running
+    @waitState = !!snap.status?.waitState
+    @waitingForInput = !!snap.halucp?.waitingForInput
+    @intHeld = snap.status?.heldInterrupt?
+    if snap.ints?
+      @breakOnInterrupt = !!snap.ints.breakOnInterrupt
+      @holdInterrupt = !!snap.ints.hold
+    return
+
+  # Draw every live pane, with the mirror recording what they read.
+  _draw: () ->
+    @mirror.beginTrack()
+    try
+      for el in (@dockRoot?.allEditors() ? [])
+        switch el.tagName?.toLowerCase()
+          when 'gpc-memory'
+            el.watchAddresses = @watchAddresses
+            el.selectedSection = @selectedSection
+          when 'gpc-sections'
+            el.selectedSection = @selectedSection
+        el.refresh?()
+    finally
+      @mirror.endTrack()
+    @updateToolbar()
+    return
+
+  # The old harness's name for a redraw; the panes and the components call
+  # it, so it stays.
+  updateDisplay: () -> @refresh()
+
+  notify: (msg) ->
+    @statusNote = msg
+    console.log("DebugGUI: #{msg}")
+    return
+
+  #
+  # Execution
+  #
+  # These are all fire-and-forget: an execution command replies only when
+  # the machine stops, and the `stopped` event is what drives the redraw.
+  #
+  step: () -> @_exec('step', { count: 1 })
+  stepOver: () -> @_exec('next')
+  run: () -> @_exec('continue')
+  runTo: (addr) -> @_exec('until', { addr })
+  stop: () -> @_exec('pause')
+  reset: () ->
+    @_resetPanes()
+    @_exec('reset')
+  systemReset: () -> @_exec('sysreset')
+
+  _exec: (cmd, args = {}) ->
+    return unless @client?.connected
+    @statusNote = null
+    @client.post(cmd, args)
+    return
+
+  _resetPanes: () ->
+    r.resetTracking?() for r in @_registersAll()
+    term = @_terminal()
+    if term
+      term.clear()
+      term.resetInput()
+    return
+
+  #
+  # Controls
+  #
+  setRealTime: (enabled) ->
+    @realTime = !!enabled
+    @client?.post('realtime', { state: @realTime })
+    @updateToolbar()
+
+  setRTFactor: (f) ->
+    f = parseFloat(f)
+    return unless isFinite(f) and f > 0
+    @rtFactor = f
+    @client?.post('realtime', { factor: String(f) })
+    @updateToolbar()
+
+  setBreakOnInterrupt: (enabled) ->
+    @breakOnInterrupt = !!enabled
+    @client?.post('intbreak', { state: @breakOnInterrupt })
+    @updateToolbar()
+
+  setHoldInterrupt: (enabled) ->
+    @holdInterrupt = !!enabled
+    @client?.post('inthold', { state: @holdInterrupt })
+    @updateToolbar()
+
+  raiseInterrupt: (key) -> @_exec('intraise', { key })
+  clearInterrupt: (key) -> @_exec('intclear', { key })
+  toggleInterruptMask: (maskBit) -> @_exec('intmask', { bit: maskBit })
+  loadTimer: (n, value) -> @_exec('timerload', { n, value })
+  clearInterruptLog: () -> @_exec('intlog', { count: 1, clear: true })
+
+  #
+  # Breakpoints
+  #
+  # The session owns them; localStorage keeps them across runs of the app,
+  # keyed by image.
+  #
+  toggleBreakpoint: (addr) ->
+    bp = @mirror?.breakpoints.get(addr)
+    if bp?
+      cmd = if bp.enabled then 'bdisable' else 'benable'
+      @_exec(cmd, { addr })
+    else
+      @_exec('break', { addr })
+    @_saveBreakpointsAfter()
+
+  # `bclear` takes a string, because `*` clears them all -- so the address
+  # goes over 0x-prefixed.  A bare decimal would be read as hex.
+  deleteBreakpoint: (addr) ->
+    @_exec('bclear', { addr: "0x#{addr.toString(16)}" })
+    @_saveBreakpointsAfter()
+
+  enableBreakpoint: (addr) ->
+    @_exec('benable', { addr })
+    @_saveBreakpointsAfter()
+
+  disableBreakpoint: (addr) ->
+    @_exec('bdisable', { addr })
+    @_saveBreakpointsAfter()
+
+  addBreakpoint: (addr) ->
+    @_exec('break', { addr })
+    @_saveBreakpointsAfter()
+
+  # The session holds the list, so it is read back after every change.
+  _saveBreakpointsAfter: () ->
+    return unless @client?.connected and @fcmName
+    @client.send('breakpoints').then((r) =>
+      window.localStorage?.setItem("gpc-bp:#{@fcmName}",
+        JSON.stringify({ addr: b.addr, enabled: b.enabled } for b in r.breakpoints))
+      @refresh()
+    ).catch (e) -> null
+    return
+
+  _restoreBreakpoints: () ->
+    return unless @fcmName
+    json = window.localStorage?.getItem("gpc-bp:#{@fcmName}")
+    return unless json
+    try
+      saved = JSON.parse(json)
+    catch e
+      return
+    return if saved.length == 0
+    @client.post('setbreakpoints', { addrs: (b.addr for b in saved) })
+    for b in saved when b.enabled == false
+      @client.post('bdisable', { addr: b.addr })
+    return
+
+  #
   # Editor lookups via the dock-root
   #
   # Editors live in shadow DOM, where document.querySelector cannot reach
@@ -92,7 +421,7 @@ export class DebugGUI extends GUIHarness
     ]
 
   # Default layout used when nothing is persisted.  A binary tree of split
-  # nodes (h = left|right, v = top|bottom; `size` = px of the SECOND child)
+  # nodes (h = left|right, v = top|bottom; `size` = px of the second child)
   # and leaf nodes (tabbed panes).
   _defaultLayout: () ->
     n = 0
@@ -111,16 +440,18 @@ export class DebugGUI extends GUIHarness
     root = split('v', 150, mainArea, leaf('terminal'))
     { root, floats: [] }
 
-  # Wire a freshly-created editor element to the live simulator objects.
-  # Called by <dock-root> for every instance (startup restore, add-editor,
-  # float): never assume a single instance of any editor type.
+  # Wire a freshly-created editor element to the mirror.  Called by
+  # <dock-root> for every instance (startup restore, add-editor, float):
+  # never assume a single instance of any editor type.
   wireEditor: (el) ->
-    return unless el
+    return unless el and @mirror?
+    cpu = @mirror.cpu
     switch el.tagName?.toLowerCase()
       when 'gpc-disasm'
-        el.cpu = @cpu; el.sym = @sym; el.halUCP = @halUCP; el.breakpoints = @breakpoints
+        el.cpu = cpu; el.sym = @sym; el.halUCP = @mirror.halUCP
+        el.breakpoints = @mirror.breakpoints
       when 'gpc-memory'
-        el.cpu = @cpu; el.sym = @sym
+        el.cpu = cpu; el.sym = @sym
         el.selectedSection = @selectedSection
         el.watchAddresses = @watchAddresses
       when 'gpc-sections'
@@ -128,112 +459,73 @@ export class DebugGUI extends GUIHarness
       when 'gpc-labels'
         el.sym = @sym; el.refresh?()
       when 'gpc-watch'
-        el.cpu = @cpu; el.sym = @sym
+        el.cpu = cpu; el.sym = @sym
       when 'gpc-breakpoints'
-        el.cpu = @cpu; el.breakpoints = @breakpoints
+        el.cpu = cpu; el.breakpoints = @mirror.breakpoints
       when 'gpc-instr'
-        el.cpu = @cpu
+        el.cpu = cpu
       when 'gpc-interrupts'
-        el.cpu = @cpu; el.iop = @gpc.iop; el.harness = @
+        el.cpu = cpu; el.iop = @mirror.iop; el.harness = @
       when 'gpc-iop'
-        el.iop = @gpc.iop
+        el.iop = @mirror.iop
       when 'gpc-regview'
-        el.cpu = @cpu
+        el.cpu = cpu
         el.editable = true
     el.refresh?()
 
-  start: () ->
-    console.log("DebugGUI Start")
-    console.log("DebugGUI CONFIG:", JSON.stringify(@CONFIG, null, 2))
-
-    # Get FCM/symbols from config or use defaults
-    # Note: @CONFIG is already the gpc1 LRU config (passed from startup.civet)
-    lruConf = @CONFIG.config or {}
-    opts = @_resolveLoadOpts(lruConf)
-    @configureRunOpts(opts)
-    if opts.fcmPath?
-      console.log("DebugGUI load:", opts)
-      { byteCount, entryPoint, entrySource, entryWarning, protectWarning } =
-        @configureFromOpts(opts.fcmPath, opts)
-      console.log("DebugGUI loaded #{byteCount} bytes, entry=0x#{(entryPoint ? 0).toString(16)} (#{entrySource})")
-      for w in [entryWarning, protectWarning] when w?
-        console.warn("DebugGUI: #{w}")
-        @notify("Warning: #{w}")
-
-    # Wire HAL/S I/O trap callbacks to <gpc-terminal> component
-    @halUCP.outputCallback = (text) => @_terminal()?.appendText(text)
-    @halUCP.inputCallback = () =>
-      @_terminal()?.activateInput()
-      @updateDisplay()
-    # Wire SVC error callback to terminal
-    @halUCP.errorCallback = (msg) =>
-      @_terminal()?.appendText("\n*** #{msg}\n\n")
-      process.stderr.write "\n" + msg + "\n\n"
-
+  #
+  # DOM
+  #
+  _wireDOM: () ->
     # Listen for input submitted from <gpc-terminal>
     document.addEventListener 'terminal-input', (e) =>
-      text = e.detail.text
-      wasRunning = @halUCP.wasRunning
-      @halUCP.provideInput(text)
-      @halUCP.wasRunning = false
-      @updateDisplay()
-      if wasRunning and not @breakOnInput
-        @run()
+      @waitingForInput = false
+      @client?.post('input', { text: e.detail.text, noresume: @breakOnInput })
 
-    # Listen for break-on-input toggle from <gpc-terminal>
     document.addEventListener 'break-on-input-changed', (e) =>
       @breakOnInput = e.detail.value
 
-    # Listen for breakpoint events from <gpc-disasm>
     document.addEventListener 'breakpoint-toggle', (e) =>
       @toggleBreakpoint(e.detail.addr)
     document.addEventListener 'breakpoint-menu', (e) =>
       @showBreakpointMenu({ clientX: e.detail.x, clientY: e.detail.y }, e.detail.addr)
 
-    # Listen for section selection from <gpc-sections>
     document.addEventListener 'section-selected', (e) =>
       @selectedSection = e.detail.name
       mem.selectedSection = @selectedSection for mem in @_editorsOf('memory')
-      @updateDisplay()
+      @refresh()
 
-    # Listen for label selection from <gpc-labels>: jump every disasm view there
+    # Jump every disasm view to the label
     document.addEventListener 'label-selected', (e) =>
       addr = e.detail.address
       if addr?
         d.gotoAddr(addr) for d in @_disasms()
+        @refresh()
 
-    # A register/PSW/NIA value was edited in a registers pane: re-sync all
-    # panes (e.g. editing NIA should move the disassembly view).
+    # A register/PSW/NIA value was edited in a registers pane.  The mirror
+    # has already written it through to the session; re-sync every pane.
     document.addEventListener 'register-edited', (e) =>
-      @updateDisplay()
+      @refresh()
 
-    document.addEventListener 'interrupt-raise', (e) =>
-      @raiseInterrupt(e.detail.key)
-    document.addEventListener 'interrupt-clear', (e) =>
-      @clearInterrupt(e.detail.key)
-    document.addEventListener 'interrupt-mask-toggle', (e) =>
-      @toggleInterruptMask(e.detail.maskBit)
-    document.addEventListener 'interrupt-log-clear', (e) =>
-      @clearInterruptLog()
-    document.addEventListener 'break-on-interrupt-changed', (e) =>
-      @setBreakOnInterrupt(e.detail.value)
-    document.addEventListener 'hold-interrupt-changed', (e) =>
-      @setHoldInterrupt(e.detail.value)
-    document.addEventListener 'timer-load', (e) =>
-      @loadTimer(e.detail.n, e.detail.value)
-    document.addEventListener 'system-reset', (e) =>
-      @systemReset()
+    document.addEventListener 'interrupt-raise', (e) => @raiseInterrupt(e.detail.key)
+    document.addEventListener 'interrupt-clear', (e) => @clearInterrupt(e.detail.key)
+    document.addEventListener 'interrupt-mask-toggle', (e) => @toggleInterruptMask(e.detail.maskBit)
+    document.addEventListener 'interrupt-log-clear', (e) => @clearInterruptLog()
+    document.addEventListener 'break-on-interrupt-changed', (e) => @setBreakOnInterrupt(e.detail.value)
+    document.addEventListener 'hold-interrupt-changed', (e) => @setHoldInterrupt(e.detail.value)
+    document.addEventListener 'timer-load', (e) => @loadTimer(e.detail.n, e.detail.value)
+    document.addEventListener 'system-reset', (e) => @systemReset()
 
-    # Listen for watch selection
     document.addEventListener 'watch-selected', (e) =>
       @selectedWatch = e.detail.name
       @watchAddresses = e.detail.addresses
-      @updateDisplay()
+      @refresh()
 
     @setupKeyboard()
-    # Poll until React has committed the <dock-root> element, then hand it the
-    # editor registry + layout.  Setting `.host` makes the dock instantiate
-    # every persisted editor and call wireEditor() on each.
+
+    # Poll until React has committed the <dock-root> element, then hand it
+    # the editor registry + layout.  Setting `.host` makes the dock
+    # instantiate every persisted editor and call wireEditor() on each.
     waitForDom = () =>
       dockEl = document.querySelector('dock-root')
       if dockEl
@@ -244,17 +536,15 @@ export class DebugGUI extends GUIHarness
           defaultLayout: () => @_defaultLayout()
           storageKey: 'gpc-dock-layout'
         }
-        # Initial display (twice: once now, once after layout settles)
-        @updateDisplay()
-        setTimeout(() =>
-          @updateDisplay()
-        , 100)
-        window.addEventListener('resize', () => @updateDisplay())
+        @refresh()
+        setTimeout((=> @refresh()), 100)
+        window.addEventListener('resize', () => @refresh())
       else
         # setTimeout (not requestAnimationFrame): rAF is paused entirely when
         # the window is occluded/backgrounded, which would stall startup.
         setTimeout(waitForDom, 16)
     requestAnimationFrame(waitForDom)
+    return
 
   setupKeyboard: () ->
     document.addEventListener 'keydown', (e) =>
@@ -299,22 +589,13 @@ export class DebugGUI extends GUIHarness
             if e.target == document.body
               e.preventDefault()
               d.frameNIA() for d in @_disasms()
+              @refresh()
 
-  reset: () ->
-    super()
-
-    # Clear register change tracking on every registers view
-    r.resetTracking?() for r in @_registersAll()
-
-    # Clear terminal UI
-    term = @_terminal()
-    if term
-      term.clear()
-      term.resetInput()
-
-    @updateDisplay()
-
+  # Closing the window leaves the session running: it is a separate process
+  # and another client -- `gpc dbg-client`, or a second window -- may be
+  # using it.  `gpc gui` shuts down the one it started.
   quit: () ->
+    @client?.close()
     @ipcRenderer.send('window-close')
 
   showBreakpointMenu: (e, addr) ->
@@ -322,7 +603,7 @@ export class DebugGUI extends GUIHarness
     old = document.getElementById('gpc-bp-context-menu')
     old?.remove()
 
-    bp = @breakpoints.get(addr)
+    bp = @mirror?.breakpoints.get(addr)
     menu = document.createElement('div')
     menu.id = 'gpc-bp-context-menu'
     menu.style.cssText = "position: fixed; left: #{e.clientX}px; top: #{e.clientY}px; background: #333; border: 1px solid #666; padding: 2px 0; z-index: 9999; font-family: 'Consolas for Powerline', Consolas, monospace; font-size: 11px; min-width: 140px;"
@@ -347,7 +628,7 @@ export class DebugGUI extends GUIHarness
         menu.appendChild(makeItem("Enable #{addrStr}", => @enableBreakpoint(addr)))
       menu.appendChild(makeItem("Delete #{addrStr}", => @deleteBreakpoint(addr)))
     else
-      menu.appendChild(makeItem("Add breakpoint #{addrStr}", => @breakpoints.set(addr, { enabled: true }); @saveBreakpoints(); @updateDisplay()))
+      menu.appendChild(makeItem("Add breakpoint #{addrStr}", => @addBreakpoint(addr)))
 
     document.body.appendChild(menu)
     # Close on any click elsewhere
@@ -357,19 +638,10 @@ export class DebugGUI extends GUIHarness
         document.removeEventListener('mousedown', closeHandler, true)
     setTimeout(( -> document.addEventListener('mousedown', closeHandler, true)), 0)
 
-  updateDisplay: () ->
-    # Refresh every live editor instance.  Memory/sections need their
-    # selection props refreshed first.
-    for el in (@dockRoot?.allEditors() ? [])
-      switch el.tagName?.toLowerCase()
-        when 'gpc-memory'
-          el.watchAddresses = @watchAddresses
-          el.selectedSection = @selectedSection
-        when 'gpc-sections'
-          el.selectedSection = @selectedSection
-      el.refresh?()
-
-    @updateToolbar()
+  #
+  # Toolbar
+  #
+  simTimeSec: () -> @mirror?.snap?.simTimeSec ? 0
 
   _syncRTControls: () ->
     chk = document.getElementById('gpc-rt-check')
@@ -386,7 +658,7 @@ export class DebugGUI extends GUIHarness
       sel.disabled = not @realTime
 
   updateToolbar: () ->
-    nia = @cpu.psw.getNIA()
+    nia = @mirror?.cpu.psw.getNIA() ? 0
     niaEl = document.getElementById('gpc-nia-display')
     if niaEl
       niaEl.textContent = "NIA: #{nia.toString(16).padStart(5, '0')}"
@@ -401,11 +673,13 @@ export class DebugGUI extends GUIHarness
       simEl.textContent = txt
     statusEl = document.getElementById('gpc-status-display')
     if statusEl
-      if @halUCP.waitingForInput
+      if not @_connected
+        statusEl.textContent = "NO SESSION"
+      else if @waitingForInput
         statusEl.textContent = "INPUT WAIT"
-      else if @cpu.intArmed?
+      else if @intHeld
         statusEl.textContent = "INT HELD"
-      else if @cpu.psw.getWaitState()
+      else if @waitState
         statusEl.textContent = if @idling then "WAIT (idling)" else "WAIT"
       else if @running
         statusEl.textContent = if @realTime then "RUNNING (real-time)" else "RUNNING"
@@ -420,8 +694,6 @@ export class DebugGUI extends GUIHarness
 
   _uiGPCRegister: (id, bits, base, name, slice=-1, sliceend=-1) ->
     <gpc-register id={id} key={id} bits={bits} base={base} name={name} slice={slice} sliceend={sliceend} value={0}/>
-
-
 
   initWindow: () ->
     mainStyle = {

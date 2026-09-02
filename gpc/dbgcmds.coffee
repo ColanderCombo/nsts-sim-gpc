@@ -1432,10 +1432,10 @@ defc 'logstop',
 #
 # The GUI backend
 #
-# `gpc gui` runs no machine.  Its panes read a mirror of this session -- a
-# real MCM, real register files and a real PSW, refilled from here -- so
-# every pane keeps the synchronous accessors it was written against and the
-# machine runs in this process at full speed.
+# The GUI's panes read a mirror of this session -- a real MCM, real
+# register files and a real PSW, refilled from here -- so every pane keeps
+# the synchronous accessors it was written against and the machine runs in
+# this process at full speed.
 #
 # One command carries a whole refresh.  A pane's redraw touches registers,
 # a few hundred halfwords, the interrupt repertoire and the IOP.
