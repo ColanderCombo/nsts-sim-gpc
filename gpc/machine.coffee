@@ -16,13 +16,13 @@
 #
 # Sizes are fullword counts, which is what the MCM constructor takes.
 #
-# `fp` is the machine's extended-precision floating point behaviour, which
-# differs between the two: the same MED or DED gives different low-order
-# results, and self-test software distinguishes them.  'B' is the AP-101
-# C/M rule (IBM-6246156B 8-25: operands truncated to 31 fraction bits and
-# rounded in from the 32nd, a 62-bit product, truncate to 56); 'S' is
-# IBM-85-C67-001's (three most significant fullword partial products summed
-# to 68 bits, truncate to 56).
+# `model` is the variant letter the CPU carries, selecting instruction
+# timing and extended-precision floating point behaviour.  The same MED or
+# DED gives different low-order results on the two, and self-test software
+# distinguishes them.  'B' is the AP-101B rule (IBM-6246156B 8-25: operands
+# truncated to 31 fraction bits and rounded in from the 32nd, a 62-bit
+# product, truncate to 56); 'S' is IBM-85-C67-001's (three most significant
+# fullword partial products summed to 68 bits, truncate to 56).
 
 fs   = require 'fs'
 path = require 'path'
@@ -32,12 +32,12 @@ export MACHINES =
     name: 'AP-101B'
     cpuWords: 40 * 1024
     iopWords: 24 * 1024
-    fp: 'B'
+    model: 'B'
   ap101s:
     name: 'AP-101S'
     cpuWords: 256 * 1024
     iopWords: 0
-    fp: 'S'
+    model: 'S'
 
 # The flight software this simulator exists to run is AP-101S.
 export DEFAULT_MACHINE = 'ap101s'
@@ -63,6 +63,15 @@ export parseMachineOption = (v) ->
     process.stderr.write "FATAL: --machine must be one of: #{Object.keys(MACHINES).join(', ')}\n"
     process.exit(1)
   return v
+
+# --cpu-model takes the same names as --machine and answers with the
+# model letter the CPU carries.
+export parseCPUModelOption = (v) ->
+  try
+    return resolveMachine(v).model
+  catch e
+    process.stderr.write "FATAL: --cpu-model must be one of: #{Object.keys(MACHINES).join(', ')}\n"
+    process.exit(1)
 
 # Main storage in halfwords.  Both MCMs are one address space (MemoryBus).
 export machineHalfwords = (m) -> (m.cpuWords + m.iopWords) * 2

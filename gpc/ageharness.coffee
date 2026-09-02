@@ -15,11 +15,19 @@ path = require 'path'
 
 import {AP101} from 'gpc/ap101'
 import {CPU} from 'gpc/cpu'
+import {IPLLoader} from 'gpc/iplloader'
 import {HalUCP} from 'gpc/halUCP'
 import {SymbolTable} from 'gpc/symbolTable'
 import {DEFAULT_MACHINE, parseMachineOption} from 'gpc/machine'
 
 parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
+
+parseGpcId = (v) ->
+  n = parseInt(v, 10)
+  unless n >= 0 and n <= 5
+    process.stderr.write "FATAL: --gpc must be a GPC ID from 0 to 5\n"
+    process.exit(1)
+  return n
 
 export class AGEHarness
 
@@ -28,22 +36,28 @@ export class AGEHarness
   @addOptions: (cmd) ->
     cmd
       .option('--start <addr>', 'start address in hex')
-      .option('--power-on', 'enter from the power-on PSW in the PSA, ignoring --start and the symbol entry point')
+      .option('--power-on', 'enter from the power-on PSW')
+      .option('--sys-reset', 'enter at system reset PSW')
+      .option('--ipl', 'simulate microcode IPL to load and run FCMBOOT from MMU')
       .option('--symbols <file>', 'load symbol table JSON from linker')
       .option('--ebcdic', 'use EBCDIC encoding for character I/O')
       .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
       .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
       .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
       .option('--line-width <n>', 'WRITE line width for wrap (default: 132)', '132')
-      .option('--machine <model>', "machine model, sizing main storage: ap101s = 256K words (default), ap101b = 64K", parseMachineOption, DEFAULT_MACHINE)
+      .option('--machine <model>', "machine model, ap101s or ap101b (default ap101s)", parseMachineOption, DEFAULT_MACHINE)
+      .option('--gpc <n>', 'GPC ID, 0-5', parseGpcId, 0)
 
   # Extract the AGEHarness-consumable subset of commander opts.
   # Use when forwarding parsed CLI options into a constructor that will
   # later pass them to configureFromOpts.
   @optsFrom: (o) ->
     machine: o.machine
+    gpc: o.gpc
     start: o.start
     powerOn: o.powerOn
+    sysReset: o.sysReset
+    ipl: o.ipl
     symbols: o.symbols
     ebcdic: o.ebcdic
     trapSvcError: o.trapSvcError
@@ -54,7 +68,8 @@ export class AGEHarness
   # Loads symbols (with auto-detect), loads FCM, sets entry point, and
   # configures HalUCP.  The (fcmPath, opts) pair is saved for reset().
   # Returns { byteCount, entryPoint, entrySource, symbolsPath,
-  # entryWarning }, where entrySource is 'start', 'symbols' or 'power-on'
+  # entryWarning }, where entrySource is 'ipl', 'sys-reset', 'start',
+  # 'symbols' or 'power-on'
   # and entryWarning is set when the entry chosen is not a usable one.
   configureFromOpts: (fcmPath, opts = {}) ->
     @gpc.setMachine(opts.machine) if opts.machine?
@@ -64,13 +79,19 @@ export class AGEHarness
     @halUCP.formatNumBlanks = parseInt(opts.halucpFormatNumBlanks ? '5', 10)
     @halUCP.lineWidth = parseInt(opts.lineWidth ? '132', 10)
 
-    # Symbol loading (with auto-detect if not explicit)
-    symbolsPath = opts.symbols or @autoDetectSymbols(fcmPath)
+    symbolsPath = opts.symbols or (fcmPath? and @autoDetectSymbols(fcmPath)) or null
+    @symbolsPath = symbolsPath
     symEntry = @loadSymbols(symbolsPath, !!opts.verbose)
 
-    # Entry point priority: --power-on > explicit --start > symbols > the
-    # image's own power-on PSW. 
-    if opts.powerOn
+    # Entry point priority: 
+    #   --ipl > [--sys-reset|--power-on] > explicit --start > symbols
+    if opts.ipl
+      entryPoint = null
+      entrySource = 'ipl'
+    else if opts.sysReset
+      entryPoint = null
+      entrySource = 'sys-reset'
+    else if opts.powerOn
       entryPoint = null
       entrySource = 'power-on'
     else if opts.start
@@ -83,15 +104,21 @@ export class AGEHarness
       entryPoint = null
       entrySource = 'power-on'
 
-    byteCount = @loadFCM(fcmPath)
-    @applyLoadProtection()
+    byteCount = if fcmPath? then @loadFCM(fcmPath) else 0
+    @applyLoadProtection() if fcmPath?
     protectWarning =
-      if @sym?.storeProtect? then null
+      if not fcmPath? or @sym?.storeProtect? then null
       else "image carries no store-protect map; running unprotected " +
            "(relink to regenerate .sym.json)"
     entryWarning = null
-    if entryPoint?
+    if entrySource == 'ipl'
+      entryPoint = 0
+    else if entryPoint?
       @setEntryPoint(entryPoint)
+    else if entrySource == 'sys-reset'
+      entryPoint = @gpc.cpu.systemReset()
+      if entryPoint == 0
+        entryWarning = "system reset PSW at PSA 0x#{CPU.SYSTEM_RESET_PSW.asHex(4)} is zero"
     else
       entryPoint = @gpc.cpu.loadPowerOnPSW()
       if entryPoint == 0
@@ -111,14 +138,16 @@ export class AGEHarness
     # Create the flight computer
     @gpc = new AP101(opts)
     @CONFIG = opts  # preserve for subclasses that need config access
+    @gpc.iop.onIPL = () => @iplFromButton()
 
-    # Ground equipment: HAL/S UCP I/O trap layer
+    # Ground equipment: the HAL/S UCP I/O trap layer
     # Originally ran on the IBM 360 to simulate HAL/S I/O during development.
     @halUCP = new HalUCP(@gpc.cpu)
     @gpc.cpu.halUCP = @halUCP
 
     # Symbol table, development and debug only
     @sym = new SymbolTable()
+    @symbolsPath = null
 
     # Step counter: incremented on each exec1 by the caller
     @stepCount = 0
@@ -165,6 +194,22 @@ export class AGEHarness
         @gpc.ram.setStoreProtect(a, true)
         n++
     return n
+
+  iplFromMassMemory: (opts = {}, pacer = null, log = null) ->
+    loader = new IPLLoader(@gpc, { log: log })
+    info = await loader.run(pacer)
+    @entryPoint = info.entry
+    return info
+
+  iplFromButton: () ->
+    return if @iplRunning
+    @iplRunning = true
+    log = (m) -> process.stderr.write("IPL: #{m}\n")
+    done = () => @iplRunning = false
+    @iplFromMassMemory({}, @pacer ? null, log).then(done, (e) =>
+      done()
+      process.stderr.write("IPL failed: #{e.message}\n"))
+    return
 
   # Auto-detect symbols file: replace .fcm with .sym.json
   autoDetectSymbols: (fcmPath) ->

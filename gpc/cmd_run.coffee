@@ -8,7 +8,7 @@ readline = require 'readline'
 
 require 'com/util'
 import {AGEHarness} from 'gpc/ageharness'
-import {checkFCMFits} from 'gpc/machine'
+import {checkFCMFits, parseCPUModelOption} from 'gpc/machine'
 import {CPU} from 'gpc/cpu'
 import {MSCInstruction} from 'gpc/iop_msc_instr'
 import {BCEInstruction} from 'gpc/iop_bce_instr'
@@ -47,13 +47,8 @@ export class BatchRunner
     @breakOnInterrupt = opts.breakOnInterrupt ? false
     @iopTrace = opts.iopTrace ? null       # [processor numbers] or null
 
-    @age = new AGEHarness()
-    if opts.cpuModel?
-      m = opts.cpuModel.toUpperCase()
-      if m not in ['S', 'C']
-        process.stderr.write "FATAL: --cpu-model must be 's' or 'c'\n"
-        process.exit(1)
-      @age.cpu.model = m
+    @age = new AGEHarness(gpc: opts.gpc)
+    @age.cpu.model = parseCPUModelOption(opts.cpuModel) if opts.cpuModel?
     # Interrupts are invisible in a trace otherwise: an unexplained jump
     # into a PSA handler.  Note every acceptance, and stop at one when
     # asked to.
@@ -152,7 +147,11 @@ export class BatchRunner
       protectWarning } = @age.configureFromOpts(@fcmPath, @opts)
     @entryPoint = entryPoint
     @entrySource = entrySource
-    if entrySource == 'power-on'
+    if entrySource == 'ipl'
+      @info "Load FCMBOOT from MMU, enter from PSW at PSA 0x#{CPU.SYSTEM_RESET_PSW.asHex(4)}"
+    else if entrySource == 'sys-reset'
+      @info "Entry from system reset PSW at PSA 0x#{CPU.SYSTEM_RESET_PSW.asHex(4)}"
+    else if entrySource == 'power-on'
       why = if @opts.powerOn then '--power-on' else 'no --start, no START symbol'
       @info "Entry from power-on PSW at PSA 0x#{CPU.POWER_ON_PSW.asHex(4)} (#{why})"
     process.stderr.write "Warning: #{entryWarning}\n" if entryWarning?
@@ -305,8 +304,9 @@ export class BatchRunner
         @age.halUCP.provideEof()
 
     @info "=== GPC Batch Simulator ==="
-    @info "FCM: #{@fcmPath} (#{byteCount} bytes)"
-    @info "Entry: 0x#{@entryPoint.asHex(4)}"
+    @info "FCM: #{@fcmPath ? '(none -- the IPL loads the machine)'} (#{byteCount} bytes)"
+    # Not known yet under --ipl: the IPL picks it, and says so.
+    @info "Entry: 0x#{@entryPoint.asHex(4)}" unless @opts.ipl
     @info "Max steps: #{@maxSteps}"
     @info "Trace: #{if @traceEnabled then 'on' else 'off'}"
     if @realTime
@@ -319,7 +319,7 @@ export class BatchRunner
       @info "=== SECTION MAP ==="
       for sect in @age.sym.sectionsByAddr
         @info "  0x#{sect.address.asHex(4)} - 0x#{(sect.address + sect.size - 1).asHex(4)}  #{sect.name.rpad(' ', 12)} (#{sect.module})"
-      @info "  Start: 0x#{@entryPoint.asHex(4)} (#{@formatSectionOffset(@entryPoint)})"
+      @info "  Start: 0x#{@entryPoint.asHex(4)} (#{@formatSectionOffset(@entryPoint)})" unless @opts.ipl
       @info ""
 
     step = 0
@@ -327,6 +327,15 @@ export class BatchRunner
     lastSection = null
     @pacer = if @realTime then new RTPacer(@age.cpu, @rtFactor, @rtIdleTimeoutMs) else null
     @_startIOPTrace() if @iopTrace?
+
+    if @opts.ipl
+      try
+        info = await @age.iplFromMassMemory(@opts, @pacer, ((m) => @info "IPL: #{m}"))
+        @entryPoint = info.entry
+        @info "Entry: 0x#{@entryPoint.asHex(4)}"
+      catch e
+        @fatal "IPL failed: #{e.message}"
+
     # Build flat list of watched halfword addresses for fast checking
     watchAddrs = []
     for wp in @memWatchpoints
@@ -654,14 +663,14 @@ parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
 export addCommand = (program) ->
   cmd = program.command('run')
     .description('Run an AP-101 program in batch mode')
-    .argument('<fcm-file>', 'FCM memory image to load')
+    .argument('[fcm-file]', 'FCM memory image to load')
 
   AGEHarness.addOptions(cmd)
   IOHost.addOptions(cmd)
 
   cmd
     .option('--max-steps <n>', 'max instructions to execute (0 = unlimited)', '100000')
-    .option('--cpu-model <m>', 'CPU model for instruction timing: s = AP-101S (default), c = original AP-101 C/M')
+    .option('--cpu-model <model>', 'CPU model for instruction timing, ap101s or ap101b (default ap101s)')
     .option('--real-time', 'pace execution at (approximately) real AP-101S speed', false)
     .option('--rt-factor <x>', 'real-time speed multiplier (2 = 2x real speed)', '1')
     .option('--rt-idle-timeout <s>', 'stop after this many wall seconds in wait state with no wakeup', '10')
@@ -684,7 +693,10 @@ export addCommand = (program) ->
     .option('--watch-log', 'log every watchpoint change instead of breaking', false)
     .option('--iop-trace <procs>', 'trace IOP processors: 0 = MSC, 1-24 = BCEs (e.g. 0,6)', ((v) -> (parseInt(x, 10) for x in v.split(',') when x.trim() != '')))
     .action (fcmPath, o) ->
-      checkFCMFits(fcmPath, o.machine)
+      unless fcmPath? or o.ipl
+        process.stderr.write("FATAL: no image given\n")
+        process.exit(1)
+      checkFCMFits(fcmPath, o.machine) if fcmPath?
       runner = new BatchRunner(Object.assign({}, o, {
         fcmPath
         maxSteps: parseInt(o.maxSteps, 10)

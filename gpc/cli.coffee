@@ -12,6 +12,7 @@ import {addCommand as addDebug}  from 'gpc/cmd_debug'
 import {addCommand as addGui}    from 'gpc/cmd_gui'
 import {addCommand as addDump}   from 'gpc/cmd_dump'
 import {addCommand as addDisasm} from 'gpc/cmd_disasm'
+import {addCommand as addDiscretes} from 'gpc/cmd_discretes'
 
 program = new Command()
   .name('gpc')
@@ -23,5 +24,6 @@ addDebug(program)
 addGui(program)
 addDump(program)
 addDisasm(program)
+addDiscretes(program)
 
 program.parse()

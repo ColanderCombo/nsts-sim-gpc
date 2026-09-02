@@ -220,63 +220,63 @@ function check(label, got, want) {
     cpu.r(0).set32(0x10000000);
     check('ME SRS even R1', execTime(cpu, 0x6208), 5750);
 
-    // AP-101 C/M model (xtc, IBM 75-A97-001 sect 2.4)
+    // AP-101B model (xtc, IBM 75-A97-001 sect 2.4)
     //
-    function cModel() { const c = new CPU(); c.model = 'C'; return c; }
+    function bModel() { const c = new CPU(); c.model = 'B'; return c; }
 
     // AR: Even 1.2, Odd NOK 0.8, Odd ~NOK (after branch) 1.2
-    cpu = cModel();
-    check('C: AR even', execTime(cpu, 0x01E2), 1200);
-    cpu = cModel();
+    cpu = bModel();
+    check('B: AR even', execTime(cpu, 0x01E2), 1200);
+    cpu = bModel();
     cpu.psw.setNIA(0x801);
     cpu.ram.set16(0x801, 0x01E2);
     let t0 = cpu.timeNs; cpu.exec1();
-    check('C: AR odd NOK', cpu.timeNs - t0, 800);
-    cpu = cModel();
+    check('B: AR odd NOK', cpu.timeNs - t0, 800);
+    cpu = bModel();
     cpu.ram.set16(0x800, 0xC7F3);        // BC always -> 0x201 (odd)
     cpu.ram.set16(0x801, 0x0201);
     cpu.ram.set16(0x201, 0x01E2);
     cpu.psw.setNIA(0x800);
     cpu.exec1();                          // branch (discontinuity)
     t0 = cpu.timeNs; cpu.exec1();         // AR at odd, after branch
-    check('C: AR odd ~NOK after branch', cpu.timeNs - t0, 1200);
+    check('B: AR odd ~NOK after branch', cpu.timeNs - t0, 1200);
 
     // A short SRS uses xtcs row (Even 1.8); RS indexed adds Note-4 adders
-    cpu = cModel();
+    cpu = bModel();
     cpu.r(0).set32(0x10000000);
-    check('C: A SRS even', execTime(cpu, 0x0108), 1800);
-    cpu = cModel();
+    check('B: A SRS even', execTime(cpu, 0x0108), 1800);
+    cpu = bModel();
     cpu.r(2).set32(0);
-    check('C: A indexed +0.4', execTime(cpu, 0x04F7, 0x4100), 2200);
-    cpu = cModel();
+    check('B: A indexed +0.4', execTime(cpu, 0x04F7, 0x4100), 2200);
+    cpu = bModel();
     cpu.ram.set32(0x100, 0x03000002);
-    check('C: A indirect mod +2.8', execTime(cpu, 0x04F7, 0x1900), 4600);
-    cpu = cModel();
+    check('B: A indirect mod +2.8', execTime(cpu, 0x04F7, 0x1900), 4600);
+    cpu = bModel();
     cpu.r(1).set32(0x00800005);
-    check('C: A index mod +1.2', execTime(cpu, 0x04F7, 0x2900), 3000);
-    cpu = cModel();
+    check('B: A index mod +1.2', execTime(cpu, 0x04F7, 0x2900), 3000);
+    cpu = bModel();
     cpu.r(1).set32(0);
     cpu.ram.set32(0x100, 0x03000000);
-    check('C: A indirect post-indexed +1.6', execTime(cpu, 0x04F7, 0x3900), 3400);
+    check('B: A indirect post-indexed +1.6', execTime(cpu, 0x04F7, 0x3900), 3400);
 
-    // op with no xtc (MVH: not on the AP-101-B) falls back to the
+    // op with no xtc (MVH: not on the AP-101B) falls back to the
     // S-model chain (here the opExecT override: negative count = 7.5us)
-    cpu = cModel();
+    cpu = bModel();
     cpu.r(1).set32(0x00008000);          // negative move count
-    check('C: no-xtc fallback (MVH)', execTime(cpu, 0x69EA), 7500);
+    check('B: no-xtc fallback (MVH)', execTime(cpu, 0x69EA), 7500);
 
     // ICR command-specific row: write counter 1 = 3.2 us (Even)
-    cpu = cModel();
+    cpu = bModel();
     cpu.r(1).set32(0x00050010);
     cpu.r(2).set32(0x40000000);          // cmd 01000 = write counter 1
-    check('C: ICR write counter', execTime(cpu, 0xD9E2), 3200);
+    check('B: ICR write counter', execTime(cpu, 0xD9E2), 3200);
 
     // SUM note 2: count=3 all-match -> 6.4 + 2.6*2 = 11.6 us (Even)
-    cpu = cModel();
+    cpu = bModel();
     cpu.r(1).set32(0x00030000);          // count 3 in R1(y) bits 0-15
     cpu.r(2).set32(0x02000000);          // array at 0x0200, modifier 0
     cpu.r(3).set32(0x00000000);          // mask 0 -> everything matches
-    check('C: SUM count 3', execTime(cpu, 0x9AE9), 11600);
+    check('B: SUM count 3', execTime(cpu, 0x9AE9), 11600);
     // and on model S the 2.5us/element rule still applies
     cpu = new CPU();
     cpu.r(1).set32(0x00030000);

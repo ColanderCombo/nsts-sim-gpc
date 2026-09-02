@@ -511,7 +511,7 @@ export class BCEInstruction extends PackedBits
                         d:'11110110uuuuuiiiiiiiiiiiiiiiiiii'
                         e:(t,v)->
                             # Transmit command immediate: IUA + 19 bits immediate
-                            if t.procGet(t.regXmitEna, t.curPE)
+                            if t.xmitEnabled(t.curPE)
                                 cmd = (v.u << 19) | v.i
                                 t.ls.IUAR().set32(v.u)
                                 t.curBCE()?.mia.xmitCmd(cmd)
@@ -524,7 +524,7 @@ export class BCEInstruction extends PackedBits
                             # Transmit command from memory at addr + 2*BCE#
                             addr = v.a + 2 * t.curPE
                             cmd = t.g_EAF(addr) & 0x00ffffff
-                            if t.procGet(t.regXmitEna, t.curPE)
+                            if t.xmitEnabled(t.curPE)
                                 t.ls.IUAR().set32((cmd >>> 19) & 0x1f)
                                 t.curBCE()?.mia.xmitCmd(cmd)
                             t.incrNIA(2)

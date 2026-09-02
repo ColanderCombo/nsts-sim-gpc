@@ -1,6 +1,11 @@
 import {RAM,Register,RegisterFile,ProgramStatusWord} from 'gpc/regmem'
 import {PackedBits} from 'gpc/util'
 
+import {DiscreteBus, applyDiscrete, bitMask, resolveGpcId,
+        SET as DISC_SET, RESET as DISC_RESET,
+        REQUEST as DISC_REQUEST, VALUE as DISC_VALUE,
+        REG_A as DISC_REG_A, REG_B as DISC_REG_B,
+        REG_OUT as DISC_REG_OUT} from 'com/discretes'
 import {MSC} from 'gpc/iop_msc'
 import {BCE} from 'gpc/iop_bce'
 import {MCM} from 'gpc/mcm'
@@ -76,24 +81,122 @@ MIA_READ_MASK  = 0xffffff00    # channels 1-24 in channel numbering
 
 # Discrete inputs
 #
-# The two discrete input registers carry the switch positions and vehicle
-# signals the software configures itself from (POO Appendix I, READ
-# DISCRETE INPUT A / READ DISCRETE INPUTS B).  IBM bit numbering:
+# Two 32-bit discrete input registers carry signals from outside the 
+# GPC assembly. Ref. IBM-85-C67-001/p.321-325:
 #
-#   A   0-3   HALT / STANDBY / RUN / IPL crew panel switches
-#       4,5   MM1 / MM2 selected as the IPL source
-#       6,7   MM1 / MM2 READY -- the MMU's own signal, not a switch
-#      12,13  IOP terminate A / B
-#   B   0-2   this GPC's own ID (1-5; 0 is not a legal ID)
-#       3-5   BFS engage 1/2/3
-#       6,7   CRT (display) select -- +5 gives the BCE, so 1 is DK1/BCE 6
+#   A   0     HALT (DI-0)
+#             The setting of this bit indicates that the crew panel
+#             switch has been set to 'HALT' Receipt of this DI
+#             causes the IOP to configure all processors to Halt
+#             thereby prohibiting IOP operation. The CPU is held
+#             in system reset by this discrete.
+#       1     STANDBY (DI-1)
+#             This bit is set from a crew panel switch.
+#       2     RUN (DI-2)
+#             The bit is set from a crew panel switch.
+#       3     IPL (DI-3)
+#             Bit is set by crew panel switch.  The IOP response is to
+#             perform the Initial Program Loading using data from the
+#             Mass Memory Unit as indicated below (DI-5, 6, 7 and 8)
+#       4     MM1 IPL (DI-4)
+#             The discrete is driven from the orbiter systems network
+#             and when set indicates that MM1 is to be used as source
+#             for IPL.
+#       5     MM2 IPL (DI-5)
+#             same as bit 4 abore except applies to No. 2
+#             Mass Memory Unit.
+#       6     MM1 READY (DI-6)
+#             This signal originates in No. 1 Mass Memory Unit and indicates,
+#             when set, that No. 1 MMU is available for use.
+#       7     MM2 READY (DI-7)
+#             Same as bit 6 above except applies to No. 2 MMu.
+#       8     (DI-8) GPC N+1 IS BFS RUN GPC
+#       9     (DI-9) GPC N+2 IS BFS RUN GPC
+#       10    (DI-9) GPC N+3 IS BFS RUN GPC
+#       11    (DI-10) GPC N+4 IS BFS RUN GPC
+#       12    I/O TERMINATE A (DI-11) 
+#             Receipt of this DI causes the IOP to inhibit the MIA
+#             transmitters thereby prohibiting the output of data
+#             on Channels 10-13 (MIA's 10-13)
+#       13    INHIBIT CHANS. 14-17 AND 20-23 (DI-13) 
+#             Also called I/O terminate B discrete.
+#             Receipt of this DI causes the IOP to inhibit MIA
+#             transmitters 14-17 and 20-23.
 #
-# Nothing drives these yet: They come up as GPC 1, IPL source MM1, MM1 
-# ready, display CRT 1
+#       14    SPARE (DI-14)
+#       15    HISASM DUMP (DI-15)
+#             SET BY ORBITER SWITCH TO INDICATE GPC DUMP REQUESTED
+#       16    SPARE (DI-16)
+#       17    SPARE (DI-17)
+#       18    SPARE (DI-18)
+#       19    SPARE (DI-19)
+#       20    (DI-20) GPC N+1 DISCRETE OUTPUT BIT 20 (SYNC 1)
+#       21    (DI-21) GPC N+2 DISCRETE OUTPUT BIT 20 (SYNC 1)
+#       22    (DI-22) GPC N+3 DISCRETE OUTPUT BIT 20 (SYNC 1)
+#       23    (DI-23) GPC N+4 DISCRETE OUTPUT BIT 20 (SYNC 1)
+#       24    (DI-24) GPC N+1 DISCRETE OUTPUT BIT 24 (SYNC 2)
+#       25    (DI-25) GPC N+2 DISCRETE OUTPUT BIT 24 (SYNC 2)
+#       26    (DI-26) GPC N+3 DISCRETE OUTPUT BIT 24 (SYNC 2)
+#       27    (DI-27) GPC N+4 DISCRETE OUTPUT BIT 24 (SYNC 2)
+#       28    (DI-28) GPC N+1 DISCRETE OUTPUT BIT 28 (SYNC 3)
+#       29    (DI-29) GPC N+2 DISCRETE OUTPUT BIT 28 (SYNC 3)
+#       30    (DI-30) GPC N+3 DISCRETE OUTPUT BIT 28 (SYNC 3)
+#       31    (DI-31) GPC N+4 DISCRETE OUTPUT BIT 28 (SYNC 3)
 #
-DISCRETE_IN_A_DEFAULT = 0x0a000000    # bit 4 = MM1 is the IPL source,
-                                      # bit 6 = MM1 ready
-DISCRETE_IN_B_DEFAULT = 0x21000000    # bits 0-2 = GPC 1, bits 6-7 = CRT 1
+#   B   0-2   (DI-32,33,34) GPC SELFS IDS
+#       3-5   (DI-35,36,37) BFS ENGAGE 1/2/3
+#             SET BY ORBITER BFS CONTROLLER
+#             WHEN BFS ENGAGE PUSH-BUTTON
+#             IS DEPRESSED.
+#       6-7   BFS CRT SELECT A AND B
+#             INDICATES CURRENT SETTING OF
+#             ORBITER BFC CRT SELECT SWITCH,
+#             IF BFC CRT DISPLAY SWITCH
+#             IS ON.
+#       8-31  unused, undefined
+#
+# The lines come from boxes outside this one and arrive as set/reset of a
+# bit mask on the discrete bus (com/discretes.coffee).  A bit nobody
+# drives holds the placeholder default below: 
+#   GPC 0, IPL source MM1, MM1 ready, display CRT 1.
+#
+DISCRETE_IN_A_DEFAULT = 0x0b000000    # bit 4 = MM1 is the IPL source,
+                                      # bits 6,7 = MM1/MM2 ready
+DISCRETE_IN_B_DEFAULT = 0x01000000    # bits 6-7 = CRT 1
+
+GPC_ID_MASK = 0xe0000000
+GPC_ID_SHIFT = 29
+
+gpcSelfId = (n) -> if n? then resolveGpcId(n) else 0
+
+MM_READY_BIT = {1: 6, 2: 7}           # discrete input A
+
+# GPC mode toggle: HALT, STANDBY and RUN (DI-0, DI-1, DI-2) 
+#   HALT going high holds the machine in reset
+#   STANDBY and RUN are read at a higher level by SSW
+DISC_HALT = 0
+# IPL: when the CPU is in HALT, hardware detects the IPL disc
+#   going high to clear memory and load the bootstrap loader
+#   from the MMU:
+DISC_IPL  = 3
+
+# I/O TERMINATE A and B, by the channels each inhibits.  A takes the
+# payload and launch buses, B the eight flight critical buses.  Mass
+# memory, channels 18 and 19, lies between B's two ranges and is left
+# alone: a computer whose flight critical output is cut can still be
+# loaded.
+IO_TERM_A = 12
+IO_TERM_B = 13
+
+channelMask = (channels) ->
+  mask = 0
+  for c in channels
+    mask = (mask | (0x80000000 >>> c)) >>> 0
+  mask
+
+IO_TERM_MASK = {}
+IO_TERM_MASK[IO_TERM_A] = channelMask([10..13])
+IO_TERM_MASK[IO_TERM_B] = channelMask([14..17].concat([20..23]))
 
 # A local store word is 18 bits.  Register(18) backs that with two
 # halfwords, and the model keeps the value as a plain integer through
@@ -254,7 +357,9 @@ export class IOP
   # opts.iopWords sizes the share of main storage packaged in this LRU
   # (fullwords, 0 on the AP-101S where the store is one unit in the CPU LRU);
   # see gpc/machine.coffee.  Defaults to the AP-101B IOP LRU's 24K.
-  constructor: (@cpu, opts = {}) ->
+  # `gpcId` is this computer's self-ID, 0 to 5, constant for the life of
+  # the machine: it seeds discrete input B and names the discrete channel.
+  constructor: (@cpu, opts = {}, gpcId = null) ->
     @mainStorage = new MCM(opts.iopWords ? 24*1024)
 
     @msc = new MSC()
@@ -309,7 +414,13 @@ export class IOP
     @regDiscreteOut = new Register("discreteOut", 32)
     @regDiscreteInA = new Register("discreteInA", 32)
     @regDiscreteInB = new Register("discreteInB", 32)
+    @discDriven = {}
+    @xmitInhibit = 0
+    @gpcId = gpcSelfId(gpcId)
+    @discDriven[DISC_REG_A] = 0
+    @discDriven[DISC_REG_B] = 0
     @resetDiscreteInputs()
+    @_setupDiscreteBus()
     @regRMStatus = new Register("RMStatus", 32)
 
     @regInterrupts = new RegisterFile("int",5,32) # Interrupt Regs A-E
@@ -396,7 +507,7 @@ export class IOP
         @dmaQueue.shift()
         data = @cpu.mainStorage.get16(req.addr)
         @ls.setD(data)
-        if req.bce?
+        if req.bce? and @xmitEnabled(req.bce.bceNum)
           req.bce.mia.xmitWord(data)
       else  # IOP writing to main memory (receive from bus)
         return unless req.bce? and req.bce.mia.dataAvailable()
@@ -553,7 +664,7 @@ export class IOP
   bceCommand: (addr = null) ->
     bce = @curBCE()
     return null unless bce?
-    return null unless @procGet(@regXmitEna, @curPE)
+    return null unless @xmitEnabled(@curPE)
     addr ?= @ls.PC().get32() + 2
     cmd = @g_EAF(addr & LS_WORD_MASK) & 0x00ffffff
     @ls.IUAR().set32((cmd >>> 19) & 0x1f)
@@ -693,7 +804,8 @@ export class IOP
       { name: 'INTREGE', value: @intReg(4), note: 'Group 5 - External 4' }
       { name: 'DISCOUT', value: @regDiscreteOut.get32() >>> 0, note: 'discrete outputs' }
       { name: 'DISCINA', value: @regDiscreteInA.get32() >>> 0, note: 'discrete inputs 1-32' }
-      { name: 'DISCINB', value: @regDiscreteInB.get32() >>> 0, note: 'discrete inputs 33-40' }
+      { name: 'DISCINB', value: @regDiscreteInB.get32() >>> 0,
+        note: "discrete inputs 33-40, GPC #{@readGpcId()}" }
       { name: 'CCDATA',  value: @regCCData.get32() >>> 0,      note: 'data word of the last PCI/PCO' }
       { name: 'WDOG',    value: @wdCount & WD_COUNT_MASK
         note: "GO/NO-GO timer count - #{if @wdTimeout then 'TIMED OUT' else if @wdRunning then 'running' else 'stopped'}" }
@@ -801,9 +913,154 @@ export class IOP
     names.push 'IOP fault' if v & INTA_IOP_FAULT
     return names
 
+  # A master reset restores the defaults, but only for the bits nothing
+  # outside has driven: see the note on DISCRETE_IN_A_DEFAULT.
   resetDiscreteInputs: () ->
-    @regDiscreteInA.set32(DISCRETE_IN_A_DEFAULT)
-    @regDiscreteInB.set32(DISCRETE_IN_B_DEFAULT)
+    @regDiscreteInA.set32(
+      @_discReset(DISC_REG_A, DISCRETE_IN_A_DEFAULT, @regDiscreteInA))
+    @regDiscreteInB.set32(
+      @_discReset(DISC_REG_B, @discreteInBDefault(), @regDiscreteInB))
+    return
+
+  # The B register's power-on value, with this computer's self-ID in it.
+  discreteInBDefault: () ->
+    (((DISCRETE_IN_B_DEFAULT & ~GPC_ID_MASK) |
+      ((@gpcId & 0x7) << GPC_ID_SHIFT)) >>> 0)
+
+  # The GPC ID as the register now reads it, which is what software sees.
+  # The bits can be driven, so it can differ from the wired-in self-ID.
+  readGpcId: () ->
+    (@regDiscreteInB.get32() & GPC_ID_MASK) >>> GPC_ID_SHIFT
+
+  _discReset: (reg, dflt, register) ->
+    driven = @discDriven?[reg] ? 0
+    (((dflt & ~driven) | (register.get32() & driven)) >>> 0)
+
+  # The channel is this machine's: port 6980 + GPC ID.
+  _setupDiscreteBus: () ->
+    @discreteBus = new DiscreteBus @gpcId, (m) => @recvDiscrete(m)
+    return
+
+  # One message off the discrete bus.  A set/reset of an input is applied,
+  # and whoever sent it now owns those bits.  A request is answered.  The
+  # outputs are this LRU's to drive and a value is this LRU's to send, so
+  # neither is taken from anyone else.
+  recvDiscrete: (m) ->
+    return unless m?
+    if m.op == DISC_REQUEST
+      @reportDiscrete(m.reg)
+      return
+    return if m.op == DISC_VALUE or m.reg == DISC_REG_OUT
+    register = if m.reg == DISC_REG_B then @regDiscreteInB else @regDiscreteInA
+    before = register.get32() >>> 0
+    register.set32(applyDiscrete(before, m))
+    @discDriven[m.reg] = ((@discDriven[m.reg] ? 0) | m.mask) >>> 0
+    @discreteInputsChanged(before) if m.reg == DISC_REG_A
+    return
+
+  # What register A drives inside this box.  The toggle and the button
+  # are acted on where they change; the I/O TERMINATE lines are levels,
+  # and inhibit their transmitters while they stand.
+  discreteInputsChanged: (before) ->
+    now = @regDiscreteInA.get32() >>> 0
+    changed = ((before >>> 0) ^ now) >>> 0
+    return unless changed
+    if changed & (bitMask(IO_TERM_A) | bitMask(IO_TERM_B))
+      @applyIOTerminate(now)
+    if changed & bitMask(DISC_HALT)
+      if now & bitMask(DISC_HALT) then @enterHalt() else @leaveHalt()
+    # A press, not a level: the make is what counts, and only at HALT.
+    if (changed & now & bitMask(DISC_IPL)) and (now & bitMask(DISC_HALT))
+      @pressIPL()
+    return
+
+  # HALT (DI-0): "Receipt of this DI causes the IOP to configure all
+  # processors to Halt thereby prohibiting IOP operation.  The CPU is
+  # held in system reset by this discrete."
+  enterHalt: () ->
+    @regProcEnable.set32(0x00000000)
+    @cpu?.resetHeld = true
+    return
+
+  # The toggle has left HALT.  A CPU released from system reset starts
+  # from the system reset PSW at PSA 0x14, which is where an IPL leaves
+  # the machine.  The processors stay halted until software enables them.
+  leaveHalt: () ->
+    return unless @cpu?.resetHeld
+    @cpu.resetHeld = false
+    @cpu.systemReset()
+    return
+
+  # The IPL button, pressed at HALT.  The load is a run of bus
+  # transactions that advances as the host event loop comes round, so the
+  # front end performs it through this hook.
+  pressIPL: () ->
+    if @onIPL?
+      @onIPL()
+    else unless @iplUnwired
+      @iplUnwired = true
+      console.log "IOP: IPL requested at HALT with nothing wired to run it"
+    return
+
+  # The transmitters the I/O TERMINATE lines inhibit.  The inhibit is a
+  # wire into the MIA: a master reset does not clear it, and it is gone
+  # when the line drops.
+  applyIOTerminate: (a) ->
+    mask = 0
+    mask = (mask | IO_TERM_MASK[IO_TERM_A]) >>> 0 if a & bitMask(IO_TERM_A)
+    mask = (mask | IO_TERM_MASK[IO_TERM_B]) >>> 0 if a & bitMask(IO_TERM_B)
+    @xmitInhibit = mask
+    return
+
+  # Drive a discrete output from inside the box, as the IPL microcode
+  # does, and publish the change the way a PCO write is published.
+  setDiscreteOut: (mask, on_) ->
+    before = @regDiscreteOut.get32() >>> 0
+    v = if on_ then (before | mask) else (before & ~mask)
+    @regDiscreteOut.set32(v >>> 0)
+    @publishDiscreteOut(before)
+    return
+
+  # A transmitter software has enabled and no I/O TERMINATE line is
+  # inhibiting.  The enable register keeps what software wrote to it: the
+  # inhibit is not in it, and READ MIA TRANSMITTER STATUS reports the
+  # register.
+  xmitEnabled: (p) ->
+    return false unless @procGet(@regXmitEna, p)
+    ((@xmitInhibit ? 0) & @procBit(p)) == 0
+
+  # What this GPC holds for one register, for whoever asked.
+  reportDiscrete: (reg) ->
+    value = switch reg
+      when DISC_REG_B   then @regDiscreteInB.get32()
+      when DISC_REG_OUT then @regDiscreteOut.get32()
+      else                   @regDiscreteInA.get32()
+    @discreteBus?.report(reg, value >>> 0)
+    return
+
+  # A write to the discrete output register goes out on the bus the way a
+  # device's write to an input line comes in.  Takes the value the
+  # register held before the command ran; only what changed is published.
+  publishDiscreteOut: (before) ->
+    now = @regDiscreteOut.get32() >>> 0
+    changed = ((before >>> 0) ^ now) >>> 0
+    return unless changed
+    on_ = (changed & now) >>> 0
+    off_ = (changed & ~now) >>> 0
+    @discreteBus?.publish(DISC_SET, DISC_REG_OUT, on_) if on_
+    @discreteBus?.publish(DISC_RESET, DISC_REG_OUT, off_) if off_
+    return
+
+  # Drive one discrete input directly, as a device on the bus would.  For
+  # tests and for ground equipment that is already inside this process.
+  setDiscreteInput: (reg, bit, on_) ->
+    @recvDiscrete({op: (if on_ then DISC_SET else DISC_RESET), reg: reg,
+                   mask: bitMask(bit)})
+    return
+
+  setMassMemoryReady: (unit, ready) ->
+    return unless MM_READY_BIT[unit]?
+    @setDiscreteInput(DISC_REG_A, MM_READY_BIT[unit], ready)
     return
 
   # An MIA enable register as its READ PCI reports it: channel numbering,
@@ -840,10 +1097,12 @@ export class IOP
     code = cur if cur > code
     @setIntReg(1, ((@intReg(1) & ~INTB_CODE_MASK) | (code << INTB_CODE_SHIFT)) >>> 0)
 
+    discOutBefore = @regDiscreteOut.get32() >>> 0
     @regProcEnable.set32(0x00000000)     # MSC and every BCE halted
     @regXmitEna.set32(0x00000000)
     @regRecvEna.set32(0x00000000)
     @regDiscreteOut.set32(0x00000000)
+    @publishDiscreteOut(discOutBefore)
 
     @parityEnabled = false
     @resetParityGenerators()
@@ -1123,6 +1382,10 @@ export class IOP
 
     @regCCData.set32(data)
 
+    # The discrete outputs are published as they change; the tail of this
+    # command sends whatever it moved.
+    discOutBefore = @regDiscreteOut.get32() >>> 0
+
     # Was a bad-parity generator already armed when this transfer arrived?
     # Sampled BEFORE the command runs so that the "force bad parity" PCO
     # which arms a generator is not itself caught by it: the generator
@@ -1316,6 +1579,8 @@ export class IOP
         r1 = @regBusyWait.get32()
         @regCCData.set32(r1)
 
+
+    @publishDiscreteOut(discOutBefore)
 
     if devSelect == 0x8 # Local Store
         # Data select: bits 7-11 the region (MSC, BCE 1-24, self test),

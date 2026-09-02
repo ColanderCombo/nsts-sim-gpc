@@ -43,6 +43,13 @@ busConfig := {
 
   _FF1_mdmIO: { port: 6950, nom: "MDM FF1 I/O" }
 
+  _gpcDiscretes0: { port: 6980, nom: "GPC 0 discretes", gpc: 0 }
+  _gpcDiscretes1: { port: 6981, nom: "GPC 1 discretes", gpc: 1 }
+  _gpcDiscretes2: { port: 6982, nom: "GPC 2 discretes", gpc: 2 }
+  _gpcDiscretes3: { port: 6983, nom: "GPC 3 discretes", gpc: 3 }
+  _gpcDiscretes4: { port: 6984, nom: "GPC 4 discretes", gpc: 4 }
+  _gpcDiscretes5: { port: 6985, nom: "GPC 5 discretes", gpc: 5 }
+
   _NSP1_data: { port: 6960, nom: "NSP1 to PCMMU"}
   _NSP2_data: { port: 6960, nom: "NSP1 to PCMMU"}
 
@@ -171,9 +178,14 @@ class Bus
       console.log "RECV UNHANDLED", @busID, message
 
   send(data,len=undefined)
+    return unless @server?
     len ?= data.length
     @_noteSent data, len
     @server.send data, 0, len, @busDesc.port, "239.255.1.1"
+
+  close()
+    @server?.close()
+    @server = null
 
   sendMsg(msg)
     body := msg.getBytes()

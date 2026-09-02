@@ -89,6 +89,10 @@ Arguments:
 
 Options:
   --start <addr>                  start address in hex
+  --power-on                      enter from the power-on PSW in the PSA
+  --sys-reset                     enter through the system reset PSW in the PSA
+  --ipl                           run hardware IPL on startup, as though the IPL
+                                  discrete was asserted.
   --symbols <file>                load symbol table JSON from linker
   --ebcdic                        use EBCDIC encoding for character I/O
   --trap-svc-error                intercept HAL/S SEND ERROR SVCs (default)
@@ -113,6 +117,48 @@ Options:
   --interactive                   interactive terminal I/O
   -h, --help                      display help for command
 ```
+
+### IPL
+
+`--ipl` implements the hardware Initial Program Load as described in 
+IBM-74-A31-016/p.68 sect.2.7.  In response to the IPL discrete being
+asserted while the CPU is in the `HALT` state, IOP microcode sequences
+clearing memory and loading an initial bootloader `FCMBOOT` from a
+fixed location on the MMU.  `FCMBOOT` then manages reading the complete
+`GPCIPL` system loader from MMU.
+
+```
+node dist/mmu.js run --unit 1 --volume /path/to/mmu.mmv &
+node dist/gpcmd.js unit --idp 1 --ipl-request &
+GPC.sh run --ipl --real-time --max-steps 0 --gpc 4
+# once the menu is up on DK1:
+node dist/gpcmd.js key --idp 1 ITEM 1 EXEC
+node dist/gpc.js discretes mode run --gpc 4
+```
+
+`--ipl` stands in for the panel, which can drive the same thing from
+outside: the mode toggle to HALT holds the CPU in system reset and halts
+every IOP processor, a press of the IPL button then loads, and moving the
+toggle off HALT starts the machine from the system reset PSW.
+
+```
+node dist/gpc.js discretes mode halt --gpc 4   # or `panel`, then `halt`
+node dist/gpc.js discretes ipl --gpc 4         # the pushbutton
+node dist/gpc.js discretes mode run --gpc 4
+```
+
+Each line runs to one computer, on port 6980 + GPC ID, and every
+`discretes` subcommand takes `--gpc <n>` to say which.  `set`, `mode`,
+`ipl` and `watch` also take a comma list or `all`.  GPC 0, the default,
+is a standalone computer.
+
+On real hardware the IPL is implemented in microcode, but since we don't
+currently implement microcode we have a stand-in assembly program at
+`gpc/asm/fakeipl.asm` (pre-generated object code at 
+`gpc/gen/fakeipl.json`).  This program is placed at 0x3FF80.  This is
+a deviation from real hardware, but the idea is to do something *close*
+to what the hardware actually does, which includes running MSC/BCE programs
+to read from MMU. 
 
   ## GPC.sh debug \<fcm\>
 
@@ -474,7 +520,7 @@ AP-101 Implementation Notes
 
   - The implementation is very verbose.  I've copied blocks of the POO directly into the comments and used it to guide the implementation.  Instruction opcode patterns and decoding is defined using bit strings (like '00011xxx11100yyy'), and additional format information is attached to make disassembly easier.  The intent is to make it as simple as we can to understand what the processor is doing and locate any errors in our logic.  Once verified, converting this to a much terser decoding process would make sense.
 
-  - We model both the AP-101/B model originally installed in the Shuttle and the AP-101/S upgrade.  We default to AP-101/S mode.
+  - We model both the AP-101B model originally installed in the Shuttle and the AP-101S upgrade.  We default to AP-101S mode.
 
   - The simulator includes an implementation of the IOP coprocessor used to interface to the 24 serial shuttle busses.  Verification is still in progress, but it's known to be able to communicate with the MEDS and MMU implementations also in this repository.
 

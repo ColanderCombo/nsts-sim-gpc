@@ -1,0 +1,217 @@
+                                              EXTERNAL SYMBOL DICTIONARY                                       PAGE    1
+SYMBOL   TYPE  ID  ADDR  LENGTH  LD ID                                                         ASM101            0.01 09/03/26
+IPLMICRO  SD 0001 000000 000064
+------------------------------------------------------------------------------------------------------------------------
+                 IPL MICROCODE MASS MEMORY PROGRAMS                                                            PAGE    2
+  LOC  OBJECT CODE   ADR1 ADR2      SOURCE STATEMENT                                           ASM101            0.01 09/03/26
+                                  2 ***********************************************************************
+                                  3 *                                                                     *
+                                  4 *  THE MSC AND BCE PROGRAMS THAT READ THE IPL BOOTSTRAP COPY OFF THE  *
+                                  5 *  MASS MEMORY INTO SECTOR ZERO.                                      *
+                                  6 *                                                                     *
+                                  7 *  NOT IBM CODE.  THE IPL SEQUENCE IS MICROCODE; THESE PROGRAMS ARE   *
+                                  8 *  WRITTEN TO WHAT THE SPECIFICATION SAYS IT DOES.                    *
+                                  9 *                                                                     *
+                                 10 *  ASM101 ASSEMBLES THEM AND LNK101 LOCATES THEM AT X'3FF80': BELOW   *
+                                 11 *  X'40000', THE LIMIT OF AN 18 BIT IOP ADDRESS FIELD, AND ABOVE      *
+                                 12 *  SECTOR ZERO.  THE LOCATED IMAGE IS GPC/GEN/FAKEIPL.JSON, WHICH THE *
+                                 13 *  SIMULATOR EMBEDS; ITS ADDRESSES ARE ABSOLUTE.                      *
+                                 14 *                                                                     *
+                                 15 *  IPLSRC IS THE ONE CELL WRITTEN FROM OUTSIDE: THE TWO IPL SOURCE    *
+                                 16 *  DISCRETES, RIGHT JUSTIFIED, MM1 IN THE HIGH BIT.  NO IOP           *
+                                 17 *  INSTRUCTION READS THE DISCRETE INPUTS, SO THEY ARRIVE THERE.       *
+                                 18 *                                                                     *
+                                 19 *  #CMD TAKES ITS COMMAND WORD FROM THE FULLWORD AT ADDRESS PLUS      *
+                                 20 *  TWICE THE BUS CONTROL ELEMENT NUMBER, SO EACH COMMAND IS A TABLE   *
+                                 21 *  OF ONE FULLWORD PER ELEMENT AND THE OPERAND WRITTEN IS THE FIRST   *
+                                 22 *  ENTRY LESS 36.  ELEMENTS 18 AND 19 ARE MASS MEMORY 1 AND 2.        *
+                                 23 *                                                                     *
+                                 24 *  #RDLI TAKES A HALFWORD COUNT LESS ONE.                             *
+                                 25 *                                                                     *
+                                 26 ***********************************************************************
+00000                            27 IPLMICRO CSECT                                                                  
+000000B                          28 IPLMMUM  EQU   11                  MASS MEMORY INTERFACE UNIT ADDRESS           
+0008000                          29 IPLSRCW  EQU   X'00008000'         READ STATUS REGISTERS                        
+0008000                          30 IPLSECT  EQU   X'8000'             HALFWORDS IN A SECTOR                        
+003FFFF                          31 IPLRPT   EQU   X'3FFFF'            8.65 S, THE LONGEST A REPEAT MAY WAI         
+                                 32 *
+                                 33 *  THE BOOTSTRAP COPY IS AT TAPE ADDRESS 44500 AND FILLS A SECTOR.
+                                 34 *
+0000004                          35 IPLFILE  EQU   4                   FILE                                         
+0000004                          36 IPLTRAK  EQU   4                   TRACK                                        
+0000005                          37 IPLSUBF  EQU   5                   SUBFILE                                      
+0000000                          38 IPLBLOK  EQU   0                   BLOCK                                        
+0000040                          39 IPLNBLK  EQU   64                  BLOCKS OF 512 HALFWORDS IN A SECTOR          
+                                 40 *
+                                 41 *  MASS MEMORY COMMAND WORD:  IUA AT BIT 19, OPCODE AT BIT 15, THEN
+                                 42 *  PER OPCODE FIELDS.  POSITION ADDRESSES THE GAP BEFORE THE DATA, SO
+                                 43 *  IT TAKES THE SUBFILE BELOW THE ONE WANTED.
+                                 44 *
+0000000                          45 IPLOPOS  EQU   0                   OPCODE: POSITION TAPE                        
+0000003                          46 IPLOEXT  EQU   3                   OPCODE: EXTEND BLOCK COUNT                   
+0000009                          47 IPLORD   EQU   9                   OPCODE: READ                                 
+0580000                          48 IPLIUAF  EQU   IPLMMUM*X'80000'    IUA, IN PLACE                                
+0004000                          49 IPLTRKF  EQU   IPLTRAK*X'1000'     TRACK, IN PLACE                              
+0584808                          50 IPLCPOS  EQU   IPLIUAF+IPLTRKF+(IPLSUBF-1)*X'200'+IPLFILE*2                     
+059803F                          51 IPLCEXT  EQU   IPLIUAF+IPLOEXT*X'8000'+IPLNBLK-1                                
+05CCA00                          52 IPLCRD   EQU   IPLIUAF+IPLORD*X'8000'+IPLTRKF+IPLSUBF*X'200'                    
+                                 53 ***********************************************************************
+                                 54 *                                                                     *
+                                 55 *  MSC PROGRAM                                                        *
+                                 56 *                                                                     *
+                                 57 *  RUNS BOTH BUS PROGRAMS: LOAD THE ELEMENT'S PROGRAM COUNTER, START  *
+                                 58 *  IT, WAIT FOR IT TO REACH ITS #WAT.  THE MSC BACK IN THE WAIT STATE *
+                                 59 *  IS THE WHOLE SEQUENCE DONE.                                        *
+                                 60 *                                                                     *
+                                 61 *  IPLSRC IS 2 FOR MM1 AND 1 FOR MM2.  0 IS A UNDEFINED OP AND THE    *
+                                 62 *  MSC GOES STRAIGHT TO ITS WAIT STATE.                               *
+                                 63 *                                                                     *
+                                 64 *  @LBP TAKES THE ELEMENT NUMBER FROM THE ACCUMULATOR WHEN ITS BCE    *
+                                 65 *  FIELD IS ZERO; @SIO AND @RAW TAKE THE PROCESSOR MASK THERE.  A     *
+                                 66 *  REPEAT COUNTS 33 US A COUNT, AND ITS EIGHT BITS REACH 8.4 MS, SO   *
+                                 67 *  THE INDEX REGISTER CARRIES THE REST OF THE WAIT.                   *
+                                 68 *                                                                     *
+                                 69 ***********************************************************************
+00000                            70 IPLMSC   DS    0F                                                               
+00000 F400 005A                  71          @LF   IPLSRC              THE IPL SOURCE DISCRETES                     
+00002 2421                       72          @BZ   IPLDONE             NEITHER MADE                                 
+00003 EDFE                       73          @TI   -2                  MM1?                                         
+00004 2406                       74          @BZ   IPLSMM1                                                          
+00005 F400 0056                  75          @LF   IPLM2N              MM2: BUS CONTROL ELEMENT 19                  
+00007 8056                       76          @ST   IPLBUSN                                                          
+00008 F400 0058                  77          @LF   IPLM2M                                                           
+0000A 2705                       78          @B    IPLSMSK                                                          
+0000B F400 0052                  79 IPLSMM1  @LF   IPLM1N              MM1: BUS CONTROL ELEMENT 18                  
+0000D 8050                       80          @ST   IPLBUSN                                                          
+0000E F400 0054                  81          @LF   IPLM1M                                                           
+------------------------------------------------------------------------------------------------------------------------
+                 IPL MICROCODE MASS MEMORY PROGRAMS                                                            PAGE    3
+  LOC  OBJECT CODE   ADR1 ADR2      SOURCE STATEMENT                                           ASM101            0.01 09/03/26
+00010 804B                       82 IPLSMSK  @ST   IPLBUSM             ITS PROCESSOR MASK                           
+00011 F400 0050                  83          @LF   IPLRPTC             THE LONGEST A REPEAT MAY WAIT                
+00013 E900                       84          @TAX  0                   ... IN THE INDEX REGISTER                    
+00014 F400 005E                  85          @LF   IPLBUSN             THE SELECTED ELEMENT                         
+00016 F300 0026                  86          @LBP  0,IPLPOS            POSITION THE TAPE                            
+00018 F400 005C                  87          @LF   IPLBUSM             ITS PROCESSOR MASK                           
+0001A E400                       88          @SIO  0                   START IT                                     
+0001B D800                       89          @RAW  0(1)                UNTIL IT IS WAITING AGAIN                    
+0001C F400 005E                  90          @LF   IPLBUSN                                                          
+0001E F300 0032                  91          @LBP  0,IPLREAD           READ THE COPY                                
+00020 F400 005C                  92          @LF   IPLBUSM                                                          
+00022 E400                       93          @SIO  0                                                                
+00023 D800                       94          @RAW  0(1)                                                             
+00024 0800                       95 IPLDONE  @WAT  0                                                                
+                                 96 ***********************************************************************
+                                 97 *                                                                     *
+                                 98 *  POSITION TAPE BCE PROGRAM                                          *
+                                 99 *                                                                     *
+                                100 ***********************************************************************
+00026                           101 IPLPOS   DS    0F                                                               
+00026 C000                      102          #DLYI 0                   BOUNDARY ALIGNMENT                           
+00027 C71C                      103          #DLYI 1820                DELAY TO PREVENT TAPE REVERSAL               
+00028 F200 0060                 104          #LBR  IPLPSTS             WHERE THE STATUS REPLY LANDS                 
+0002A F658 8000                 105          #CMDI IPLMMUM,IPLSRCW     READ THE STATUS REGISTERS                    
+0002C F300 0001                 106          #RDLI 1                   TWO HALFWORDS                                
+0002E FE00 0020                 107          #CMD  IPLPTCT             POSITION THE TAPE                            
+00030 0800                      108          #WAT  0                                                                
+                                109 ***********************************************************************
+                                110 *                                                                     *
+                                111 *  READ THE MASS MEMORY BCE PROGRAM                                   *
+                                112 *                                                                     *
+                                113 ***********************************************************************
+00032                           114 IPLREAD  DS    0F                                                               
+00032 C000                      115          #DLYI 0                   BOUNDARY ALIGNMENT                           
+00033 C71C                      116          #DLYI 1820                DELAY TO PREVENT TAPE REVERSAL               
+00034 C71C                      117          #DLYI 1820                ... AND FOR THE TRANSPORT TO POSITIO         
+00035 FE00 0024                 118          #CMD  IPLEBCT             EXTEND THE BLOCK COUNT                       
+00037 C002                      119          #DLYI 2                                                                
+00038 C000                      120          #DLYI 0                                                                
+00039 FE00 0028                 121          #CMD  IPLRDCT             READ                                         
+0003B F000 003D                 122          #BU   IPLRECV                                                          
+                                123 ***********************************************************************
+                                124 *                                                                     *
+                                125 *  RECEIVE SEQUENCE.  THE COPY IS ONE FILE, ONE TRACK, BLOCKS BACK    *
+                                126 *  TO BACK, AND LANDS IN SECTOR ZERO IN ONE RUN.                      *
+                                127 *                                                                     *
+                                128 ***********************************************************************
+0003D C000                      129 IPLRECV  #DLYI 0                   BOUNDARY ALIGNMENT                           
+0003E F200 0000                 130          #LBR  0                   SECTOR ZERO                                  
+00040 F300 7FFF                 131          #RDLI IPLSECT-1                                                        
+00042 501F                      132          #SST  IPLSTAT                                                          
+00043 0800                      133          #WAT  0                                                                
+                                134 ***********************************************************************
+                                135 *                                                                     *
+                                136 *  COMMAND AND STATUS DATA AREA                                       *
+                                137 *                                                                     *
+                                138 *  A COMMAND IS THE SAME FOR EITHER MASS MEMORY: THE BUS SELECTS THE  *
+                                139 *  UNIT.  THE TABLES CARRY IT TWICE BECAUSE #CMD INDEXES BY ELEMENT.  *
+                                140 *                                                                     *
+                                141 ***********************************************************************
+00044                           142          DS    0F                                                               
+0000020                         143 IPLPTCT  EQU   *-36                POSITION TAPE COMMAND TABLE                  
+00044 00584808                  144 IPLPTCW  DC    A(IPLCPOS)          ELEMENT 18                                   
+00046 00584808                  145          DC    A(IPLCPOS)          ELEMENT 19                                   
+0000024                         146 IPLEBCT  EQU   *-36                EXTEND BLOCK COMMAND TABLE                   
+00048 0059803F                  147 IPLEBCW  DC    A(IPLCEXT)          ELEMENT 18                                   
+0004A 0059803F                  148          DC    A(IPLCEXT)          ELEMENT 19                                   
+0000028                         149 IPLRDCT  EQU   *-36                READ COMMAND TABLE                           
+0004C 005CCA00                  150 IPLRDCW  DC    A(IPLCRD)           ELEMENT 18                                   
+0004E 005CCA00                  151          DC    A(IPLCRD)           ELEMENT 19                                   
+00050 0003FFFF                  152 IPLRPTC  DC    A(IPLRPT)           REPEAT COUNT EXTENSION                       
+00052 00000012                  153 IPLM1N   DC    A(18)               MASS MEMORY 1: BUS CONTROL ELEMENT           
+00054 00002000                  154 IPLM1M   DC    A(X'2000')          ... AND ITS PROCESSOR MASK                   
+00056 00000013                  155 IPLM2N   DC    A(19)               MASS MEMORY 2                                
+00058 00001000                  156 IPLM2M   DC    A(X'1000')                                                       
+0005A 00000000                  157 IPLSRC   DC    F'0'                THE IPL SOURCE DISCRETES                     
+0005C 00000000                  158 IPLBUSM  DC    F'0'                PROCESSOR MASK OF THE SELECTED ELEME T       
+0005E 00000000                  159 IPLBUSN  DC    F'0'                ... AND ITS ELEMENT NUMBER                   
+00060 FFFFFFFF                  160 IPLPSTS  DC    F'-1'               POSITION STATUS REPLY                        
+00062 FFFFFFFF                  161 IPLSTAT  DC    F'-1'               READ STATUS; ZERO IS A CLEAN TRANSFE         
+------------------------------------------------------------------------------------------------------------------------
+                 IPL MICROCODE MASS MEMORY PROGRAMS                                                            PAGE    4
+  LOC  OBJECT CODE   ADR1 ADR2      SOURCE STATEMENT                                           ASM101            0.01 09/03/26
+                                162          END                                                                    
+------------------------------------------------------------------------------------------------------------------------
+                                             CROSS REFERENCE                                                   PAGE    5
+SYMBOL    LEN    VALUE   DEFN   REFERENCES                                                     ASM101            0.01 09/03/26
+IPLBLOK      1 00000000    38
+IPLBUSM      2   00005C   158     82    87    92
+IPLBUSN      2   00005E   159     76    80    85    90
+IPLCEXT      1 0059803F    51
+IPLCPOS      1 00584808    50
+IPLCRD       1 005CCA00    52
+IPLDONE      1   000024    95     72
+IPLEBCT      1 00000024   146
+IPLEBCW      2   000048   147
+IPLFILE      1 00000004    35
+IPLIUAF      1 00580000    48
+IPLM1M       2   000054   154     81
+IPLM1N       2   000052   153     79
+IPLM2M       2   000058   156     77
+IPLM2N       2   000056   155     75
+IPLMICRO     1 00000000    27
+IPLMMUM      1 0000000B    28
+IPLMSC       1   000000    70
+IPLNBLK      1 00000040    39
+IPLOEXT      1 00000003    46
+IPLOPOS      1 00000000    45
+IPLORD       1 00000009    47
+IPLPOS       1   000026   101     86
+IPLPSTS      2   000060   160    104
+IPLPTCT      1 00000020   143
+IPLPTCW      2   000044   144
+IPLRDCT      1 00000028   149
+IPLRDCW      2   00004C   150
+IPLREAD      1   000032   114     91
+IPLRECV      1   00003D   129    122
+IPLRPT       1 0003FFFF    31
+IPLRPTC      2   000050   152     83
+IPLSECT      1 00008000    30
+IPLSMM1      2   00000B    79     74
+IPLSMSK      1   000010    82     78
+IPLSRC       2   00005A   157     71
+IPLSRCW      1 00008000    29
+IPLSTAT      2   000062   161    132
+IPLSUBF      1 00000005    37
+IPLTRAK      1 00000004    36
+IPLTRKF      1 00004000    49

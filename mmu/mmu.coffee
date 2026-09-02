@@ -4,7 +4,7 @@
 #
 # The Shuttle Mass Memory Unit (MMU) is nominally a linearly
 # accessible tape drive.  When the GPC was upgraded to the
-# newer CMOS based AP-101-S, the MMU was also replaced with a
+# newer CMOS based AP-101S, the MMU was also replaced with a
 # solid-state storage device.  The interface and protocol were
 # unchanged, so this implementation applies to both.
 #
@@ -36,6 +36,7 @@
 #
 
 import {BusMsg} from './../com/bus.civet.jsx'
+import {DiscreteLines, REG_A, REPUBLISH_MS} from './../com/discretes.coffee'
 import {LRU} from './../com/lru.civet.jsx'
 import {Volume} from './volume'
 import {IUA, OP, STAT_A, STAT_B, HALFWORDS_PER_BLOCK,
@@ -43,9 +44,9 @@ import {IUA, OP, STAT_A, STAT_B, HALFWORDS_PER_BLOCK,
         decodeCommand, packPosition, blockIndex, blockAddr,
         fmtAddr, fmtPos} from './mmuConf'
 
-# Each of the two MMUs has a dedicated bus, also attached to all 
-# 5 GPCs:
+# Each of the two MMUs has a dedicated bus, also attached to all 5 GPCs:
 UNIT_BUS = {1: 'MM1', 2: 'MM2'}
+UNIT_READY_BIT = {1: 6, 2: 7}
 
 export class MMU extends LRU
   constructor: (opts = {}) ->
@@ -53,20 +54,39 @@ export class MMU extends LRU
     bus  = opts.bus  ? UNIT_BUS[unit]
     throw new Error("no bus for mass memory unit #{unit}") unless bus
     super({id: "MMU#{unit}", busses: [bus]})
+    @readyBit = UNIT_READY_BIT[unit]
+    @discretes = opts.discretes != false and @readyBit?
 
     @unit         = unit
     @busName      = bus
     @verbose      = !!opts.verbose
     @onEvent      = opts.onEvent ? null
 
-    # How long the transport takes to answer, and how long a block takes
-    # to come off the tape.   Although we're not yet modeling how much
-    # time the tape takes to seek and access the tape, we need to build
-    # in at least some delay to give the GPC time to handle each block.
-    # 512 halfwords at the megabit bus rate is about 8.2 ms, so we start
-    # with that:
+    # The last few replies this unit put on the bus, for _notePeer.
+    @_recentSent  = []
+    @_peerSeen    = 0
+
+    # How long the transport takes to answer, and how often a block comes
+    # off the tape.  Seek and access time are not modelled, but the block
+    # period is not free to choose: a bus program that has read part of a
+    # block skips the rest of it by delaying, and the delay it computes
+    # says what the transport's rate is.
+    #
+    # The count is two per halfword left in the block plus 128 more, over
+    # a block of 512 -- and the software's comment calls that 128
+    # "one half the MMU block gap in half words".  A delay count of two is
+    # one word on a serial bus, 33 us (POO, the delay instruction's
+    # programming note), so a block is 512 word times of data and 256 of
+    # gap: 768 x 33 us, and the skip lands in the middle of the gap.
     @replyDelayMs   = opts.replyDelayMs ? 0
-    @blockDelayMs   = opts.blockDelayMs ? 8.2
+    @blockDelayMs   = opts.blockDelayMs ? (768 * 0.033)
+
+    # How long the transport holds READY down for an operation that sends
+    # nothing back.  A model parameter: no seek time is documented here,
+    # and the only bound the software gives is that an operation lasts
+    # long enough to be worth waiting on: it delays 160 ms between an
+    # extended-block command and the read that follows it.
+    @positionDelayMs = opts.positionDelayMs ? 50
 
     # A block that was never written is a hole in the recording, and a
     # transport that read one would report a data dropout.  Off by
@@ -80,6 +100,15 @@ export class MMU extends LRU
 
     b = @bus[@busName]
     b.onReceive @_onBusMessage, @
+    if @discretes
+      # READY is wired to every computer, so it goes out on every
+      # channel.  A level, on a transport with no delivery guarantee and
+      # no replay: republished on a timer as well as on change, so a GPC
+      # that starts afterwards does not hold a stale one forever.
+      @discLines = new DiscreteLines()
+      @_sendReady()
+      @_discTimer = setInterval (=> @_sendReady()), REPUBLISH_MS
+      @_discTimer.unref?()
 
   # state
   #
@@ -94,8 +123,35 @@ export class MMU extends LRU
     @writeEnabledTrack = null
     @extendedCount = null
     @busy = false
+    @_busyTimer = null
     @stats = {commands: 0, blocksRead: 0, blocksWritten: 0, wordsOut: 0, wordsIn: 0}
     @_pendingWrite = null
+    return
+
+  # discretes
+  #
+
+  _sendReady: () ->
+    @discLines?.set REG_A, @readyBit, not @busy
+    return
+
+  _hold: (ms, why) ->
+    clearTimeout @_busyTimer if @_busyTimer?
+    unless @busy
+      @busy = true
+      @_log "busy (#{why})"
+      @_sendReady()
+    @_busyTimer = setTimeout (=> @_release()), ms
+    @_busyTimer.unref?()
+    return
+
+  _release: () ->
+    clearTimeout @_busyTimer if @_busyTimer?
+    @_busyTimer = null
+    return unless @busy
+    @busy = false
+    @_log "ready"
+    @_sendReady()
     return
 
   # An error the GPC will see the next time it asks for status.
@@ -113,12 +169,47 @@ export class MMU extends LRU
   #
   _onBusMessage: (self, busID, msg, remote) ->
     words = msg.data16
+    return if self._notePeer(words)
     if words.length >= 2
       cmd = ((words[0] & 0xffff) << 8) | ((words[1] >> 8) & 0xff)
       self._onCommand(cmd)
     else
       self._onData(w) for w in words
     return
+
+  @PEER_WINDOW_MS = 2000
+  @RECENT_SENT_MAX = 32
+
+  _noteSent: (data16) ->
+    @_recentSent.push {words: Array.from(data16), t: Date.now()}
+    @_recentSent.shift() while @_recentSent.length > MMU.RECENT_SENT_MAX
+    return
+
+  _notePeer: (words) ->
+    # Words this unit is expecting are never tested: a GPC writing back
+    # a block it has just read would otherwise look like a second unit.
+    return false if @_pendingWrite?
+    now = Date.now()
+    cutoff = now - MMU.PEER_WINDOW_MS
+    @_recentSent = (e for e in @_recentSent when e.t >= cutoff)
+    match = null
+    for e, i in @_recentSent
+      continue unless e.words.length == words.length
+      same = true
+      for w, j in e.words
+        if w != (words[j] & 0xffff)
+          same = false
+          break
+      if same
+        match = i
+        break
+    return false unless match?
+    @_recentSent.splice(match, 1)
+    @_peerSeen += 1
+    if @_peerSeen == 1
+      console.error "MMU#{@unit}: too many MMU's on bus #{@busName}."
+    @_log "peer reply on #{@busName} (#{@_peerSeen})"
+    true
 
   _onCommand: (cmd24) ->
     c = decodeCommand(cmd24)
@@ -162,6 +253,7 @@ export class MMU extends LRU
     msg.data16[i] = words[i] & 0xffff for i in [0...words.length] by 1
     emit = () =>
       @stats.wordsOut += words.length
+      @_noteSent msg.data16
       @bus[@busName].sendMsg msg
     if delayMs > 0 then setTimeout emit, delayMs else setImmediate emit
     return
@@ -178,6 +270,7 @@ export class MMU extends LRU
       eof:     c.eof
     }
     @_log "position -> #{fmtPos(@position)}"
+    @_hold @positionDelayMs, 'position'
     return
 
   _doPositionRequest: () ->
@@ -256,6 +349,7 @@ export class MMU extends LRU
 
     @position = @_positionAfter(start, n)
     @_log "read done, position #{fmtPos(@position)}"
+    @_hold delay, 'read'
     return
 
   _doWrite: (c) ->
@@ -269,6 +363,7 @@ export class MMU extends LRU
               "track #{start.track} is not write enabled"
       return
     @_log "write #{n} block(s) at #{fmtAddr(start)}"
+    @_hold n * @blockDelayMs, 'write'
     @_pendingWrite = {
       start: start
       first: blockIndex(start)
@@ -297,6 +392,7 @@ export class MMU extends LRU
     @position = @_positionAfter(p.start, p.done)
     if p.done >= p.total
       @_pendingWrite = null
+      @_release()
       @_send [packPosition(@position)]
     else
       # Block complete, then the search complete word for the next one.

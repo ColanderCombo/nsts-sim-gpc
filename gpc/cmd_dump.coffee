@@ -17,7 +17,7 @@ export class FCMDumper
     @outputPath = opts.outputPath ? null
     @columns = opts.columns ? 7
 
-    @age = new AGEHarness(machine: opts.machine)
+    @age = new AGEHarness(machine: opts.machine, gpc: opts.gpc)
 
     @lines = []
     @sortedSymbols = []

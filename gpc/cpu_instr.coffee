@@ -368,7 +368,7 @@ class Instruction extends PackedBits
                 desc.xtbs = v.xtbs
                 desc.xtbsNs = (Math.round(x*1000) for x in v.xtbs)
 
-            # Execution times, original AP-101 C/M (IBM 75-A97-001 sect.2.4).
+            # Execution times, AP-101B (IBM 75-A97-001 sect.2.4).
             # xtc:  [Even, OddNOK, OddNotNOK, Even100, Even200] for the
             #       RS/RR/RI/SI form; xtcs: same for the short SRS form.
             # The 1975 table has no branch-taken split, so there is no xtbc.
@@ -3300,7 +3300,7 @@ class Instruction extends PackedBits
                             if (maskedAi ^ maskedFV) != 0
                                 # Mismatch found - store failure address in R1 even upper half
                                 t.opExecT = 2.5 * (i + 1)   # 2.5us per element tested (S)
-                                t.xtcAddT = 2.6 * i         # C/M NOTE 2: +2.6/extra count
+                                t.xtcAddT = 2.6 * i         # AP-101B NOTE 2: +2.6/extra count
                                 r1Val = (curAddr << 16) | (r1Val & 0xffff)
                                 t.r(evenReg).set32(r1Val)
                                 t.psw.setCC(3)
@@ -3310,7 +3310,7 @@ class Instruction extends PackedBits
 
                         # All matched - update R1 even with final address
                         t.opExecT = 2.5 * Math.max(count, 1)          # S
-                        t.xtcAddT = 2.6 * (Math.max(count, 1) - 1)    # C/M NOTE 2
+                        t.xtcAddT = 2.6 * (Math.max(count, 1) - 1)    # AP-101B NOTE 2
                         r1Val = (curAddr << 16) | (r1Val & 0xffff)
                         t.r(evenReg).set32(r1Val)
                         t.psw.setCC(0)
@@ -4230,7 +4230,7 @@ class Instruction extends PackedBits
                     e:(t,v) ->
                         v1 = FloatIBM.From64(t.f(v.x).get32(), t.f(v.x + 1).get32())
                         v2 = FloatIBM.From64(t.f(v.y).get32(), t.f(v.y + 1).get32())
-                        # Extended divide is quasi-extended on the C/M and
+                        # Extended divide is quasi-extended on the AP-101B and
                         # full 56-bit on the S: see divE in floatIBM.
                         {result, exc} = (if t.fpModel == 'B' then divQeE else divE)(v1, v2)
                         return unless t.fp_dispatch_exc(exc)
@@ -5985,7 +5985,7 @@ class Instruction extends PackedBits
                 }
         #
         # LOAD EXTENDED ADDRESS
-        #   (AP101S sect.9.12)
+        #   (AP-101S sect.9.12)
         #   General register R1, and the associated Data Sector Extension (DSE), are initialized
         #   from the fullword second operand.  Bits 0 and bits 16 through 31 of R1 are zeroed.
         #   Bits 1 through 15 f R1 are replaced by bits 1 through 15 of the full word constant,
@@ -6195,17 +6195,17 @@ class Instruction extends PackedBits
         #   This is a privileged operation and can only be executed when the
         # CPU is in the supervisors state.
         #
-        # AP-101-B: 
+        # AP-101B: 
         #   The illegal operation program interruption will occur if the
         # following illegal commands are used: 00010, 00011, 00100, 00110, 
         # 00111, 01010, 01011, 01110, and 01111.
         # 
-        # AP-101-B:
+        # AP-101B:
         #   Commands of the form 1XXXX other than 10000 are reserved and should
         # not be used. The illegal operation program interruption does not 
         # occur; instead a channel reset is performed.
         #
-        # AP-101-S:
+        # AP-101S:
         #   Command codes which are not defined in this document are illegal
         #  and should not be used.  Unlike previous versions of this 
         #  architecture, only the command 10000 causes a channel reset, not
@@ -6217,14 +6217,14 @@ class Instruction extends PackedBits
         # of location 00B0 or 00B1). This problem can be avoided by doing two
         # consecutive reads and making comparisons to pick the correct reading.
         # 
-        # AP-101-S:
+        # AP-101S:
         #   To further insure that one of the readins is correct and as a 
         #  compensation for interrupt processing overhead a value of two (2)
         #  is added to the timer when it is read.  The write Counter n commands
         #  reset the corresponding clock interrupt latch, clearing andy pending
         #  interrupts.
         #
-        # AP-101-S:
+        # AP-101S:
         #   In addition to the normal shuttle ICR command codes, the following
         #  *hardware dependant* ICR commands are defined for AP-101S series as
         #  an aid for diagnostic coding.  General Use of these codes is not
@@ -6259,7 +6259,7 @@ class Instruction extends PackedBits
                             when 0b01101 then 20.0    # load AGE
                             else t.opExecT            
 
-                        # AP-101 C/M per-command times (75-A97-001 p.2-12)
+                        # AP-101B per-command times (75-A97-001 p.2-12)
                         t.xtcRow = switch cmd
                             when 0b00000, 0b00001 then [3.4,3.0,3.4,3.5,3.6]  # read counter
                             when 0b01000, 0b01001 then [3.2,2.8,3.2,3.3,3.4]  # write counter

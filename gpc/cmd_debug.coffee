@@ -23,7 +23,7 @@ export class GPCDebugger
     @maxSteps = opts.maxSteps ? 10000000
     @traceEnabled = opts.traceEnabled ? false
 
-    @age = new AGEHarness()
+    @age = new AGEHarness(gpc: opts.gpc)
     @age.halUCP.errorCallback = (msg) => @error msg
 
     @iohost = IOHost.fromOpts(@age.halUCP, opts)
@@ -91,7 +91,9 @@ export class GPCDebugger
     @entryPoint = entryPoint
     @entrySource = entrySource
     @symbolsPath = symbolsPath
-    if entrySource == 'power-on'
+    if entrySource == 'sys-reset'
+      @info "Entry from system reset PSW at PSA 0x#{CPU.SYSTEM_RESET_PSW.asHex(4)}"
+    else if entrySource == 'power-on'
       why = if @opts.powerOn then '--power-on' else 'no --start, no START symbol'
       @info "Entry from power-on PSW at PSA 0x#{CPU.POWER_ON_PSW.asHex(4)} (#{why})"
     return byteCount

@@ -246,7 +246,7 @@ const xferOperand = (t, s, blk, cnt) =>
     ok(samePos(C.unpackPosition(heard.splice(0)[0]), {track: 4, file: 4, subfile: 4, bof: 0, eof: 0}),
        'a read leaves the head in the gap AFTER the blocks it read');
 
-    // The block count is a count LESS ONE, and an extended block count
+    // The block count is a count less one, and an extended block count
     // command overrides the four bits in the transfer command.
     send(cmd(C.OP.POSITION, posOperand(4, 2, 0, 0, 4)));
     send(cmd(C.OP.EXTENDED_BLOCK, 16));
@@ -273,6 +273,25 @@ const xferOperand = (t, s, blk, cnt) =>
     send(cmd(C.OP.BITE_STATUS));
     await settle();
     eq(heard.splice(0), [0, 0], 'reading the status clears it');
+
+    // A second unit process answering on the same bus.  Its replies are
+    // byte for byte this unit's, so the bus's own echo filter is consumed
+    // by the peer's copy and this unit's own comes back as traffic.  A
+    // word with no transfer to put it in would otherwise latch NOT READY,
+    // and the GPC that reads that status abandons the transaction -- a
+    // transport that never comes ready, for a reason nothing names.
+    send(cmd(C.OP.POSITION_REQ));
+    await settle();
+    const posWord = heard.splice(0)[0];
+    const peerMsg = new B.BusMsg(1);
+    peerMsg.data16[0] = posWord;
+    listener.sendMsg(peerMsg);
+    await settle();
+    ok(mmu._peerSeen > 0, 'a reply this unit just sent, heard again, is another unit');
+    heard.length = 0;
+    send(cmd(C.OP.BITE_STATUS));
+    await settle();
+    eq(heard.splice(0), [0, 0], 'and it is not latched as a status error');
 
     // An unknown opcode is a command error, and a command for another IUA
     // is not ours to complain about.

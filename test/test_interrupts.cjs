@@ -868,7 +868,7 @@ function check(label, got, want) {
 
     // Extended-precision multiply and divide differ by machine
     //
-    // The AP-101 C/M forms "quasi-extended" operands before an extended
+    // The AP-101B forms "quasi-extended" operands before an extended
     // multiply OR an extended divide, "truncating the fraction portion to
     // 31 bits and then rounding into the 31st bit based upon the 32nd bit"
     // (IBM-6246156B 8-25).  The AP-101S does neither: its multiply sums
@@ -895,7 +895,7 @@ function check(label, got, want) {
     const fmt = (w) => `${(w[0] >>> 0).toString(16).toUpperCase().padStart(8, '0')} ` +
                        `${(w[1] >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
 
-    // The C/M's quasi-extended operand: 31 bits, rounded in from the 32nd.
+    // The AP-101B's quasi-extended operand: 31 bits, rounded in from the 32nd.
     const qe31 = (frac, ch) => {
         let r = frac + (1n << 24n);
         if (r >> 56n) { r >>= 4n; ch += 1; }        // carry renormalizes
@@ -908,7 +908,7 @@ function check(label, got, want) {
         if (!(frac >> 52n)) { frac = p >> 52n; ch -= 1; }   // postnormalize
         return { ch, frac: frac & M56 };
     };
-    const refMulB = (xw, yw) => {          // C/M: quasi-extended operands
+    const refMulB = (xw, yw) => {          // AP-101B: quasi-extended operands
         const x = unpack(xw), y = unpack(yw);
         const [xf, xc] = qe31(x.frac, x.ch), [yf, yc] = qe31(y.frac, y.ch);
         let ch = xc + yc - 64;
@@ -933,7 +933,7 @@ function check(label, got, want) {
         let ch, q;
         if (xf < yf) { ch = xc - yc + 64; q = (xf << 56n) / yf; }
         else         { ch = xc - yc + 65; q = (xf << 52n) / yf; }
-        // The C/M's quotient register holds 31 bits; the rest reads zero.
+        // The AP-101B's quotient register holds 31 bits; the rest reads zero.
         if (qe) q &= ~((1n << 25n) - 1n);
         return pack(x.sign ^ y.sign, ch, q & M56);
     };
@@ -971,22 +971,22 @@ function check(label, got, want) {
     };
 
     const runB = fpRun('B', OPA, OPB), runS = fpRun('S', OPA, OPB);
-    check('C/M extended multiply is quasi-extended',
+    check('AP-101B extended multiply is quasi-extended',
           fmt(runB.med), fmt(refMulB(OPA, OPB)));
     check('S extended multiply keeps the upper partial products',
           fmt(runS.med), fmt(refMulS(OPA, OPB)));
-    check('C/M extended divide is quasi-extended too',
+    check('AP-101B extended divide is quasi-extended too',
           fmt(runB.dedr), fmt(refDiv(OPA, OPB, true)));
     check('S extended divide keeps all 56 quotient bits',
           fmt(runS.dedr), fmt(refDiv(OPA, OPB, false)));
-    check('...and the C/M quotient really is only 31 bits wide',
+    check('...and the AP-101B quotient really is only 31 bits wide',
           (runB.dedr[1] & 0x01ffffff) >>> 0, 0);
     check('the two machines really do differ', fmt(runB.med) === fmt(runS.med), false);
     check('...on the divide as well', fmt(runB.dedr) === fmt(runS.dedr), false);
 
     // Truncating each operand to 31 bits costs far more than dropping one
     // partial product does: the S lands within an ulp of the exact
-    // product, the C/M is millions of ulps away.  That asymmetry is the
+    // product, the AP-101B is millions of ulps away.  That asymmetry is the
     // whole reason the two machines disagree.
     const exact = exactProd(unpack(OPA), unpack(OPB));
     const errOf = (w) => {
@@ -996,14 +996,14 @@ function check(label, got, want) {
     };
     check('S multiply is within an ulp of the exact product',
           errOf(runS.med) <= 1n, true);
-    check('...and the C/M is millions of ulps out',
+    check('...and the AP-101B is millions of ulps out',
           errOf(runB.med) > 0x100000n, true);
 
     // A product below 1/16 postnormalizes, and the vacated low-order
-    // digit is filled with ZEROS -- the C/M does not reach back into the
+    // digit is filled with ZEROS -- the AP-101B does not reach back into the
     // discarded part of the product for four more bits.
     const post = fpRun('B', OPC, OPD);
-    check('a postnormalizing product still matches the C/M reference',
+    check('a postnormalizing product still matches the AP-101B reference',
           fmt(post.med), fmt(refMulB(OPC, OPD)));
     check('...and it really did postnormalize',
           unpack(post.med).ch, unpack(OPC).ch + unpack(OPD).ch - 64 - 1);
@@ -1037,9 +1037,9 @@ function check(label, got, want) {
 
     // A CPU's arithmetic comes from the machine it is part of.
     check('an AP-101S does the S arithmetic',
-          new CPU({ cpuWords: 1024, fp: 'S' }).fpModel, 'S');
-    check('an AP-101B does the C/M arithmetic',
-          new CPU({ cpuWords: 1024, fp: 'B' }).fpModel, 'B');
+          new CPU({ cpuWords: 1024, model: 'S' }).fpModel, 'S');
+    check('an AP-101B does the B arithmetic',
+          new CPU({ cpuWords: 1024, model: 'B' }).fpModel, 'B');
     check('and a bare CPU is the machine this simulator exists to run',
           new CPU({ cpuWords: 1024 }).fpModel, 'S');
 

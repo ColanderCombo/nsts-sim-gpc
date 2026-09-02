@@ -532,7 +532,7 @@ export mulE = (x, y) ->
   return {result, exc: FP_EXC.OK}
 
 
-# The AP-101 C/M's quasi-extended operand preparation, shared by the
+# The AP-101B's quasi-extended operand preparation, shared by the
 # extended multiply and the extended divide.  IBM-6246156B 8-25: the
 # quasi-extended operands are formed "by truncating the fraction portion
 # to 31 bits and then rounding into the 31st bit based upon the 32nd
@@ -551,7 +551,7 @@ qeRound31 = (mant, biasedExp) ->
   [rounded.and(QE_CLEAR_BOT), biasedExp]
 
 
-# AP-101 C/M quasi-extended multiply (MEDR/MED).  Pre-truncate each
+# AP-101B quasi-extended multiply (MEDR/MED).  Pre-truncate each
 # operand's 56-bit mantissa to 31 bits with round-into-bit-31 from
 # bit 32.  Then multiply at the truncated precision.  Returns
 # {result, exc} like mulE.  Mirrors tools/floatIBM/ibmFloat.c
@@ -604,7 +604,7 @@ mulQeE = (x, y) ->
     rMant = target.and(Long.fromBits(0xFFFFFFFF, 0x00FFFFFF, true))
     rBiasedExp = xBiasedExp + yBiasedExp - 64
   else
-    # Postnormalize one hex digit.  The C/M shifts the 62-bit intermediate
+    # Postnormalize one hex digit.  The AP-101B shifts the 62-bit intermediate
     # and fills the vacated low-order positions with ZEROS -- it does not
     # reach back into the product for four more bits.  Taking prod>>2
     # here did, and came out 1 ulp high on every postnormalizing
@@ -633,9 +633,9 @@ mulQeE = (x, y) ->
 # The two 56-bit fractions split into 28-bit halves (A:B and C:D); the
 # three most significant partial products are AC, AD and BC, and BD -- the
 # least significant -- does not participate.  That is the whole difference
-# from the AP-101 C/M, which instead throws away everything below 31 bits
+# from the AP-101B, which instead throws away everything below 31 bits
 # of each OPERAND before multiplying (mulQeE above).  The S keeps far
-# more: it lands within an ulp of the exact product where the C/M is
+# more: it lands within an ulp of the exact product where the AP-101B is
 # millions of ulps out, which is why the two machines visibly disagree.
 mulQeS = (x, y) ->
   xFrac = x.gFracBits().toUnsigned()
@@ -698,16 +698,16 @@ export {mulQeE, mulQeS}
 
 
 # divE is the AP-101S extended divide: a full 56-bit quotient.  divQeE
-# is the AP-101 C/M's quasi-extended divide, which prepares its operands
-# the same way the C/M's quasi-extended multiply does (31 bits, rounded
+# is the AP-101B's quasi-extended divide, which prepares its operands
+# the same way the AP-101B's quasi-extended multiply does (31 bits, rounded
 # in from the 32nd) and delivers a quotient good to 31 bits.  That is
-# the mechanism behind the C/M POO's warning that DED/DEDR "does not
+# the mechanism behind the AP-101B POO's warning that DED/DEDR "does not
 # always produce a quotient which is accurate to 31 bits" -- rounding
 # the DIVISOR up perturbs the quotient in exactly the low-order bits the
-# note describes.  The signature is unmistakable: a C/M quotient's low
+# note describes.  The signature is unmistakable: an AP-101B quotient's low
 # 25 bits read as zero, and its value is not any rounding of the true
 # quotient -- it is the quotient of the two ROUNDED operands.  The short
-# divides DE/DER are exempt (C/M POO: "does not have this problem").
+# divides DE/DER are exempt (AP-101B POO: "does not have this problem").
 export divE = (x, y, qe = false) ->
   # 56-bit hex-FP divide via iterative hex-digit long-division.
   # Returns {result, exc}.  Modeled on tools/floatIBM/ibmFloat.c
@@ -769,7 +769,7 @@ export divE = (x, y, qe = false) ->
     wk  = wk.subtract(wk.divide(yFrac).multiply(yFrac)).shiftLeft(4)
     i -= 1
   resultFrac = wk2.shiftLeft(4).or(wk.divide(yFrac))
-  # The C/M's quotient register holds 31 bits; the rest reads as zero.
+  # The AP-101B's quotient register holds 31 bits; the rest reads as zero.
   if qe
     resultFrac = resultFrac.and(QE_CLEAR_BOT)
 

@@ -23,7 +23,7 @@ OPTYPE_SHFT = 4
 # A BCE comes round once every 33 slices, and a BCE's own delay and 
 # time-out counters have a resolution of 16.5 us  which puts the slice 
 # itself at half a microsecond:
-IOP_SLICE_NS = 500
+export IOP_SLICE_NS = 500
 
 export class CPU
   @POWER_ON_PSW: 0x0004
@@ -92,17 +92,17 @@ export class CPU
     @timeNs = 0                  # total CPU time since power-on
     @cntAccumNs = 0              # sub-microsecond residue for counter ticks
     @xtCase = 0                  # addressing-mode timing case of current instr
-    @xtIndexed = false           # plain indexing used (AP-101 C/M: +0.4us)
+    @xtIndexed = false           # plain indexing used (AP-101B: +0.4us)
     @opExecT = null              # per-instruction override (us), set by e()
-    @xtcRow = null               # C-model row override [5 x us], set by e()
-    @xtcAddT = null              # C-model additive (us), set by e()
+    @xtcRow = null               # B-model row override [5 x us], set by e()
+    @xtcAddT = null              # B-model additive (us), set by e()
 
     # CPU model for instruction timing and fp behavior: 
     # 'S' (AP-101S, xts/xtbs) or
-    # 'C' (original AP-101 C/M, xtc/xtcs).
+    # 'B' (AP-101B, xtc/xtcs).
     @model = 'S'
-    @fpModel = opts.fp ? 'S'
-    @prevDiscont = false         # last instr broke sequential fetch (C: ~NOK)
+    @fpModel = opts.model ? 'S'
+    @prevDiscont = false         # last instr broke sequential fetch (B: ~NOK)
 
   r: (x) -> @regFiles[@psw.getRegSet()].r(x)
   f: (x) -> @regFiles[2].r(x)
@@ -387,7 +387,7 @@ export class CPU
                   #    EA is then expanded to a 19-bit EA, as explained in the
                   #    Expanded Addressing section.)
                   if v.ia==0 and v.ii==0
-                      @xtIndexed = true   # timing (C/M): plain indexing
+                      @xtIndexed = true   # timing (AP-101B): plain indexing
                       regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       ea = pea + regx
                       ea = @g_EXPAND(ea,v.opType,dseVal)
@@ -655,7 +655,7 @@ export class CPU
 
                   # Step 7: Indexed, no indirect
                   if v.ia==0 and v.ii==0
-                      @xtIndexed = true   # timing (C/M): plain indexing
+                      @xtIndexed = true   # timing (AP-101B): plain indexing
                       regx = (@r(v.i).get32() >>> 16) << (v.indexWidth - 1)
                       ea = (pea + regx) & 0xffff
 
@@ -741,7 +741,7 @@ export class CPU
       # bit. When the high-order bit is a 0, an implied BSR containing 0000
       # is selected. 
       #
-      # AP-101-B only: The high-order bit of both the BSR and DSR must be zero.
+      # AP-101B only: The high-order bit of both the BSR and DSR must be zero.
       #
       ea = ea & 0xffff
 
@@ -1003,6 +1003,13 @@ export class CPU
       # was stopped in front of is the machine's next act.  Front ends that
       # know about the hold call releaseInterrupt themselves and stop on
       # the swap; this is for the ones that just keep stepping.
+
+      # Held in system reset by the HALT discrete, which the IOP sets and
+      # clears (gpc/iop, discrete input A bit 0).  Nothing is fetched and
+      # no time passes; the machine starts from the system reset PSW when
+      # the toggle leaves HALT.
+      return if @resetHeld
+
       @releaseInterrupt() if @intArmed?
 
       times = [0.0, 0.0, 0.0]
@@ -1062,13 +1069,13 @@ export class CPU
       if d.e?
           d.e(@,v)
 
-      if @model == 'C' and (@xtcRow? or d.xtcNs? or d.xtcsNs?)
-          # Original AP-101 C/M (IBM 75-A97-001 sect.2.4).  Column by IC
+      if @model == 'B' and (@xtcRow? or d.xtcNs? or d.xtcsNs?)
+          # AP-101B (IBM 75-A97-001 sect.2.4).  Column by IC
           # parity; the ~NOK column applies only right after a discontinuity
           # (branch/interrupt).  Operands assumed in internal (CPU) memory --
           # the Even-100/Even-200 columns (IOP external memory / EMU) are
           # not yet selected.  opExecT overrides are AP-101S formulas and
-          # are ignored here; count-scaled C ops (e.g. SUM note 2) TBD.
+          # are ignored here; count-scaled B ops (e.g. SUM note 2) TBD.
           if @xtcRow?
               # e() supplied a command-specific row (us), e.g. ICR
               row = (Math.round(x*1000) for x in @xtcRow)

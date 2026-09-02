@@ -53,7 +53,7 @@ program.command('run')
   .option('--write-protect', 'refuse every write')
   .option('--fault-on-blank', 'report a data dropout when a block was never written')
   .option('--reply-delay <ms>', 'delay before answering a command', '0')
-  .option('--block-delay <ms>', 'delay between the blocks of a transfer', '0')
+  .option('--block-delay <ms>', 'delay between the blocks of a transfer')
   .option('--save-on-exit', 'write the volume back when the process is stopped')
   .option('-q, --quiet', 'do not trace commands')
   .action (o) ->
@@ -67,7 +67,7 @@ program.command('run')
       verbose:      not o.quiet
       faultOnBlank: !!o.faultOnBlank
       replyDelayMs: parseFloat(o.replyDelay)
-      blockDelayMs: parseFloat(o.blockDelay)
+      blockDelayMs: (if o.blockDelay? then parseFloat(o.blockDelay))
     })
 
     console.log "MMU#{mmu.unit} on #{mmu.busName} (port #{busConfig[mmu.busName].port}), " +

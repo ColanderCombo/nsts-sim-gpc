@@ -27,7 +27,7 @@ RT_FACTORS = [0.1, 0.25, 0.5, 1, 2, 5, 10]
 
 export class DebugGUI extends GUIHarness
   constructor: (CONFIG) ->
-    super(CONFIG)
+    super(Object.assign({}, CONFIG, gpc: CONFIG?.config?.cliOpts?.gpc))
     @ipcRenderer = require('electron').ipcRenderer
     if not @ipcRenderer
       throw new Error("DebugGUI: require('electron').ipcRenderer failed!")

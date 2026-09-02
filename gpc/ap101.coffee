@@ -26,7 +26,7 @@ export class AP101 extends LRU
 
     @machine = resolveMachine(CONFIG?.machine)
     @cpu = new CPU(@machine)
-    @iop = new IOP(@cpu, @machine)
+    @iop = new IOP(@cpu, @machine, CONFIG?.gpc)
     @cpu.iop = @iop
     @cpu.ram = new MemoryBus(@cpu.mainStorage, @iop.mainStorage)
 
@@ -34,7 +34,7 @@ export class AP101 extends LRU
 
   setMachine: (name) ->
     m = resolveMachine(name)
-    @cpu.fpModel = m.fp
+    @cpu.fpModel = m.model
     return @machine if m.cpuWords == @machine.cpuWords and
                        m.iopWords == @machine.iopWords
     @machine = m
@@ -53,7 +53,7 @@ export class AP101 extends LRU
       for i in [0..7]
         @cpu.regFiles[bank].r(i).set32(0)
 
-    # Register DSE Bits (AP-101-S)
+    # Register DSE Bits (AP-101S)
     for bank in [0..1]
       for i in [0..7]
         @cpu.regFiles[bank].setDSE(i, 0)
