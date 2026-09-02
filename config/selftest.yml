@@ -1,0 +1,61 @@
+# selftest.yml -- a catalog of LRUs that are not LRUs.
+#
+# Four synthetic processes that behave the way real ones do when things
+# go wrong, so the supervisor and the interface can be tried without
+# putting anything on the busses -- which are fixed ports, and will not
+# have two sessions on them.
+#
+#   SIM.sh -c config/selftest.yml -r config/selftest-run.yml
+
+version: 1
+
+paths:
+  root: ".."
+  logs: "${root}/run/logs"
+
+defaults:
+  cwd: "${root}"
+  startDelay: 0.2
+  health:
+    type: process
+    grace: 0.5
+
+lrus:
+
+  ticker:
+    name: A model that reports
+    kind: TEST
+    description: says it is ready, then prints a line a second
+    command:
+      - bash
+      - -c
+      - "echo MODEL READY; i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done"
+    health:
+      type: log
+      up: "MODEL READY"
+      down: "FAULT"
+      grace: 0.2
+
+  quiet:
+    name: A model that says nothing
+    kind: TEST
+    description: alive is all anyone can tell about it
+    command: [bash, -c, "sleep 3600"]
+
+  crasher:
+    name: A model that falls over
+    kind: TEST
+    description: starts, runs for a moment, exits badly -- and is restarted twice
+    command: [bash, -c, "echo starting; sleep 3; echo it broke >&2; exit 3"]
+    restart: on-failure
+    maxRestarts: 2
+
+  sulker:
+    name: A model that never comes up
+    kind: TEST
+    description: runs, but never says the thing that would make it healthy
+    command: [bash, -c, "echo starting; while true; do sleep 1; done"]
+    readyTimeout: 5
+    health:
+      type: log
+      up: "NEVER PRINTED"

@@ -1,0 +1,15 @@
+# selftest-run.yml -- the synthetic configuration.  See selftest.yml.
+
+name: selftest
+description: synthetic LRUs, for trying sim without touching the busses
+
+lrus:
+  tick1:  {lru: ticker,  order: 10}
+  quiet1: {lru: quiet,   order: 20, depends: [tick1]}
+  crash1: {lru: crasher, order: 30}
+  sulk1:  {lru: sulker,  order: 40}
+  gone1:
+    lru: quiet
+    order: 50
+    command: [/no/such/program]     # an LRU that is not installed
+    autostart: false

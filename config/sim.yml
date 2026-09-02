@@ -1,0 +1,122 @@
+# sim.yml -- the LRU catalog.
+#
+# What kinds of LRU there are, the command that runs one, and where on
+# this machine the files it needs live.  This file describes an
+# installation and changes when the installation does; the configuration
+# being managed is runConfig.yml beside it.
+#
+# ${name} is substituted from, in this order: the paths below, the params
+# in runConfig.yml, the params of the catalog entry, and the params of
+# the instance.  ${env:NAME} reads the environment.
+
+version: 1
+
+# Written relative to this file, so a checkout can sit anywhere.
+paths:
+  root:   ".."                    # the simulator tree
+  dist:   "${root}/dist"          # the bundles GPC.sh and friends build
+  data:   "${root}/data"
+  gen:    "${root}/gpc/gen"       # committed images -- iplmicro, test FCMs
+  sdl:    "${root}/../.."         # the nsts-sdl-dps tree that builds the tapes
+  build:  "${sdl}/build"
+  logs:   "${root}/run/logs"      # one file per LRU, appended across sessions
+
+# What every LRU inherits.  A catalog entry or an instance overrides any
+# of it.
+defaults:
+  cwd: "${root}"
+  restart: never                  # never | on-failure | always
+  maxRestarts: 3
+  stopSignal: TERM
+  stopTimeout: 5
+  startDelay: 0.5                 # pause before the next LRU is started
+  readyTimeout: 20                # how long a start has to reach healthy
+  logLines: 5000
+  health:
+    type: process                 # none | process | port | log | command
+    grace: 1.0                    # nothing is held against it this soon
+
+lrus:
+
+  gpc:
+    name: General Purpose Computer
+    kind: AP-101S
+    description: CPU, IOP and its bus control elements; IPLs from a mass memory
+    build: [node, "${root}/esbuild/esbuild.gpc.config.js"]
+    command: [node, "${dist}/gpc.js", run]
+    args: ["--ipl", "--real-time", "--max-steps", "0", "--gpc", "${unit}"]
+    params:
+      unit: 1
+    readyTimeout: 60              # filling storage and reading the tape takes a while
+    health:
+      type: process
+      # A running GPC is the only answer a supervisor needs; what it is
+      # doing is a question for the debugger.  A line it prints only when
+      # well would go here:
+      #   type: log
+      #   up: "GPC \\d+ ready"
+      grace: 2.0
+
+  mmu:
+    name: Mass Memory Unit
+    kind: MMU
+    description: Serves a tape on its bus -- the GPC IPLs and loads from it
+    build: [node, "${root}/esbuild/esbuild.mmu.config.js"]
+    command: [node, "${dist}/mmu.js", run, "--unit", "${unit}", "--volume", "${volume}"]
+    params:
+      unit: 1
+      volume: "${build}/mmu/mmu.mmv"
+    health:
+      type: log
+      up: "MMU\\d+ on MM\\d"      # mmu/cli.coffee prints this once bound
+
+  deu:
+    name: Display Electronics Unit
+    kind: DEU/IDP
+    description: A display unit on a DK bus with no window -- the fast way to
+                 drive flight software
+    build: [node, "${root}/esbuild/esbuild.gpcmd.config.js"]
+    command: [node, "${dist}/gpcmd.js", unit, "--idp", "${idp}"]
+    params:
+      idp: 1
+    health:
+      type: log
+      up: "display unit \\d on DK\\d"
+
+  meds:
+    name: MEDS
+    kind: MDU/IDP
+    description: The glass cockpit -- display units and IDPs, one window each
+    # electron-esbuild cleans dist/, which takes the node bundles with it,
+    # so they are rebuilt after it.  MEDS.sh does the same thing.
+    build:
+      - bash
+      - -c
+      - >-
+        node_modules/.bin/electron-esbuild build &&
+        for c in gpc gpcmd mmu; do
+          node esbuild/esbuild.$c.config.js >/dev/null || exit 1;
+        done
+    command: ["${root}/node_modules/.bin/electron", "${dist}/main/main.js", meds]
+    # Which units to bring up is a property of the configuration, so the
+    # instance in runConfig.yml supplies them as args.
+    stopTimeout: 8
+    readyTimeout: 45
+    health:
+      type: process
+      grace: 4.0                  # Electron takes a moment to get a window up
+
+  gpcdbg:
+    name: GPC debug session
+    kind: AP-101S
+    description: A GPC held on a socket, driven by `gpc dbg-client`
+    build: [node, "${root}/esbuild/esbuild.gpc.config.js"]
+    command: [node, "${dist}/gpc.js", "dbg-serve", "--port", "${port}"]
+    args: ["${image}"]
+    params:
+      port: 4444
+      image: "${gen}/TEST.fcm"
+    health:
+      type: port                  # it is up when it answers on its socket
+      port: "${port}"
+      grace: 1.0

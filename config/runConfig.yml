@@ -1,0 +1,37 @@
+name: ipl-gpc4
+description: gp4+mmu+meds
+
+# Available to every LRU below as ${volume}.
+params:
+  volume: "${build}/mmu/mmu.mmv"
+
+lrus:
+  mmu1:
+    lru: mmu
+    order: 10
+    params:
+      unit: 1                     # MM1, which the IPL SOURCE switch names
+  mmu2:
+    lru: mmu
+    order: 10
+    params:
+      unit: 2
+  meds:
+    lru: meds
+    order: 40
+    args: [crt1, idp1]
+  gpc4:
+    lru: gpc
+    order: 50
+    params:
+      unit: 4
+    depends: [mmu1, meds]
+    startDelay: 0
+
+  dbg:
+    lru: gpcdbg
+    order: 60
+    autostart: false
+    params:
+      port: 4444
+      image: "${gen}/TEST.fcm"

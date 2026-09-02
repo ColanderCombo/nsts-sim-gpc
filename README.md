@@ -652,6 +652,39 @@ MMU.sh watch MM1 --decode               # decode the bus traffic
 MMU.sh send MM1 588000                  # put one command on the bus
 ```
 
+sim — running a configuration
+-----------------------------
+
+Running a simulation requires running and managing several processes
+simultaneously.  Minimally, we need a GPC, a MEDS display and a MMU to
+serve the software.  In the future, other LRUs like MDMs and other systems
+will add to this.  `SIM.sh` lets us configure a simulation consisting of
+multiple processes and manage their lifecycle together.
+
+```
+SIM.sh                          # the terminal interface
+SIM.sh run                      # the same supervisor with no interface
+SIM.sh run mmu1 gpc4            # ... only these
+SIM.sh list                     # what is in this configuration
+SIM.sh config                   # the configuration as sim resolved it
+SIM.sh -r config/entry.yml      # manage a different configuration
+```
+
+`config/sim.yml` is the LRU catalog: what kinds there are, the command that
+runs one, where its files live, and how to tell whether it is up.
+`config/runConfig.yml` is the configuration being managed: which LRUs, in
+what order they come up, and what each is given.  Both are commented, and
+`SIM.sh config` shows them resolved.
+
+`config/selftest.yml` is four synthetic LRUs, for exercising the supervisor
+while a real session is running:
+
+```
+SIM.sh -c config/selftest.yml -r config/selftest-run.yml
+```
+
+Each LRU's output is appended to `run/logs/<lru>.log`.
+
 Repository Contents
 -------------------
 
@@ -666,6 +699,16 @@ The gpc simulator was originally part of a larger system that also simulates oth
     - `volume.coffee` (the tape and its file format), 
     - `mmuConf.coffee` (geometry, command and status layouts)
     - `cli.coffee` (the `MMU.sh` command). 
+
+  - `sim/` is the supervisor behind `SIM.sh`, in Python:
+    - `config.py` (the two YAML files, resolved into what is actually run),
+    - `process.py` (one child: its process group, its signals, its output),
+    - `health.py` (the probes that decide whether a running LRU is well),
+    - `supervisor.py` (the ordered start, the restart policy, the terminate),
+    - `screen.py`, `views.py` and `tui.py` (the curses interface),
+    - `cli.py` (the `SIM.sh` command).
+  - `config/sim.yml` and `config/runConfig.yml` are what it reads;
+    `config/selftest*.yml` are synthetic LRUs for trying it.
   - `meds/` contains the MEDS simulator: 
     - `mdu.coffee` (display unit), 
     - `idp.coffee` (Interface/Display Processor), 
