@@ -1205,6 +1205,29 @@ function check(label, got, want) {
           dse.ram.get32(0x44) >>> 0, 0x0a0b0c0d);
     check('...without touching the condition code either', dse.psw.getCC(), 2);
 
+    // Bits 5-7 of LDM/STDM carry whatever register the source named
+    //
+    // The flight assembler encodes the R1 operand into the op-code
+    // extension the POO fixes at zero: GPCIPL's self-test has `LDM
+    // R3,EXTDATA3` as 6BF8 and `STDM R1,EXTTEMP` as 91F8 (the OI301700
+    // build listing of BILDNEW5).  Both decode as the two-halfword LDM and
+    // STDM; a decoder that insists on the zeros runs 6BF8 as a
+    // one-halfword L R3 and then executes the displacement.  B2=3 here
+    // (no base), so the DSE the LDM loads into R0 does not enter the
+    // STDM's address.
+    const fl = mkCPU();
+    poke32(fl, 0x40, 0x0a0b0c0d);
+    poke16(fl, 0x10, 0x6bfb);  poke16(fl, 0x11, 0x40);
+    poke16(fl, 0x12, 0x91fb);  poke16(fl, 0x13, 0x44);
+    fl.psw.setNIA(0x10);
+    fl.exec1();
+    const flRegs = fl.regFiles[fl.psw.getRegSet()];
+    check('6BFB is LDM: two halfwords',            fl.psw.getNIA(), 0x12);
+    check('...and loads the DSEs',                 flRegs.getDSE(3), 0xd);
+    fl.exec1();
+    check('91FB is STDM: two halfwords',           fl.psw.getNIA(), 0x14);
+    check('...and stores them',                    fl.ram.get32(0x44) >>> 0, 0x0a0b0c0d);
+
     // ...but there is a DSE for every register, not just those four
     //
     // LDM/STDM carry four because only R0-R3 can be base registers; LXA

@@ -5971,10 +5971,19 @@ class Instruction extends PackedBits
         #   Bits 5 through 7 are not used by this instruction.  These bits should be set to zero
         #   as shown above and considered as an op code extension.
         #
+        #  **QUIRK / POO DEVIATION**
+        #   Bits 5 through 7 decode as a don't-care.  The flight assembler
+        #   put the R1 operand there: the OI301700 build listing of BILDNEW5
+        #   (GPCIPL) assembles `LDM R3,EXTDATA3` at 00820 as 6BF8 0140 and
+        #   `LDM R1,EXTDATA1` at 00D58 as 69F8 013C, where sect.9.13 gives
+        #   68xx.  Every FCOS module writes `LDM 0,...` (68F8, 68FB); the
+        #   register forms are in GPCIPL's self-test paths (STPMEM, STM1,
+        #   SVCALT).  The executor ignores the field.
+        #
         LDM:    {
                     n:'Load Data Memory'
                     f:['LDM D2(B2)','LDM D2(X2,B2)']
-                    d:'0110100011111abb/X'
+                    d:'01101xxx11111abb/X'
                     xts:[6.75,10,10,10,10,10.25,10.25]
                     e:(t,v) ->
                         fw = t.g_EAF(v)
@@ -6094,10 +6103,17 @@ class Instruction extends PackedBits
         #   Bits 5 through 7 are not used by this instruction.  These bits should be set to zero
         #   as shown above and considered as an op code extension.
         #
+        #
+        #  **QUIRK / POO DEVIATION**
+        #   Bits 5 through 7 decode as a don't-care, as for LDM: the same
+        #   listing assembles `STDM R1,EXTTEMP` at 00D5F as 91F8 0148 and
+        #   `STDM R7,EXTTEMP` at 00DCA as 97F8 0148, where sect.9.15 gives
+        #   90xx.  FCOS writes `STDM 0,...` (90FB, 90FF).
+        #
         STDM:   {
                     n:'Store Data Memory'
                     f:['STDM D2(B2)','STDM D2(X2,B2)']
-                    d:'1001000011111abb/X'
+                    d:'10010xxx11111abb/X'
                     xts:[2.25,5.25,6.75,5,5.25,7,7.5]
                     e:(t,v) ->
                         regSet = t.psw.getRegSet()
