@@ -108,7 +108,7 @@ export glyphCentre = (scale = 1) ->
 
 # A position field is eleven bits -- 2048 codes -- and the screen is 1536
 # units around, so 512 codes are spare and they carry the negative half.
-# The OI301700 build listing assembles the IPL menu coordinates that way:
+# The IPL menu's coordinates are assembled that way:
 #
 #     POS (P31,P1)    XPOS   95    ->  805F      character column 31
 #     POS  (P1,P2)    XPOS -475    ->  8625      character column  1
@@ -260,8 +260,7 @@ export class FCW extends PackedBits
   colorMode: (code)    ->
     if code? then 0x3400 | 0x80 | (code & 0x3f) else 0x3400 | 40
   colorClear: ()       -> 0x3400
-  # Double intensity in FCW3 bit 6, beside the palette.  `attrMode` carries
-  # the same attribute in FCW1 bit 3; both forms occur.
+  # Double intensity in FCW3 bit 6, beside the palette.
   intensityMode: (hi, code) ->
     (if code? then @colorMode(code) else @colorClear()) | (if hi then 0x40 else 0)
   valueDisplay: (n)    -> 0x3c00 | (n & 0x3ff)
@@ -327,7 +326,7 @@ export class FCW extends PackedBits
      @vecExtent(major), @charMode({})]
 
   # Text -> glyph-pair FCWs, two glyphs per word; an odd trailing glyph rides
-  # in the low (second) slot on its own
+  # alone in the low (second) slot
   chars: (t) ->
     out = []
     i = 0
@@ -590,8 +589,8 @@ export class FCW extends PackedBits
     #   0010 ssss nnnnnnnn    s = sector, n = count
     #
     # Always followed by a branch word giving the address.  Draw `count`
-    # words from there, then carry on after the branch word -- a call with
-    # an explicit length instead of a return instruction.  `sector` is the
+    # words from there, then carry on after the branch word: a
+    # length-counted call.  `sector` is the
     # 4K page of the target and the branch word carries the twelve bits
     # below it.
     #
@@ -639,8 +638,7 @@ export class FCW extends PackedBits
     }
     # FCW1 -- drawing attributes.  Eight bits: TVB, FBIT, TYPB, OCRB,
     # XYBIT, SPBIT, HBIT, BLBIT.  FBIT is blink, XYBIT the spacing
-    # direction, HBIT double intensity.  FCW3 bit 6 carries double
-    # intensity as well.
+    # direction, HBIT double intensity.
     FCW1: {
       d:'001110dbtoasik__'
       nom:{ d:'dash', b:'blink', t:'typ', o:'ocr', a:'axisY', s:'sp',
@@ -766,12 +764,28 @@ export class FCW extends PackedBits
 
   # The MEDS alternate character set, keyed by symbol number.  `ALTCHAR=n`
   # gives n in decimal; its hex value is the symbol number here.  Names
-  # from STS-83-0020V1-34, which does not give the glyph shapes.  Used by
-  # displays 0540G, 0543G and 3041G.
+  # from STS-83-0020V1-34.  Used by displays 0540G, 0543G and 3041G.
   #
   # A code shared with `DEUCharset` does not carry the same glyph: 19 is a
-  # lozenge there and the Shuttle symbol here.  No alternate glyphs are
-  # loaded, so these draw their `DEUCharset` counterparts.
+  # lozenge there and the Shuttle symbol here.
+  #
+  # STS-83-0020V1-34/sect.4.2.1.1 gives the shape and colour of symbols 14
+  # and 15:
+  #
+  #   "Symbols for two alternate landing sites shall be displayed for PFS.
+  #    These symbols utilize the alternate character set and color
+  #    capabilities of MEDS.  A shaded circle symbol in white shall be
+  #    located on the central plot corresponding to the range to the first
+  #    alternate landing site and current relative velocity/EOW.  A shaded
+  #    diamond symbol in cyan shall be located on the central plot
+  #    corresponding to the range to the second alternate landing site and
+  #    current relative velocity/EOW.  These colors match those used for
+  #    respective alternate site data on the Entry Bearing Display."
+  #
+  # The colours ride in FCW3: sect.4.2.1.4 item N draws symbol 14 in colour
+  # 29 and symbol 15 in colour 47.  `mduScreen_DPS.drawAltSymbol` holds the
+  # geometry for those two; the rest draw their `DEUCharset` counterparts,
+  # `data/deu_font.svg` holding no alternate glyphs.
   ALTCHARSET: {
     0x14: 'filled/shaded circle'    # alternate landing site 1; landing sites
     0x15: 'filled/shaded diamond'   # alternate landing site 2
@@ -789,8 +803,8 @@ export class FCW extends PackedBits
     # shape of each glyph: actual shapes are loaded from the font.svg by
     # the character generator.
     #
-    # Four of the 128 entries carry a name in the table instead of a shape,
-    # and all four are in the first column:
+    # Four of the 128 entries carry a name in the table and no shape, all
+    # four in the first column:
     #
     #   0x00  NULL              draws nothing and does not advance
     #   0x03  SELF TEST

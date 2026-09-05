@@ -221,6 +221,9 @@ class SimConfig:
 
 # ------------------------------------------------------------------ loading
 
+# The base of the bus port block; every LRU reads NSTS_BASE_PORT (com/bus.civet).
+DEFAULT_BASE_PORT = 6900
+
 # The settings an LRU inherits when neither file says otherwise.
 DEFAULTS: Dict[str, Any] = {
     "cwd": "${root}",

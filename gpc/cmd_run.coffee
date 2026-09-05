@@ -7,6 +7,7 @@ fs = require 'fs'
 readline = require 'readline'
 
 require 'com/util'
+import {addBusOptions} from 'com/busCli'
 import {AGEHarness} from 'gpc/ageharness'
 import {checkFCMFits, parseCPUModelOption} from 'gpc/machine'
 import {CPU} from 'gpc/cpu'
@@ -666,6 +667,7 @@ export addCommand = (program) ->
 
   AGEHarness.addOptions(cmd)
   IOHost.addOptions(cmd)
+  addBusOptions(cmd)
 
   cmd
     .option('--max-steps <n>', 'max instructions to execute (0 = unlimited)', '100000')

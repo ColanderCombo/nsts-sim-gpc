@@ -84,16 +84,46 @@ export class Screen_DPS extends MDUScreen
   # 1 and 2 carry the mission and event clocks, 25 the message line, and 26
   # the scratch pad line, which POLL FAIL shares.
   #
+  # Three things on the DPS display are orange under MEDS and were green on
+  # the MCDS, STS-83-0020V1-34/sect.3.1:
+  #
+  #   "Fault Message Line 25 - GREEN            Fault Message Line 25 - ORANGE
+  #    POLL FAIL portion of Scratch Pad Line 26 POLL FAIL portion of Scratch
+  #                                    - GREEN  Pad Line 26 - ORANGE
+  #    "Big X" across the entire display        "Big X" across the entire
+  #                                    - GREEN  display - ORANGE"
+  #
+  # All three are drawn by the IDP, and the GPC sends no colour with any of
+  # them: the message line carries one FCW1 and its text, and the IDP timers
+  # above raise the other two.  Photographs of the hardware show the big X
+  # and POLL FAIL red, and they are drawn red here.
+  #
+  # No document names a palette code for either colour and no display sends
+  # one.  The two below are fitted to the requirement above, to the
+  # photographs, and to codes flight software leaves alone; `_deuColor`
+  # carries their values.
+  FAULT_COLOR = 63              # the message line
+  FAIL_COLOR = 62               # the big X and POLL FAIL
+
   # The "X" is drawn on the vector lattice, which is the cell boundary: it
   # runs corner to corner over the whole picture, from the absolute top of
   # the format area (boundary row 0) to the bottom of line 26, and the full
   # width, boundary column 0 to 52.  A character's beam is the middle of its
   # cell and the glyph mesh runs to 1.00 of a cell below the origin, so the
   # bottom of a row of text is 1 - glyphCentre's row offset below it.
-  FAIL_COLOR = 48
   BIG_X_BOTTOM = SPL_ROW + 1 - FCWD.glyphCentre()[1]
   BIG_X = [[0, 0, 52, BIG_X_BOTTOM], [52, 0, 0, BIG_X_BOTTOM]]
   POLL_FAIL_AT = [41, SPL_ROW]
+
+  # The message line buffer runs to the display header, and the colour runs
+  # with it: the walk enters at the buffer, draws it under the first word,
+  # and takes the pen back at the header.  A display that opens with the
+  # five usual setup words would clear FCW3 itself; the GPCIPL menu does
+  # not.
+  _msgLineColor: () ->
+    prologue: [@fcw.colorMode(FAULT_COLOR)]
+    epilogue: [@fcw.colorClear()]
+    epilogueAt: DEU.ADDR.DISPLAY_HEADER
 
   _bigXFCWs: () ->
     fcws = [@fcw.colorMode(FAIL_COLOR), @fcw.attrMode({intensity: true})]
@@ -148,9 +178,37 @@ export class Screen_DPS extends MDUScreen
   # A fill of the unit's display memory: `words` load at `addr`, and the
   # screen redraws from the refresh entry point afterwards. 
   applyFill: (addr, words) ->
+    @fillSeq = (@fillSeq ? 0) + 1
     for w, i in words
-      @bgFCWS[(addr + i) & (@bgFCWS.length - 1)] = w & 0xffff
+      j = (addr + i) & (@bgFCWS.length - 1)
+      @bgFCWS[j] = w & 0xffff
+      @fillGen[j] = @fillSeq
     @refresh()
+
+  # What the last refresh executed, as address ranges, each with the fill
+  # that wrote it and how many fills ago that was.  A range written long
+  # before the rest is a leftover the walk should not have reached.
+  walkReport: () ->
+    log = []
+    seen = []
+    @drawFCWS(@bgFCWS, new THREE.Object3D(),
+              {memory: @bgFCWS, start: @refreshStart ? DEU.ADDR.MESSAGE_LINE,
+               vdisp: seen, pcLog: log})
+    runs = []
+    for a in log
+      last = runs[runs.length - 1]
+      if last? and a == last.hi + 1 and @fillGen[a] == last.gen
+        last.hi = a
+      else
+        runs.push {lo: a, hi: a, gen: @fillGen[a]}
+    now = @fillSeq ? 0
+    lines = for r in runs
+      age = if r.gen then now - r.gen else '-'
+      "  0x#{r.lo.toString(16)}..0x#{r.hi.toString(16)}  " +
+      "#{r.hi - r.lo + 1} hw  fill #{r.gen ? 'never'} (#{age} ago)"
+    console.log "walk: #{log.length} halfwords, #{runs.length} runs, " +
+                "vdisp #{seen.join(',') or 'none'}\n" + lines.join('\n')
+    runs
 
   # Redraw from display memory, following the branch words from the entry
   # point: the message line, or `@refreshStart` when a critical format is
@@ -159,10 +217,10 @@ export class Screen_DPS extends MDUScreen
   # holds, and the message line falls through into the display header.
   refresh: () ->
     seen = []
-    @geo_dps_fcws = @drawFCWS(@bgFCWS, @geo_dps_fcws,
-                              {memory: @bgFCWS,
-                               start: @refreshStart ? DEU.ADDR.MESSAGE_LINE,
-                               vdisp: seen})
+    start = @refreshStart ? DEU.ADDR.MESSAGE_LINE
+    opts = {memory: @bgFCWS, start: start, vdisp: seen}
+    Object.assign(opts, @_msgLineColor()) if start == DEU.ADDR.MESSAGE_LINE
+    @geo_dps_fcws = @drawFCWS(@bgFCWS, @geo_dps_fcws, opts)
     # A resident background is a whole picture, opening with the same five
     # setup words a display's static section does, so it draws in a
     # separate pass.  An unknown code draws nothing.
@@ -173,10 +231,10 @@ export class Screen_DPS extends MDUScreen
       else console.log "DPS: no resident background for VDISP #{code}"
     @geo_dps_vdisp = @drawFCWS(words, @geo_dps_vdisp)
 
-  # Load a bare format control word stream at the refresh entry point --
-  # the debug path for a captured display, and what dev mode uses.  A stream
-  # too long for the display buffer is a critical format, not a display, and
-  # loading it here would wrap it round the end of memory.
+  # Load a bare format control word stream at the refresh entry point: the
+  # debug path for a captured display, and what dev mode uses.  A critical
+  # format is longer than the display buffer and loads through the format
+  # buffer below.
   setBGDFB: (words) ->
     return @setCritFormat(words) if words.length > DISPLAY_BUFFER_WORDS
     @bgFCWS.fill(0)
@@ -263,10 +321,26 @@ export class Screen_DPS extends MDUScreen
         " tr #{tx},#{ty}  cell #{penX().toFixed(2)},#{penY().toFixed(2)}  #{extra}"
     else null
 
+    # The pen.  A selected palette code is drawn as it is.  Otherwise the
+    # DEU's monochrome intensity levels are MEDS colours, per
+    # STS-83-0020V1-34/sect.3.1's table of MCDS items and their MEDS
+    # replacements:
+    #
+    #   Overbright text (2X intensity) - BRIGHT GREEN      ... - YELLOW
+    #   Overbright/Overwrite text (4X intensity)
+    #                            - BRIGHTEST GREEN          ... - YELLOW
+    #   Overwrite text (2X intensity) - BRIGHT GREEN       ... - GREEN
+    #
+    # Double intensity arrives as either FCW1 bit 3 or FCW3 bit 6, and
+    # draws default yellow whether the default green is implied or selected
+    # outright.  Overwrite is a glyph written twice at the same beam; a
+    # glyph carries no intensity, so the second write changes nothing.
     penColor = () =>
+      bright = fcw1Bright or fcw3Bright
+      if bright and (colorCode ? DEU_DEFAULT_GREEN) == DEU_DEFAULT_GREEN
+        return @_deuColor(DEU_DEFAULT_YELLOW)
       return @_deuColor(colorCode) if colorCode?
       @d.c2h.green
-    # Double intensity arrives as either FCW1 bit 3 or FCW3 bit 6.
     penIntensity = () -> if fcw1Bright or fcw3Bright then 1.0 else 0.72
 
     # Rotate a beam-space delta by the character angle.  `angle` runs
@@ -287,6 +361,29 @@ export class Screen_DPS extends MDUScreen
       else
         beamX = homeX ; beamY += minorStep
 
+    # The shaded landing-site symbols of the alternate character set, drawn
+    # solid about the beam a character cell across.  `deuFCW.ALTCHARSET`
+    # carries the shapes and the symbol numbers.  A symbol with no geometry
+    # here returns false and draws its `DEUCharset` counterpart.
+    ALT_RADIUS = FCWD.COL_PITCH / 2
+    ALT_CIRCLE_SIDES = 24
+    drawAltSymbol = (g) =>
+      cx = penX() ; cy = penY()
+      rx = ALT_RADIUS / FCWD.COL_PITCH ; ry = ALT_RADIUS / FCWD.ROW_PITCH
+      switch g
+        when 0x14
+          n = ALT_CIRCLE_SIDES
+          add @d.filledPoly (for i in [0...n]
+            a = 2 * Math.PI * i / n
+            [cx + rx * Math.cos(a), cy - ry * Math.sin(a)]), penColor()
+        when 0x15
+          add @d.filledPoly [[cx, cy - ry], [cx + rx, cy],
+                             [cx, cy + ry], [cx - rx, cy]], penColor()
+        else
+          return false
+      trace? 'ALTSYM', "symbol #{g.toString(16)}"
+      true
+
     drawGlyph = (g) =>
       switch g
         when 0x0d                      # carriage return
@@ -306,17 +403,16 @@ export class Screen_DPS extends MDUScreen
           # advanced the beam would push every odd-length label one column
           # right of where its deck put it.
         else
-          ch = @fcw.DEUCharset[g]
-          if ch? and ch != ' '
-            # `data/deu_font.svg` holds no alternate glyphs, so an
-            # ALTCHAR symbol draws its `DEUCharset` counterpart.
-            trace? 'GLYPH', "'#{ch}'#{if altchar then ' ALTCHAR' else ''}"
-            # The beam is the middle of the character cell; the character
-            # generator draws from the cell's corner.  See `glyphCentre`.
-            sc = if large then FCWD.COL_PITCH_L / FCWD.COL_PITCH else 1.0
-            [gx, gy] = FCWD.glyphCentre(sc)
-            add @d.str penX() - gx, penY() - gy, ch, penColor(), sc,
-              1.0, 1.0, @d.deuFont, angle, false
+          if not (altchar and drawAltSymbol(g))
+            ch = @fcw.DEUCharset[g]
+            if ch? and ch != ' '
+              trace? 'GLYPH', "'#{ch}'#{if altchar then ' ALTCHAR' else ''}"
+              # The beam is the middle of the character cell; the character
+              # generator draws from the cell's corner.  See `glyphCentre`.
+              sc = if large then FCWD.COL_PITCH_L / FCWD.COL_PITCH else 1.0
+              [gx, gy] = FCWD.glyphCentre(sc)
+              add @d.str penX() - gx, penY() - gy, ch, penColor(), sc,
+                1.0, 1.0, @d.deuFont, angle, false
           advance()
 
     # Radius in beam units about the beam, which the circle does not move.
@@ -357,15 +453,20 @@ export class Screen_DPS extends MDUScreen
       else
         add @d.line seg, penColor(), penIntensity()
 
-    # The walk is by index, not `for word in fcws`, because a BRANCH moves the
-    # program counter.  CoffeeScript's `break` inside a `switch` would break
-    # the switch rather than the loop, hence the `done` flag.
+    # A BRANCH moves the program counter, so the walk is by index, and `done`
+    # ends it: CoffeeScript's `break` inside a `switch` leaves the switch.
     src = opts.memory ? fcws
     pc = opts.start ? 0
     visited = {}
     splice = null                 # the SUBLIST frame: {left, ret}
     done = false
     steps = 0
+    # `opts.prologue` goes through the switch ahead of the first word in
+    # memory, writing the mode registers the walk draws under; `opts.epilogue`
+    # goes through it once the walk reaches `opts.epilogueAt`.
+    injected = (opts.prologue ? []).slice()
+    epilogue = (opts.epilogue ? []).slice()
+    epilogueAt = opts.epilogueAt
     while not done and pc >= 0 and pc < src.length and steps < MAX_FCW_STEPS
       steps++
       # A spliced run carries no terminator and ends when its word count
@@ -374,9 +475,17 @@ export class Screen_DPS extends MDUScreen
         pc = splice.ret
         splice = null
         continue
-      word = src[pc]
-      pc++
-      splice.left-- if splice?
+      if injected.length > 0
+        word = injected.shift()
+      else if epilogueAt? and pc >= epilogueAt
+        injected = epilogue
+        epilogueAt = null
+        continue
+      else
+        opts.pcLog?.push pc
+        word = src[pc]
+        pc++
+        splice.left-- if splice?
       desc = @fcw.decodeFCW(word)
       continue if not desc?
       v = desc.v
@@ -401,14 +510,10 @@ export class Screen_DPS extends MDUScreen
           # then carry on after the branch word.  
           #
           # Done by moving the program counter and remembering how many words
-          # to take, so the spliced run goes through this same switch: it
-          # draws with the registers the static text left set, which is the
-          # point -- the values continue the line they sit in.
+          # to take, so the spliced run goes through this same switch and
+          # draws with the registers the static text left set.
           #
-          # One frame deep.  No spliced run observed contains another, and a
-          # length-counted call has nowhere to keep a second return address;
-          # a nested one is stepped over rather than followed, so a bad count
-          # can never walk off with the program counter.
+          # One frame deep: a nested sublist word is stepped over.
           #
           # A count of zero is a sector-qualified jump, the only way to
           # leave the display buffer.  A
@@ -478,7 +583,7 @@ export class Screen_DPS extends MDUScreen
           # measured on such a case.  X alone: the GPC IPL MENU's second
           # column is a lone XPOS after eight carriage returns have taken
           # the first down to BFS4, and PASS5 draws back on PASS1's row.
-          # Y alone: SPEC 60 (CS0600) writes its 50-character underscore
+          # Y alone: SPEC 60 writes its 50-character underscore
           # row from a bare YC=9 five characters after CHAR=(PARAM); from
           # the block's XC=2 home it fills columns 2-51 exactly, and five
           # right of that it runs off the screen.  1041 of the display
@@ -553,12 +658,58 @@ export class Screen_DPS extends MDUScreen
 
   # The FCW3 palette index -> an RGB colour.
   #
-  # The index-to-colour table is not in any document to hand.  Every COLOR=
-  # value the display decks use (4, 7, 29, 31, 33, 40, 47, 48, 56) reads
-  # consistently as three 2-bit channels -- bits 5-4 red, 3-2 green, 1-0 blue
-  # -- giving pure red for 48, orange for 56, yellow for 40 and plain green
-  # for 4, which is what those displays want.
+  # MG070100A1012E2, the MEDS IDP Software Requirements Specification,
+  # defines the 64-entry table, but we don't currently have that doc.
+  #
+  # Only three "MEDS enhanced" displays--all added or modified in
+  # OI33--use the color feature.  Thirteen color numbers are used and
+  # STS-83-0020V1-34 names the colour of ten of them, in the prose 
+  # description of the display that sends each:
+  #
+  #   sect.3 field 47  "default green (color 40)", "default yellow
+  #                     (color 54)"
+  #   sect.4.2.1.1     alternate landing site 1 "in white", site 2 "in
+  #                    cyan"; sect.4.2.1.4 item N gives those as 29 and 47
+  #   sect.4.2.41 (5)  the target insertion line "in default yellow in both
+  #                    the main plot and inset window", 7 and 56
+  #   sect.4.2.41 (6)  the launch window lines "in default green", sent as
+  #                    COLOR=DEU -- select clear, which is code 40
+  #   sect.4.2.42 (2)  the selected runway line and its labels "in yellow",
+  #                    21; the delaz line "in yellow", 7; the roll reversal
+  #                    lines "in green", 4
+  #   sect.4.2.42 (3)  alternate site 1 "in white", 31; site 2 "in cyan", 48
+  #   sect.4.2.42 (4)  the IIP "as a white cross", 31
+  #   sect.4.2.42 (5)  the range rings "in green", 4
+  #   sect.4.2.42 (7)  the alternate site E/W scales "in green", 19
+  #
+  # 33 and 43 are the inset-window counterparts of 29 and 40 (sect.4.2.41
+  # E and K).  The one main/inset pair whose colour is named, 7 and 56, is
+  # one colour across both, and they are read the same way here.
+  #
+  # A code outside the table is read as two bits a channel, bits 5-4 red,
+  # 3-2 green, 1-0 blue, fitted to nothing.  The colour values are in `c2h`.
+  DEU_DEFAULT_GREEN = 40
+  DEU_DEFAULT_YELLOW = 54
+
+  DEU_NAMED_COLORS =
+    4:  0x48f500    # green
+    7:  0xfff600    # default yellow
+    19: 0x48f500    # green
+    21: 0xfff600    # yellow
+    29: 0xffffff    # white
+    31: 0xffffff    # white
+    33: 0xffffff    # ... its inset window
+    40: 0x48f500    # default green, and what a clear select bit draws
+    43: 0x48f500    # ... its inset window
+    47: 0x2dfada    # cyan
+    48: 0x2dfada    # cyan
+    54: 0xfff600    # default yellow
+    56: 0xfff600    # default yellow
+    62: 0xff0000    # red -- `FAIL_COLOR`, not a flight code
+    63: 0xff1400    # near red -- `FAULT_COLOR`, not a flight code
+
   _deuColor: (code) ->
+    return DEU_NAMED_COLORS[code] if DEU_NAMED_COLORS[code]?
     lvl = [0x00, 0x60, 0xb0, 0xff]
     r = lvl[(code >> 4) & 3]
     g = lvl[(code >> 2) & 3]
@@ -698,6 +849,9 @@ export class Screen_DPS extends MDUScreen
   init: () ->  
     @fcw = new FCW()
     @bgFCWS = new Uint16Array(DEU.DEU_MEMORY_WORDS)
+    # which fill last wrote each halfword; `walkReport` reads it
+    @fillGen = new Uint32Array(DEU.DEU_MEMORY_WORDS)
+    @fillSeq = 0
 
     @loadCritFormats()
     @loadVdispBackgrounds()
@@ -784,10 +938,8 @@ export class Screen_DPS extends MDUScreen
   # rewritten once a refresh frame.
   #
   # The frame number comes from elapsed time at the symbol generator's 55 Hz,
-  # so every animated quantity stays an integer count of frames however the
-  # host's timer actually fires.  That is the point of the exercise: the
-  # specified rates are whole numbers of steps per frame, so if the model is
-  # right they come out exactly.
+  # so every animated quantity is an integer count of frames however the
+  # host's timer fires.
   # ---------------------------------------------------------------------------
   ST_TICK_MS = 18                        # about one refresh frame
 

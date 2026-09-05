@@ -5,6 +5,7 @@ path = require 'path'
 {spawn} = require 'child_process'
 
 import {addGUIOptions, guiCliOpts, startGUISession} from 'gpc/guibackend'
+import {addBusOptions} from 'com/busCli'
 import {resolveEndpoint, describeEndpoint} from 'gpc/dbgclient'
 import {checkFCMFits} from 'gpc/machine'
 
@@ -14,6 +15,7 @@ export addCommand = (program) ->
     .argument('[fcm-file]', 'FCM memory image to load (optional; GUI can also load later)')
 
   addGUIOptions(cmd)
+  addBusOptions(cmd)
 
   cmd
     .option('--no-sandbox', 'pass --no-sandbox to Electron (required on some Linux systems)')

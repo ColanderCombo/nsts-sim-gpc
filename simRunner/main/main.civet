@@ -3,8 +3,8 @@
 * as path from 'path'
 * as fs from 'fs'
 
-// register the main-side IPC handlers for @electron/remote — enable()
-// alone doesn't; renderer require('@electron/remote') needs this
+// the main-side IPC handlers for @electron/remote; a renderer's
+// require('@electron/remote') needs them
 remote.initialize()
 
 import 'process'
@@ -14,11 +14,9 @@ process.env.ELECTRON_DISABLE_SECURITY_WARNINGS="1"
 process.traceProcessWarnings = true
 process.traceDeprecation = true
 
-// Disable the Chromium SUID sandbox on Linux.  The AppImage mounts
-// read-only at /tmp and can't setuid chrome-sandbox, and modern
-// Ubuntu (22.04+) restricts the unprivileged-userns fallback via
-// AppArmor — so sandboxed startup fails.  The renderer here only
-// loads local trusted JS, so dropping the sandbox is benign.
+// The Chromium SUID sandbox is off on Linux: the AppImage mounts read-only
+// at /tmp and cannot setuid chrome-sandbox, and Ubuntu 22.04+ restricts the
+// unprivileged-userns fallback via AppArmor.  The renderer loads local JS.
 if process.platform == 'linux'
   app.commandLine.appendSwitch('no-sandbox')
 
@@ -37,6 +35,8 @@ import {Command} from 'commander'
 {addCommand: addDumpCmd}   from '../../gpc/cmd_dump.coffee'
 {addCommand: addDisasmCmd} from '../../gpc/cmd_disasm.coffee'
 {addGUIOptions, guiCliOpts as buildGuiOpts, startGUISession} from '../../gpc/guibackend.coffee'
+{addBusOptions} from '../../com/busCli.coffee'
+{busSettings} from '../../com/bus.civet.jsx'
 
 guiRequested .= false
 guiCliOpts   .= null
@@ -54,6 +54,7 @@ addLocalGuiCmd := (program: any) : void =>
     .description('Electron GUI debugger')
     .argument('[fcm-file]', 'FCM memory image to load (optional; GUI can also load later)')
   addGUIOptions(cmd)
+  addBusOptions(cmd)
   cmd.action (fcmPath: string, o: any) : void =>
     guiCliOpts = buildGuiOpts(fcmPath, o)
     guiFcmPath = fcmPath
@@ -61,7 +62,7 @@ addLocalGuiCmd := (program: any) : void =>
     guiRequested = true
 
 addLocalMedsCmd := (program: any) : void =>
-  program.command('meds')
+  cmd := program.command('meds')
     .description('MEDS glass cockpit — launch MDU display / IDP LRUs')
     .argument('[lrus...]', 'LRU names from config/meds.json (e.g. crt1 idp1 cdr1); default: the config "start" list')
     .option('--config <file>', 'alternate LRU config JSON (default: config/meds.json)')
@@ -70,7 +71,8 @@ addLocalMedsCmd := (program: any) : void =>
     .option('--size <px>', 'MDU window size in pixels, square (default: the config width/height)')
     .option('--dev', 'developer mode: MDUs run standalone (no IDP heartbeat gating, preloaded DPS test formats)')
     .option('--list', 'list available LRU names and exit')
-    .action (lrus: string[], o: any) : void =>
+  addBusOptions(cmd)
+  cmd.action (lrus: string[], o: any) : void =>
       medsCliOpts = {
         lrus
         configFile: if o.config then path.resolve(o.config) else null
@@ -214,12 +216,9 @@ startGui := () : void =>
 // ----------------------------------------------------------------
 // MEDS runner — multi-window LRU launcher (`meds` subcommand)
 //
-// Ported from the nsts sim tree's src/main/main.civet SimRunner.
-// Each windowed LRU (an MDU display) gets its own frameless
-// BrowserWindow running the LRU-mode renderer; headless "shared"
-// LRUs (IDPs) are bundled into the first windowed LRU's renderer —
-// they only need a JS context to join the UDP bus mesh, and must
-// not render into #root or they'd clobber the MDU's React root.
+// Each windowed LRU (an MDU display) gets a frameless BrowserWindow
+// running the LRU-mode renderer; headless "shared" LRUs (IDPs) ride in
+// the first windowed LRU's renderer.
 // ----------------------------------------------------------------
 
 class MedsRunner
@@ -259,6 +258,8 @@ class MedsRunner
         console.error `[meds] failed to load config override: ${overridePath}`, e
 
     c.NSTS_TOP = path.join(__dirname, '../../')
+    // the renderers open the busses
+    c.bus = {basePort: busSettings.basePort, iface: busSettings.iface}
 
     // dev mode: LRUs run standalone with test feeds (CLI flag, or a
     // `"dev": true` in the config file)
@@ -345,7 +346,7 @@ class MedsRunner
       if input.control and input.key.toLowerCase() == 'q'
         event.preventDefault()
         app.quit()
-    // per-window config copy: each renderer gets its own thisStart
+    // a config copy per window, carrying this window's thisStart
     winConfig := Object.assign({}, CONFIG, {thisStart})
     newWindow.webContents.on 'did-finish-load', () =>
       newWindow.webContents.send 'set-config', winConfig

@@ -1032,7 +1032,7 @@ export class IOP
     driven = @discDriven?[reg] ? 0
     (((dflt & ~driven) | (register.get32() & driven)) >>> 0)
 
-  # The channel is this machine's: port 6980 + GPC ID.
+  # The channel is this machine's: busConfig._gpcDiscretes<GPC ID>.
   _setupDiscreteBus: () ->
     @discreteBus = new DiscreteBus @gpcId, (m) => @recvDiscrete(m)
     return

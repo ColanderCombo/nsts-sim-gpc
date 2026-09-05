@@ -138,10 +138,14 @@ export parseFill = (words) ->
 #
 # ---------------------------------------------------------------------------
 export DEU_MEMORY_WORDS = 8192
-# MESSAGE LINE BUFFER is 50 halfwords at 6588 and DISPLAY BUFFER begins at
-# 6638, so the two are contiguous: a refresh entered at the message line
-# draws it and falls straight through into the display list, with no branch
-# between them and none needed.
+# MESSAGE LINE BUFFER is 50 halfwords at 6588, and the message line the GPC
+# builds is 35 halfwords landing two into it, at 6590.  It ends with a branch
+# to BACKGROUND_TOP, which holds a branch to the five setup words below it;
+# those end in a resident background or a critical format and then branch to
+# the display header.  That chain is what a refresh entered at the message
+# line follows.  Where no message line has been written the buffer is
+# whatever the control program left and the walk runs through it into the
+# header.
 export MESSAGE_LINE_WORDS = 50
 export ADDR =
   CRITICAL_FORMAT: 0x0100   # the critical-format index table and backgrounds
@@ -149,8 +153,8 @@ export ADDR =
   VAR_DATA_NOHDR:  0x0a06   # variable data, no header
   CF_CHECKSUM:     0x0f48
   CONTROL_PROGRAM: 0x0f49   # where the DEU's own IPL load starts
-  MESSAGE_LINE:    0x19bc   # the message line buffer, 50 halfwords...
-  DISPLAY_HEADER:  0x19ee   # ...running straight into the display header
+  MESSAGE_LINE:    0x19be   # the message line, where the fill lands
+  DISPLAY_HEADER:  0x19ee   # the display header
   UPLINK_IND:      0x1a06
   DYNAMIC:         0x1a0e   # the dynamic portion of the display
   BACKGROUND_TOP:  0x1fe4   # a background is filled ENDING just below here
@@ -194,16 +198,14 @@ export HDR_SELF_CLEARING = HDR.MSG_RESET | HDR.ACK |
 export MAJOR_FUNC_SHIFT = 6
 export DEU_ID_SHIFT = 8
 
-# Major Function Switch, JSC-18820/sect.4.4: 
-# A failed switch reports the last valid position, or GNC if it failed
-# before one was ever read"
+# Major Function Switch, JSC-18820/sect.4.4: "A failed switch reports the
+# last valid position, or GNC if it failed before one was ever read"
 export MAJOR_FUNC_CODE =
   PL:  0    # ...or DEU load
   GNC: 1
   SM:  2
 export MAJOR_FUNC_NAME = {}
 MAJOR_FUNC_NAME[v] = k for k, v of MAJOR_FUNC_CODE
-# What a DEU reports before a valid position has ever been read.
 export MAJOR_FUNC_DEFAULT = MAJOR_FUNC_CODE.GNC
 
 # The header's multi-bit fields, so a flag decoder can skip them.

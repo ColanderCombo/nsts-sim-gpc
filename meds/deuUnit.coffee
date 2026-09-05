@@ -57,7 +57,7 @@ export class DEUUnit
     @xfer = null                 # the transfer in progress, if any
     @keyQueue = []               # completed entries (arrays of codes)
     @spl = new SPL()             # the scratch pad line, and the entry on it
-    @majorFunc = o.majorFunc ? 0
+    @majorFunc = o.majorFunc ? DEU.MAJOR_FUNC_DEFAULT
     @ipled = o.ipled ? true
     @iplRunning = false
     # MSG RESET and ACK are not keystrokes.  A press latches a header 
@@ -79,7 +79,7 @@ export class DEUUnit
   # DK bus handling
   #
   # A BCE transmits a command as the 24 command bits left
-  # justified in two halfwords, and every data word on its own -- so the
+  # justified in two halfwords, and a data word as one halfword, so the
   # datagram length tells them apart
   recv: (words) ->
     if words.length >= 2

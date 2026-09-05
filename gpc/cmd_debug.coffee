@@ -8,6 +8,7 @@ readline = require 'readline'
 {Command} = require 'commander'
 
 require 'com/util'
+import {addBusOptions} from 'com/busCli'
 import {AGEHarness} from 'gpc/ageharness'
 import {CPU} from 'gpc/cpu'
 import {IOHost} from 'gpc/iohost'
@@ -1206,6 +1207,7 @@ export addCommand = (program) ->
 
   AGEHarness.addOptions(cmd)
   IOHost.addOptions(cmd, 3)
+  addBusOptions(cmd)
 
   cmd
     .option('--max-steps <n>', 'max instructions before auto-stop', '10000000')

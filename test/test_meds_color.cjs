@@ -1,7 +1,7 @@
 // test_meds_color.cjs — DEU colour, from the FCW3 code to the material the
-// stroke is actually drawn with.
+// stroke is drawn with.
 //
-// The DEU's normal intensity is 0.72, not 1.0, so every coloured stroke a
+// The DEU's normal intensity is 0.72, so every coloured stroke a
 // display draws goes down `line`'s reduced-intensity path, which holds a
 // ramp per colour.  SPEC 54 sends its target insertion lines as FCW3
 // `select=1 color=7` and `select=1 color=56` -- measured on DK1 -- and they
@@ -37,7 +37,7 @@ const civetPlugin = {
 
 // `mduVectorDisplay` reaches the DOM on the way in -- it parses the glyph
 // fonts out of SVG at module scope.  None of that is under test here, so it
-// is stubbed rather than emulated.
+// is stubbed.
 function stubDOM() {
     global.window = { fs, navigator: { userAgent: 'node' } };
     for (const n of ['Path', 'Rect', 'Circle', 'Ellipse', 'Line', 'Polyline',
@@ -92,18 +92,33 @@ async function main() {
 
     // ---- every code the six-bit field can hold ---------------------------
     //
-    // `Screen_DPS._deuColor` reads it as two bits each of R, G and B.  What
-    // matters here is that whatever it returns is what gets drawn.
+    // `Screen_DPS._deuColor` answers the codes STS-83-0020V1-34 names and
+    // reads the rest as two bits each of R, G and B.  What matters here is
+    // that whatever it returns is what gets drawn.
     const deuColor = m.dps.Screen_DPS.prototype._deuColor;
     const NORMAL = 0.72;              // the DEU's undoubled intensity
-    let wrong = 0, distinct = new Set();
+    let wrong = 0;
     for (let code = 0; code < 64; code++) {
         const want = deuColor(code);
-        distinct.add(want);
         if (drawnColor(d.line(coords, want, NORMAL)) !== want) wrong++;
     }
     eq(wrong, 0, 'every one of the 64 DEU colours draws in its own colour');
-    eq(distinct.size, 64, '... and the 64 codes are 64 distinct colours');
+
+    // ---- the codes a display sends, by the colour the FSSR calls them ----
+    //
+    // Ten are named outright; 33 and 43 follow the main/inset pairing.  The
+    // thirteen carry four colours between them.
+    const NAMED = {
+        4: 'green', 19: 'green', 40: 'green', 43: 'green',
+        7: 'yellow', 21: 'yellow', 54: 'yellow', 56: 'yellow',
+        29: 'white', 31: 'white', 33: 'white',
+        47: 'cyan', 48: 'cyan',
+    };
+    for (const [code, name] of Object.entries(NAMED)) {
+        eq(hex(deuColor(code)), hex(d.c2h[name]), `colour ${code} is ${name}`);
+    }
+    eq(new Set(Object.keys(NAMED).map(deuColor)).size, 4,
+       'the thirteen flight codes carry four colours');
 
     // ---- the two SPEC 54 sends, by name ----------------------------------
     for (const code of [7, 56]) {
@@ -126,9 +141,8 @@ async function main() {
 
     // ---- dashed strokes keep both their colour and their dash ------------
     //
-    // A colour outside the c2h palette had no dash material and fell back to
-    // a solid one that did not exist either, so the stroke drew in THREE's
-    // default.  SPEC 54's launch window lines are `DASH=ON`.
+    // A colour outside the c2h palette gets a dash material built for it.
+    // SPEC 54's launch window lines are `DASH=ON`.
     const fresh = 0x123456;          // never asked for as a solid stroke
     const dash = d.dashedLine(coords, fresh);
     eq(hex(drawnColor(dash)), hex(fresh), 'a dashed stroke keeps its colour');

@@ -1,11 +1,9 @@
 // test_meds_kybd.cjs — which keystrokes the DEU keyboard is entitled to take.
 //
 // A browser keydown reaches the orbiter keyboard only when it is a bare
-// press of a mapped key outside a text widget; everything else is the
-// application's or the widget's.  Issue #26 is what the old handler did
-// instead: punch whatever you were typing onto the KYBD bus and into the
-// DPS scratch pad line.  KYBD.deuKeyFor is that decision with no DOM
-// around it, so this drives it with plain event-shaped objects.
+// press of a mapped key outside a text widget.  KYBD.deuKeyFor is that
+// decision with no DOM around it, so this drives it with plain
+// event-shaped objects.
 //
 // Usage:
 //   cd ext/sim && node test/test_meds_kybd.cjs
@@ -81,7 +79,6 @@ async function main() {
     eq(KYBD.deuKeyFor(null), null, 'a missing event is not a keystroke');
 
     // --- modifier chords belong to the application -------------------------
-    // Each of these used to punch a DEU key on its way to doing its real job.
     eq(KYBD.deuKeyFor(ev(82, {ctrlKey: true})), null,
        'Ctrl+R reloads the window, it does not send RESUME');
     eq(KYBD.deuKeyFor(ev(68, {ctrlKey: true, shiftKey: true})), null,
@@ -111,6 +108,35 @@ async function main() {
     ok(KYBD.isEditable(el('DIV')) === false, 'a plain div is not editable');
     ok(KYBD.isEditable(null) === false, 'a null target is not editable');
     ok(KYBD.isEditable({}) === false, 'a target with no tagName is not editable');
+
+    // --- the major function switch ------------------------------------------
+    // `<` `>` `?` are shifted keys, so ev.key carries the character.
+    const mf = (key, extra) => Object.assign({key, target: null}, extra);
+    eq(KYBD.majorFuncFor(mf('<')), 'GNC', '< is GNC');
+    eq(KYBD.majorFuncFor(mf('>')), 'SM', '> is SM');
+    eq(KYBD.majorFuncFor(mf('?')), 'PL', '? is PL');
+    eq(KYBD.majorFuncFor(mf('<', {shiftKey: true})), 'GNC', 'Shift+, is still <');
+    eq(KYBD.majorFuncFor(mf(',')), null, 'a bare comma moves nothing');
+    eq(KYBD.majorFuncFor(mf('<', {metaKey: true})), null, 'Cmd+< is the application\'s');
+    eq(KYBD.majorFuncFor(mf('?', {target: el('INPUT')})), null,
+       'a ? typed in a text box moves nothing');
+    eq(KYBD.majorFuncFor(null), null, 'a missing event moves nothing');
+
+    // The word on the bus decodes back to the position, and a keyswitch
+    // pattern still decodes as a key.
+    const {KYBDMsg, KYBD_MSG_MASK} = await bundle('meds/medsConf.coffee');
+    const DEU = await bundle('meds/deuProto.coffee');
+    for (const name of ['PL', 'GNC', 'SM']) {
+        const w = KYBD.majorFuncWord(name);
+        eq(w & KYBD_MSG_MASK, KYBDMsg.MAJOR_FUNC, `${name} is a MAJOR_FUNC word`);
+        eq(KYBD.decode(w).majorFunc, DEU.MAJOR_FUNC_CODE[name], `${name} decodes to its code`);
+        eq(KYBD.decode(w).key, undefined, `${name} is not a key`);
+    }
+    eq(KYBD.decode(KYBD.DEUKey.keys.EXEC.deuCode).key, KYBD.DEUKey.keys.EXEC,
+       'a scan pattern decodes as its key');
+    eq(KYBD.decode(KYBDMsg.MAJOR_FUNC | 3), null, 'code 3 is no switch position');
+    eq(KYBD.decode(0x0200), null, 'an unassigned discrete word decodes to nothing');
+    eq(KYBD.decode(0x1234), null, 'a stray word decodes to nothing');
 
     // --- the scan-code table round-trips -----------------------------------
     // byScan is the IDP's direction: what keyPress puts on the bus must come

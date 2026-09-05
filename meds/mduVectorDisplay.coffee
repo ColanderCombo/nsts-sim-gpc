@@ -162,7 +162,7 @@ class CharGen
 
     if rot
       # rotate in pixel-proportional space (cols and rows have different px
-      # scales) so the glyph stays rigid instead of shearing/squashing
+      # scales) so the glyph stays rigid
       cs = Math.cos(rot) ; sn = Math.sin(rot) ; AR = 18.789/13.783   # pxRow/pxCol
       strokes = ( ([gcx+(p[0]-gcx)*cs-(p[1]-gcy)*AR*sn, gcy+(p[0]-gcx)*sn/AR+(p[1]-gcy)*cs] for p in stroke) for stroke in strokes )
 
@@ -170,7 +170,7 @@ class CharGen
     for stroke in strokes
       buffer = mdu.line(stroke,c,1.0,clip)
       if centered
-        # put the glyph's centre on (x,y) instead of the default corner origin
+        # the glyph's centre goes on (x,y); the corner does otherwise
         buffer.position.set(x - scaleFactor*scalex*gcx, y - scaleFactor*gcy, 0)
       else
         buffer.position.set(x-1, y, 0)
@@ -180,6 +180,24 @@ class CharGen
     return geoms
 
 export class VectorDisplay
+  # The fourteen colours of NASA-CR-2003-212258 Table 3, converted from the
+  # CIE xyY measured off the MDUs of the JSC Avionics Engineering Laboratory.
+  # The names and the channel settings behind them are the Cockpit Avionics
+  # Upgrade set, `pink` and `brown` among them.
+  #
+  # Two measurements the report draws out:
+  #
+  #   "The color and luminance values saturate starting at level 9.  For
+  #    example, the color and luminance are constant for RGB values of 0,9,0
+  #    followed by 0,10,0 and continuing through 0,15,0."
+  #
+  #   "Even when all channels are set to 0, the screen is not black.
+  #    Instead, it has a dark blue color with a residual luminance of about
+  #    2 nits."
+  #
+  # The second is `black` below.  `white`, `lightGray` and `darkGray` depart
+  # from the measurement: the panel white is x=0.356 y=0.367, warm of D65,
+  # and the commented values are that white and the greys under it.
   makeConstants: () ->
     @c2h = {
       black: 0x101336,
@@ -222,8 +240,7 @@ export class VectorDisplay
       @mats[1][v] = makeSDFLineMaterial(THREE, @sdfOpt({color: v}))
       @dashMats[v] = makeSDFLineMaterial(THREE, @sdfOpt({color: v, dashSize: 1.0, gapSize: 0.35}))
     # Graded-brightness ramps for DEU FEAT intensity (0..max), one per
-    # colour.  Fade via opacity (not toward black) so whatever is behind
-    # shows through.  One ramp per colour: the DEU's normal intensity is
+    # colour.  Fade via opacity, so whatever is behind shows through.  One ramp per colour: the DEU's normal intensity is
     # 0.72, so everything below full intensity takes this path.  Green is
     # pre-built, being most of what a display draws; the rest are made on
     # demand in `line`.
@@ -1041,6 +1058,19 @@ export class VectorDisplay
     return g
 
 
+  # A solid convex polygon from `[[x,y], ...]`, triangulated as a fan about
+  # the first point.
+  filledPoly: (pts, color=@c2h.green) ->
+    fill = new THREE.MeshBasicMaterial({color:color, side:THREE.DoubleSide})
+    dl = new THREE.BufferGeometry()
+    v = []
+    v = v.concat [p[0], p[1], 0] for p in pts
+    idx = []
+    idx = idx.concat [0, i, i + 1] for i in [1...pts.length - 1]
+    dl.setAttribute 'position', new THREE.BufferAttribute(new Float32Array(v), 3)
+    dl.setIndex idx
+    return new THREE.Mesh(dl, fill)
+
   tri: (x1, y1, x2, y2, x3, y3, color=@c2h.green,fillColor=undefined) ->
 
     if fillColor
@@ -1059,7 +1089,7 @@ export class VectorDisplay
 
   # asp: x aspect factor. Default 1.47222 is the empirical row->col stretch
   # matching the MEDS reference imagery. Pass 1 when drawing inside a group
-  # that already applies its own x scale (e.g. the ADI circular space, which
+  # that already applies an x scale (e.g. the ADI circular space, which
   # uses 1.3632 [= drawGlyph AR, a true circle] times a tunable stretch).
   arc: (x,y,r,sa,ea, color=@c2h.darkGray, asp=1.47222) ->
     l = []

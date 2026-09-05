@@ -1,9 +1,8 @@
 // test_meds_render.cjs — the DEU beam interpreter in `meds/mduScreen_DPS`.
 //
 // The renderer is a Three.js screen class, so it is driven here through a
-// stub `@d` drawing surface that records what was drawn and where instead of
-// building geometry.  What is under test is the beam arithmetic, not the
-// scene.
+// stub `@d` drawing surface that records what was drawn and where.  Under
+// test is the beam arithmetic.
 //
 // The X/Y reference registers (XTRN/YTRN) are held: every position word on
 // the axis draws at reference + coordinate, and FCW2's AC5+AC4 gate whether
@@ -65,14 +64,18 @@ function ok(cond, what) {
 function eq(a, b, what) { ok(a === b, `${what}: got ${a}, want ${b}`); }
 function hex(n) { return '0x' + (n & 0xffff).toString(16).padStart(4, '0'); }
 
-// A drawing surface that records glyphs instead of drawing them.  `str` is
+// A drawing surface that records glyphs.  `str` is
 // called with the beam position already converted to character cells.
-function stubSurface(THREE, drawn, lines) {
+function stubSurface(THREE, drawn, lines, polys) {
     return {
         c2h: {green: 0x00ff00},
         deuFont: null,
         dirty: false,
-        str(x, y, ch) { drawn.push({x, y, ch}); return new THREE.Object3D(); },
+        str(x, y, ch, color) { drawn.push({x, y, ch, color}); return new THREE.Object3D(); },
+        filledPoly(pts, color) {
+            polys.push({pts, color});
+            return new THREE.Object3D();
+        },
         line(coords, color, intensity) {
             lines.push({coords, color, intensity});
             return new THREE.Object3D();
@@ -92,9 +95,10 @@ function render(mods, words) {
     const THREE = mods.three;
     const drawn = [];
     const lines = [];
+    const polys = [];
     const screen = Object.create(Screen_DPS.prototype);
     screen.fcw = new mods.fcw.FCW();
-    screen.d = stubSurface(THREE, drawn, lines);
+    screen.d = stubSurface(THREE, drawn, lines, polys);
     screen.group = new THREE.Object3D();
     // `build` hangs everything drawn in the DEU's own coordinates off this
     // one and gives it the format area's horizontal centring; the geometry
@@ -106,6 +110,7 @@ function render(mods, words) {
     const opts = Array.isArray(words) ? {} : words;
     screen.drawFCWS(opts.memory ?? words, new THREE.Object3D(), opts);
     drawn.lines = lines;
+    drawn.polys = polys;
     return drawn;
 }
 
@@ -129,7 +134,8 @@ async function main() {
     fs.writeFileSync(shim,
         "export * as three from 'three'\n" +
         `export * as dps from ${JSON.stringify(path.join(SIM, 'meds/mduScreen_DPS.coffee'))}\n` +
-        `export * as fcw from ${JSON.stringify(path.join(SIM, 'meds/deuFCW.coffee'))}\n`);
+        `export * as fcw from ${JSON.stringify(path.join(SIM, 'meds/deuFCW.coffee'))}\n` +
+        `export * as deu from ${JSON.stringify(path.join(SIM, 'meds/deuProto.coffee'))}\n`);
     const mods = await bundle(shim);
     const f = new mods.fcw.FCW();
     GLYPH_OFF = mods.fcw.glyphCentre();
@@ -161,8 +167,8 @@ async function main() {
     eq(at(p1, 'T'), '31,2', 'page 1 title');
 
     // Page 2: `YTRN 216` = 8 x ROW_PITCH lifts the gated block eight rows.
-    // Both position runs move -- the reference is held, not spent by the
-    // first of them -- and the ungated title stays put.
+    // Both position runs move, the reference being held across both, and
+    // the ungated title stays put.
     const p2 = render(mods, list(8 * 27));
     eq(at(p2, 'A'), '2,4', 'page 2 lifts the item text eight rows');
     eq(at(p2, '*'), '24,6', 'page 2 lifts the asterisk with it');
@@ -181,11 +187,10 @@ async function main() {
 
     // ---- a lone coordinate word re-homes the other axis --------------------
     //
-    // A position word sets and homes its own axis and returns the beam to
-    // home on the other one, so a bare YC starts at the block's column
-    // rather than wherever the last string left the beam.  1041 of the
-    // corpus's 3246 YC directives have no XC of their own: SPEC 60
-    // (CS0600) writes `XC=2,YC=2,CHAR=(SM COM BUFF),CARRTN,CHAR=(PARAM),
+    // A position word sets and homes the axis it names and returns the beam
+    // to home on the other, so a bare YC starts at the block's column.
+    // 1041 of the corpus's 3246 YC directives have no XC: SPEC 60
+    // writes `XC=2,YC=2,CHAR=(SM COM BUFF),CARRTN,CHAR=(PARAM),
     // YC=9,CHAR=(<50 characters>)`, and that row fills columns 2-51 only
     // from the home column -- five right of it, it runs off the screen.
     const rehome = render(mods, [
@@ -240,7 +245,7 @@ async function main() {
     // ---- rotation turns the advance too ----------------------------------
     //
     // A quarter turn stands the string up: the second glyph is a major
-    // step above the first, not to its right.
+    // step above the first.
     const rot = render(mods, [
         ...f.positionRun(10, 20),
         f.rotation(90),
@@ -256,7 +261,7 @@ async function main() {
     // ---- the angle increment ----------------------------------------------
     //
     // With FCW2's increment bit set, an op 5 word writes the angle
-    // increment rather than the character advance, and the rotation walks
+    // increment, and the rotation walks
     // on per glyph.  The first advance is square; the second is turned by
     // the increment.
     const STEP = 4095;                       // 4095 * 360/32768 = 45 degrees
@@ -334,6 +339,137 @@ async function main() {
     eq(colorAt([f.colorMode(7), f.colorClear()]), DEU_GREEN,
        '... and so does the static preamble\'s cleared word');
 
+    // ---- double intensity is a colour on MEDS ------------------------------
+    //
+    // STS-83-0020V1-34/sect.3.1: overbright text is yellow on MEDS, a
+    // selected colour stands, and overwrite alone is green.
+    const YELLOW = deuColor(54);
+    ok(YELLOW !== DEU_GREEN, 'default yellow is a colour of its own');
+    eq(colorAt([f.attrMode({intensity: true})]), YELLOW,
+       'FCW1 overbright draws default yellow');
+    eq(colorAt([f.intensityMode(true)]), YELLOW, 'so does FCW3 bit 6');
+    eq(colorAt([f.intensityMode(true, 40)]), YELLOW,
+       '... with the default green selected outright too');
+    eq(colorAt([f.intensityMode(true, 47)]), deuColor(47),
+       'a selected colour is drawn as it is');
+    eq(colorAt([f.attrMode({intensity: true}), f.attrMode({})]), DEU_GREEN,
+       'and normal intensity is green again');
+    // A status indicator: the glyph is yellow, and writing it twice at the
+    // same beam leaves it yellow, no brighter.
+    const twice = render(mods, [f.attrMode({intensity: true}), f.charMode({}),
+        f.xPosition(f.cellX(3)), f.yPosition(f.cellY(3)),
+        f.glyphSingle(0x4d), f.glyphSingle(0x08), f.glyphSingle(0x4d),
+        f.endOfRefresh()]);
+    const ms = twice.filter((d) => d.ch === 'M');
+    ok(ms.length >= 1, 'the indicator is drawn');
+    ok(ms.every((d) => d.color === YELLOW), 'every write of it is default yellow');
+
+    // ---- the message line draws orange, the display behind it does not ----
+    //
+    // STS-83-0020V1-34/sect.3.1 makes the fault message line orange under
+    // MEDS.  Nothing in the stream says so -- the GPC sends one FCW1 and the
+    // text -- so `refresh` runs an FCW3 ahead of the walk, which begins at
+    // the message line buffer.  Nothing puts the pen back either: the five
+    // setup words every static section opens with do it, the fifth being
+    // FCW3 with select clear.
+    {
+        const THREE = mods.three, DEU = mods.deu;
+        const drawn = [], lines = [], polys = [];
+        const screen = Object.create(mods.dps.Screen_DPS.prototype);
+        screen.fcw = f;
+        screen.d = stubSurface(THREE, drawn, lines, polys);
+        screen.group = new THREE.Object3D();
+        screen.fmt = new THREE.Object3D();
+        screen.group.add(screen.fmt);
+        screen._blinkOn = true;
+        screen.bgFCWS = new Uint16Array(DEU.DEU_MEMORY_WORDS);
+        screen.geo_dps_fcws = new THREE.Object3D();
+        screen.geo_dps_vdisp = new THREE.Object3D();
+
+        const put = (addr, words) => words.forEach((w, i) => {
+            screen.bgFCWS[addr + i] = w & 0xffff;
+        });
+        // The message line: attributes, position, the position-run lead, a
+        // glyph.  It runs out into the zero fill and falls through.
+        put(DEU.ADDR.MESSAGE_LINE, [
+            f.attrMode({}), f.xPosition(f.cellX(1)), f.yPosition(f.cellY(25)),
+            f.noop(), f.glyphSingle(0x4d),               // 'M'
+        ]);
+        // The display, opening with the five words every static section does.
+        put(DEU.ADDR.DISPLAY_HEADER, [
+            f.majorInc(19), f.minorInc(-27), f.attrMode({}), f.charMode({}),
+            f.colorClear(), f.noop(),
+            f.xPosition(f.cellX(1)), f.yPosition(f.cellY(3)),
+            f.glyphSingle(0x44),                          // 'D'
+            f.endOfRefresh(),
+        ]);
+        screen.refresh();
+
+        const deuColor = mods.dps.Screen_DPS.prototype._deuColor;
+        const glyph = (ch) => drawn.find((d) => d.ch === ch);
+        eq(glyph('M')?.color, deuColor(63),
+           'the message line draws in the fault colour');
+        eq(glyph('D')?.color, screen.d.c2h.green,
+           'the display behind it does not');
+
+        // The GPCIPL menu opens with no FCW3, so the colour ends at the
+        // display header.
+        drawn.length = 0;
+        put(DEU.ADDR.DISPLAY_HEADER, [
+            f.majorInc(19), f.minorInc(-27), f.attrMode({}), f.charMode({}),
+            f.noop(), f.noop(),
+            f.xPosition(f.cellX(1)), f.yPosition(f.cellY(3)),
+            f.glyphSingle(0x44),                          // 'D'
+            f.endOfRefresh(),
+        ]);
+        screen.refresh();
+        eq(glyph('M')?.color, deuColor(63),
+           'the message line still draws in the fault colour');
+        eq(glyph('D')?.color, screen.d.c2h.green,
+           '... and a display that clears no colour of its own is unstained');
+    }
+
+    // ---- the alternate character set's landing-site symbols ---------------
+    //
+    // STS-83-0020V1-34/sect.4.2.1.1 gives a shaded circle in white for
+    // alternate landing site 1 and a shaded diamond in cyan for site 2;
+    // sect.4.2.1.4 item N sends them as colours 29 and 47.  The circle is
+    // drawn round, the diamond four-sided, and both advance the beam.
+    {
+        const symbol = (code, glyph) => render(mods, [
+            f.charMode({alt: true}), f.colorMode(code),
+            ...f.positionRun(4, 2),
+            f.glyphSingle(glyph), f.glyphPair(0x41, 0x42), f.endOfRefresh(),
+        ]);
+
+        const circle = symbol(29, 0x14);
+        eq(circle.polys.length, 1, 'symbol 14 draws one solid shape');
+        eq(circle.polys[0].color, deuColor(29),
+           '... in colour 29, which the FSSR calls white');
+        ok(circle.polys[0].pts.length > 8, '... round');
+        eq(at(circle, 'A'), '6,3', '... and the beam advanced one column');
+
+        const diamond = symbol(47, 0x15);
+        eq(diamond.polys.length, 1, 'symbol 15 draws one solid shape');
+        eq(diamond.polys[0].color, deuColor(47),
+           '... in colour 47, which the FSSR calls cyan');
+        eq(diamond.polys[0].pts.length, 4, '... four-sided');
+        eq(at(diamond, 'A'), '6,3', '... and the beam advanced one column');
+
+        // The two are the only alternate symbols with geometry; the rest
+        // fall through to their `DEUCharset` counterparts.
+        const cross = symbol(29, 0x16);
+        eq(cross.polys.length, 0, 'symbol 16 draws no solid shape');
+        eq(cross.filter((g) => g.ch).length, 3, '... it draws a glyph');
+
+        // Without ALTCHAR the same code is an ordinary glyph.
+        const plain = render(mods, [
+            f.charMode({}), ...f.positionRun(4, 2),
+            f.glyphSingle(0x14), f.endOfRefresh(),
+        ]);
+        eq(plain.polys.length, 0, 'code 14 outside ALTCHAR draws no symbol');
+    }
+
     // --- the self test's resolution ticks ---------------------------------
     //
     // "The tick marks are short, straight line segments from the symbol
@@ -404,10 +540,9 @@ async function main() {
         // image sits at 0x1100, i.e. slot n's word is 0x1000 + its offset
         // in the image + 0x100.
         //
-        // The last TWO of the 32 CFIT halfwords are not slots: they are the
-        // exit stub every background body branches to when it is done, and
-        // they leave the format buffer for the display header, which a
-        // branch word cannot do on its own.
+        // The last two of the 32 CFIT halfwords are the exit stub every
+        // background body branches to when it is done; they leave the format
+        // buffer for the display header, which a branch word alone cannot.
         let bad = 0;
         for (let i = 0; i < 30; i++) {
             const w = mem[CRIT + i];
@@ -444,7 +579,7 @@ async function main() {
         eq(render(mods, {memory: empty, start: HDR}).length, 0,
            'an unloaded format buffer draws nothing');
 
-        // And at 0x0100, where the GPC IPL program actually loads it and
+        // And at 0x0100, where the GPC IPL program loads it and
         // where every display's DEULOC= points (256..271, the sixteen
         // slots), commanded the way a display commands one: the pair
         // `[0x2000, Branch(DEULOC)]` that dfg emits for an external

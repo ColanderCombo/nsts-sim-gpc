@@ -19,6 +19,12 @@ IDPs (Interface/Display Processors) in their own windows; they talk to
 each other — and to running GPCs — over the same simulated UDP-multicast
 flight-critical busses.  See the MEDS section below.
 
+Every bus is a UDP multicast port at a fixed offset from a base port.
+Every command that opens a bus takes `--base-port <n>` and
+`--bus-iface <addr>`, defaulting to `NSTS_BASE_PORT` (6900) and
+`NSTS_BUS_IFACE` (loopback), and `SIM.sh --base-port` hands one base to
+every LRU it starts.  The table is `com/bus.civet`.
+
 While this tree includes a simple assembler and (very) simple linker,
 the [nsts-sdl-dps](https://github.com/ColanderCombo/nsts-sdl-dps) repository provides wrappers to create a AP-101 toolchain
 and a cmake based build system that is the preferred way to use the gpc-sim.
@@ -149,7 +155,7 @@ node dist/gpc.js discretes ipl --gpc 4         # the pushbutton
 node dist/gpc.js discretes mode run --gpc 4
 ```
 
-Each line runs to one computer, on port 6980 + GPC ID, and every
+Each line runs to one computer, at bus offset 80 + GPC ID, and every
 `discretes` subcommand takes `--gpc <n>` to say which.  `set`, `mode`,
 `ipl` and `watch` also take a comma list or `all`.  GPC 0, the default,
 is a standalone computer.
@@ -584,6 +590,8 @@ DPS Keyboard Unit buttons are mapped to regular keyboard keys (mapped key in par
 |    <sub>(s)</sub><br>SPEC    |             -              |               0               |           +           |
 |   <sub>(r)</sub><br>RESUME   | <sub>(bksp)</sub><br>CLEAR |               .               | <sub>(p)</sub><br>PRO |
 
+The major function switch is `<` GNC, `>` SM and `?` PL.
+
 
 Debug tools: The `--dev` option enables a standalone development 
 mode that enables tools for refining the drawing and display features
@@ -605,6 +613,8 @@ GPCMD.sh monitor                              # decode every bus, both ways
 GPCMD.sh monitor DK1 --fcw                    # ... disassembling the formats
 GPCMD.sh unit --idp 1                         # BE a display unit, headless
 GPCMD.sh unit --ipl-request --fcw             # ... and ask to be loaded
+GPCMD.sh key SPEC 2 PRO --idp 1               # press keys on a unit's keyboard
+GPCMD.sh mf SM --idp 1                        # move its major function switch
 GPCMD.sh fill data/TEST-9011-GPC_MEMORY.dfb   # display data fill
 GPCMD.sh fill f.dfb --addr 19EE --format      # ... as a format data fill
 GPCMD.sh time --interval 1                    # the MET/CRT header clock
@@ -655,11 +665,9 @@ MMU.sh send MM1 588000                  # put one command on the bus
 sim — running a configuration
 -----------------------------
 
-Running a simulation requires running and managing several processes
-simultaneously.  Minimally, we need a GPC, a MEDS display and a MMU to
-serve the software.  In the future, other LRUs like MDMs and other systems
-will add to this.  `SIM.sh` lets us configure a simulation consisting of
-multiple processes and manage their lifecycle together.
+A simulation is several processes: at least a GPC, a MEDS display and an
+MMU serving the software.  `SIM.sh` configures a set of them and manages
+their lifecycle together.
 
 ```
 SIM.sh                          # the terminal interface
@@ -668,6 +676,7 @@ SIM.sh run mmu1 gpc4            # ... only these
 SIM.sh list                     # what is in this configuration
 SIM.sh config                   # the configuration as sim resolved it
 SIM.sh -r config/entry.yml      # manage a different configuration
+SIM.sh --base-port 7000         # a second simulation beside the first
 ```
 
 `config/sim.yml` is the LRU catalog: what kinds there are, the command that

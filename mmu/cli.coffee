@@ -11,6 +11,7 @@
 #
 import * as fs from 'fs'
 import {Bus, BusMsg, busConfig} from './../com/bus.civet.jsx'
+import {addBusOptions} from './../com/busCli'
 import {Volume} from './volume'
 import {MMU} from './mmu'
 import {HALFWORDS_PER_BLOCK, BLOCKS_TOTAL, parseAddr, fmtAddr,
@@ -233,5 +234,8 @@ program.command('send')
       console.log "#{busName}: sent #{cmd.toString(16).padStart(6, '0')}"
       setTimeout (-> process.exit(0)), LINGER_MS
     ), BIND_MS
+
+# The commands that open a bus.
+addBusOptions(c) for c in program.commands when c.name() in ['run', 'watch', 'send']
 
 program.parse()

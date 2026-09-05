@@ -1,71 +1,99 @@
 dgram .= if typeof window != 'undefined' then window.dgram else require('dgram')
 Buffer .= if typeof window != 'undefined' then window.Buffer else globalThis.Buffer
-// {lookup} from 'lookup-dns-cache'
+
+// Every bus is one UDP multicast port at a fixed offset from a base port.
+// configureBus sets the base and the interface for every bus opened after
+// the call; at load they come from NSTS_BASE_PORT and NSTS_BUS_IFACE.
+DEFAULT_BASE_PORT := 6900
+DEFAULT_IFACE := "127.0.0.1"
+MULTICAST_GROUP := "239.255.1.1"
+
+parseBasePort := (raw) =>
+  port := Number(raw)
+  unless Number.isInteger(port) and 1024 <= port <= 65400
+    throw new Error(`base port must be an integer from 1024 to 65400, got '${raw}'`)
+  port
+
+busSettings := { basePort: DEFAULT_BASE_PORT, iface: DEFAULT_IFACE }
 
 busConfig := {
-  IC1: { gpcBceNum :  1, port: 6901, nom: "Intercomputer 1" }
-  IC2: { gpcBceNum :  2, port: 6902, nom: "Intercomputer 2" }
-  IC3: { gpcBceNum :  3, port: 6903, nom: "Intercomputer 3" }
-  IC4: { gpcBceNum :  4, port: 6904, nom: "Intercomputer 4" }
-  IC5: { gpcBceNum :  5, port: 6905, nom: "Intercomputer 5" }
-  DK1: { gpcBceNum :  6, port: 6906, nom: "Display/Keyboard 1" }
-  DK2: { gpcBceNum :  7, port: 6907, nom: "Display/Keyboard 2" }
-  DK3: { gpcBceNum :  8, port: 6908, nom: "Display/Keyboard 3" }
-  DK4: { gpcBceNum :  9, port: 6909, nom: "Display/Keyboard 4" }
-  PL1: { gpcBceNum : 10, port: 6910, nom: "Payload 1" }
-  PL2: { gpcBceNum : 11, port: 6911, nom: "Payload 2" }
-  LB1: { gpcBceNum : 12, port: 6912, nom: "Launch Bus 1" }
-  LB2: { gpcBceNum : 13, port: 6913, nom: "Launch Bus 2" }
-  FC5: { gpcBceNum : 14, port: 6914, nom: "Flight Critical 5" }
-  FC6: { gpcBceNum : 15, port: 6915, nom: "Flight Critical 6" }
-  FC7: { gpcBceNum : 16, port: 6916, nom: "Flight Critical 7" }
-  FC8: { gpcBceNum : 17, port: 6917, nom: "Flight Critical 8" }
-  MM1: { gpcBceNum : 18, port: 6918, nom: "Mass Memory 1" }
-  MM2: { gpcBceNum : 19, port: 6919, nom: "Mass Memory 2" }
-  FC1: { gpcBceNum : 20, port: 6920, nom: "Flight Critical 1" }
-  FC2: { gpcBceNum : 21, port: 6921, nom: "Flight Critical 2" }
-  FC3: { gpcBceNum : 22, port: 6922, nom: "Flight Critical 3" }
-  FC4: { gpcBceNum : 23, port: 6923, nom: "Flight Critical 4" }
-  IP1: { gpcBceNum : 24, port: 6924, nom: "IP1", gpc: 1}
-  IP2: { gpcBceNum : 24, port: 6925, nom: "IP2", gpc: 2}
-  IP3: { gpcBceNum : 24, port: 6925, nom: "IP3", gpc: 3}
-  IP4: { gpcBceNum : 24, port: 6926, nom: "IP4", gpc: 4}
-  IP5: { gpcBceNum : 24, port: 6927, nom: "IP5", gpc: 5}
+  IC1: { gpcBceNum :  1, offset:  1, nom: "Intercomputer 1" }
+  IC2: { gpcBceNum :  2, offset:  2, nom: "Intercomputer 2" }
+  IC3: { gpcBceNum :  3, offset:  3, nom: "Intercomputer 3" }
+  IC4: { gpcBceNum :  4, offset:  4, nom: "Intercomputer 4" }
+  IC5: { gpcBceNum :  5, offset:  5, nom: "Intercomputer 5" }
+  DK1: { gpcBceNum :  6, offset:  6, nom: "Display/Keyboard 1" }
+  DK2: { gpcBceNum :  7, offset:  7, nom: "Display/Keyboard 2" }
+  DK3: { gpcBceNum :  8, offset:  8, nom: "Display/Keyboard 3" }
+  DK4: { gpcBceNum :  9, offset:  9, nom: "Display/Keyboard 4" }
+  PL1: { gpcBceNum : 10, offset: 10, nom: "Payload 1" }
+  PL2: { gpcBceNum : 11, offset: 11, nom: "Payload 2" }
+  LB1: { gpcBceNum : 12, offset: 12, nom: "Launch Bus 1" }
+  LB2: { gpcBceNum : 13, offset: 13, nom: "Launch Bus 2" }
+  FC5: { gpcBceNum : 14, offset: 14, nom: "Flight Critical 5" }
+  FC6: { gpcBceNum : 15, offset: 15, nom: "Flight Critical 6" }
+  FC7: { gpcBceNum : 16, offset: 16, nom: "Flight Critical 7" }
+  FC8: { gpcBceNum : 17, offset: 17, nom: "Flight Critical 8" }
+  MM1: { gpcBceNum : 18, offset: 18, nom: "Mass Memory 1" }
+  MM2: { gpcBceNum : 19, offset: 19, nom: "Mass Memory 2" }
+  FC1: { gpcBceNum : 20, offset: 20, nom: "Flight Critical 1" }
+  FC2: { gpcBceNum : 21, offset: 21, nom: "Flight Critical 2" }
+  FC3: { gpcBceNum : 22, offset: 22, nom: "Flight Critical 3" }
+  FC4: { gpcBceNum : 23, offset: 23, nom: "Flight Critical 4" }
+  IP1: { gpcBceNum : 24, offset: 24, nom: "IP1", gpc: 1}
+  IP2: { gpcBceNum : 24, offset: 25, nom: "IP2", gpc: 2}
+  IP3: { gpcBceNum : 24, offset: 26, nom: "IP3", gpc: 3}
+  IP4: { gpcBceNum : 24, offset: 27, nom: "IP4", gpc: 4}
+  IP5: { gpcBceNum : 24, offset: 28, nom: "IP5", gpc: 5}
 
-  _KYBD1: { port: 6931, nom: "DPS IDP Keyboard 1" }
-  _KYBD2: { port: 6932, nom: "DPS IDP Keyboard 2" }
-  _KYBD3: { port: 6933, nom: "DPS IDP Keyboard 3" }
+  _KYBD1: { offset: 31, nom: "DPS IDP Keyboard 1" }
+  _KYBD2: { offset: 32, nom: "DPS IDP Keyboard 2" }
+  _KYBD3: { offset: 33, nom: "DPS IDP Keyboard 3" }
 
-  _IDP1: { port: 6941, nom: "MEDS IDP/MDU 1533B Bus 1" }
-  _IDP2: { port: 6942, nom: "MEDS IDP/MDU 1533B Bus 2" }
-  _IDP3: { port: 6943, nom: "MEDS IDP/MDU 1533B Bus 3" }
-  _IDP4: { port: 6944, nom: "MEDS IDP/MDU 1533B Bus 4" }
+  _IDP1: { offset: 41, nom: "MEDS IDP/MDU 1533B Bus 1" }
+  _IDP2: { offset: 42, nom: "MEDS IDP/MDU 1533B Bus 2" }
+  _IDP3: { offset: 43, nom: "MEDS IDP/MDU 1533B Bus 3" }
+  _IDP4: { offset: 44, nom: "MEDS IDP/MDU 1533B Bus 4" }
 
-  _FF1_mdmIO: { port: 6950, nom: "MDM FF1 I/O" }
+  _FF1_mdmIO: { offset: 50, nom: "MDM FF1 I/O" }
 
-  _gpcDiscretes0: { port: 6980, nom: "GPC 0 discretes", gpc: 0 }
-  _gpcDiscretes1: { port: 6981, nom: "GPC 1 discretes", gpc: 1 }
-  _gpcDiscretes2: { port: 6982, nom: "GPC 2 discretes", gpc: 2 }
-  _gpcDiscretes3: { port: 6983, nom: "GPC 3 discretes", gpc: 3 }
-  _gpcDiscretes4: { port: 6984, nom: "GPC 4 discretes", gpc: 4 }
-  _gpcDiscretes5: { port: 6985, nom: "GPC 5 discretes", gpc: 5 }
+  _NSP1_data: { offset: 60, nom: "NSP1 to PCMMU"}
+  _NSP2_data: { offset: 61, nom: "NSP2 to PCMMU"}
 
-  _NSP1_data: { port: 6960, nom: "NSP1 to PCMMU"}
-  _NSP2_data: { port: 6960, nom: "NSP1 to PCMMU"}
+  _GSE_PCMMU_T0: { offset: 70, nom: "PCMMU to GSE via T-0 umbilical"}
 
-  _GSE_PCMMU_T0: { port: 6970, nom: "PCCMU to GSE via T-0 umbilical"}
+  _gpcDiscretes0: { offset: 80, nom: "GPC 0 discretes", gpc: 0 }
+  _gpcDiscretes1: { offset: 81, nom: "GPC 1 discretes", gpc: 1 }
+  _gpcDiscretes2: { offset: 82, nom: "GPC 2 discretes", gpc: 2 }
+  _gpcDiscretes3: { offset: 83, nom: "GPC 3 discretes", gpc: 3 }
+  _gpcDiscretes4: { offset: 84, nom: "GPC 4 discretes", gpc: 4 }
+  _gpcDiscretes5: { offset: 85, nom: "GPC 5 discretes", gpc: 5 }
 
-  _LPS_FR1_CDBFR: { port: 6501, nom: "LPS FR1 CDBFR"}
+  _LPS_FR1_CDBFR: { offset: 90, nom: "LPS FR1 CDBFR"}
 
-  __SIMCONTROL: { port: 6700, nom:'Simulation Control'}
+  __SIMCONTROL: { offset: 99, nom:'Simulation Control'}
 
 }
 
 bceNumToBusConfig .= {}
 for [name,config] of Object.entries(busConfig)
+  config.name = name
   if config.gpcBceNum?
     bceNumToBusConfig[config.gpcBceNum] = config
-    bceNumToBusConfig[config.gpcBceNum].name = name
+
+// A value given here wins over the environment, which wins over the default.
+configureBus := ({basePort, iface} = {}) =>
+  busSettings.basePort = parseBasePort(basePort ?? process.env.NSTS_BASE_PORT ?? DEFAULT_BASE_PORT)
+  busSettings.iface = iface ?? process.env.NSTS_BUS_IFACE ?? DEFAULT_IFACE
+  for [name,config] of Object.entries(busConfig)
+    config.port = busSettings.basePort + config.offset
+  busSettings
+
+try
+  configureBus()
+catch e
+  console.error(`bus: ${e.message}`)
+  process.exit(2)
 
 
 class BusMsg
@@ -121,28 +149,19 @@ class Bus
     @selfEcho = []
     @_startMulticast()
 
-  // Which interface the simulated buses live on.  Every LRU is a process on
-  // this machine, so the default is loopback; NSTS_BUS_IFACE takes a local
-  // address to run a bus across a real network instead.
-  //
-  // The interface MUST be pinned.  Joining the group without naming one
-  // delivers every datagram TWICE on macOS: a sender hears two copies of its
-  // own send, and so does every peer.  The self-echo filter below drops one
-  // copy and passes the other, so a terminal reads its own transmission back
-  // as a reply -- which desynchronises every bus program by one word.
-  @IFACE = process.env.NSTS_BUS_IFACE ?? "127.0.0.1"
-
+  // The interface the busses live on: loopback, every LRU being a process
+  // on this machine, or a local address for a bus across a real network.
+  // The join names it; joining without one delivers every datagram twice on
+  // macOS, and the self-echo filter below drops only one copy.
   _startMulticast()
-    // @server = dgram.createSocket({type:"udp4", reuseAddr:true, lookup:lookup})
     @server = dgram.createSocket({type:"udp4", reuseAddr:true})
     @server.bind @busDesc.port, () =>
       @server.setBroadcast(true)
       @server.setMulticastLoopback(true)
       @server.setMulticastTTL(128)
-      @server.setMulticastInterface(Bus.IFACE)
-      @server.addMembership("239.255.1.1", Bus.IFACE)
-      // bind: dgram invokes the handler with `this` = socket, which
-      // silently orphans recvCB/busID and drops every message
+      @server.setMulticastInterface(busSettings.iface)
+      @server.addMembership(MULTICAST_GROUP, busSettings.iface)
+      // an arrow: dgram calls the handler with the socket as `this`
       @server.on('message', (message, remote) => @_recvMessage(message, remote))
     // Don't let this socket prevent process exit
     @server.unref()
@@ -172,7 +191,6 @@ class Bus
       message = message.slice(2)
     msg .= BusMsg.FromNetBuf(message)
     if @recvCB
-      //console.log "RECV ON BUS", msg
       @recvCB(@cbObj,@busID, msg, remote)
     else
       console.log "RECV UNHANDLED", @busID, message
@@ -181,7 +199,7 @@ class Bus
     return unless @server?
     len ?= data.length
     @_noteSent data, len
-    @server.send data, 0, len, @busDesc.port, "239.255.1.1"
+    @server.send data, 0, len, @busDesc.port, MULTICAST_GROUP
 
   close()
     @server?.close()
@@ -199,4 +217,5 @@ class Bus
     body.copy(buf, 2)
     @send buf, buf.length
 
-export { Bus, BusMsg, busConfig, bceNumToBusConfig };
+export { Bus, BusMsg, busConfig, bceNumToBusConfig, configureBus, busSettings,
+         parseBasePort, DEFAULT_BASE_PORT, DEFAULT_IFACE };

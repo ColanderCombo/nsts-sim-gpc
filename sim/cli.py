@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
-from .config import ConfigError, SimConfig, load
+from .config import DEFAULT_BASE_PORT, ConfigError, SimConfig, load
 from .process import LIVE, State
 from .supervisor import Supervisor
 
@@ -26,6 +26,24 @@ def default_sim_file() -> Path:
 
 def default_run_file() -> Path:
     return Path(os.environ.get("NSTS_SIM_RUNCONFIG") or ROOT / "config" / "runConfig.yml")
+
+
+def base_port(text: str) -> int:
+    try:
+        port = int(text, 10)
+    except ValueError:
+        port = -1
+    if not 1024 <= port <= 65400:
+        raise argparse.ArgumentTypeError(
+            "base port must be an integer from 1024 to 65400, got '%s'" % text)
+    return port
+
+
+def settle_base_port(given: Optional[int]) -> int:
+    if given is None:
+        given = base_port(os.environ.get("NSTS_BASE_PORT") or str(DEFAULT_BASE_PORT))
+    os.environ["NSTS_BASE_PORT"] = str(given)
+    return given
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not run any LRU's build command before starting it")
     parser.add_argument("--ascii", action="store_true",
                         help="draw with ASCII instead of line and arrow characters")
+    parser.add_argument("--base-port", type=base_port, default=None, metavar="N",
+                        help="base of the bus port block every LRU is given "
+                             "(default: NSTS_BASE_PORT, or %d)" % DEFAULT_BASE_PORT)
     parser.add_argument("--version", action="version", version="sim " + __version__)
 
     subs = parser.add_subparsers(dest="command")
@@ -79,6 +100,7 @@ def cmd_config(config: SimConfig) -> int:
         print("# %s" % config.description)
     print("catalog:   %s" % config.sim_file)
     print("configured %s" % config.run_file)
+    print("base port: %s" % os.environ["NSTS_BASE_PORT"])
     print("paths:")
     for name, path in sorted(config.paths.items()):
         print("  %-10s %s" % (name + ":", path))
@@ -174,10 +196,10 @@ def cmd_tui(config: SimConfig, build: bool, ascii_only: bool) -> int:
     sup = Supervisor(config, build=build)
     sup.start_threads()
     try:
-        App(sup, ascii_only=ascii_only).run()
+        App(sup, ascii_only=ascii_only,
+        base_port=int(os.environ["NSTS_BASE_PORT"])).run()
     finally:
-        # The busses are fixed ports, so an LRU left behind answers the
-        # next session.
+        # An LRU left behind answers the next session on the same base port.
         if any(p.state in LIVE for p in sup.procs.values()):
             print("sim: stopping the LRUs still running")
             sup.terminate_now()
@@ -188,8 +210,9 @@ def cmd_tui(config: SimConfig, build: bool, ascii_only: bool) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        settle_base_port(args.base_port)
         config = resolve(args)
-    except ConfigError as exc:
+    except (ConfigError, argparse.ArgumentTypeError) as exc:
         print("sim: %s" % exc, file=sys.stderr)
         return 2
 

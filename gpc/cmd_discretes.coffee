@@ -16,6 +16,7 @@
 # anything here that wants a starting picture asks for it with REQUEST.
 #
 
+import {addBusOptions} from 'com/busCli'
 import {DiscreteBus, DiscreteLines, decodeDiscrete, applyDiscrete, bitMask,
         DISCRETE_BITS as BITS, DISCRETE_OUT_BITS as OUT_BITS,
         DISCRETE_MODES as MODES, GPC_IDS, resolveGpcId,
@@ -39,7 +40,7 @@ gpcId = (v) -> gpcIds(v)[0]
 
 label = (list) -> "GPC #{list.join(', ')}"
 
-gpcOption = (c, help) -> c.option('--gpc <n>', help, '0')
+gpcOption = (c, help) -> addBusOptions(c.option('--gpc <n>', help, '0'))
 
 # How long to give the GPC to answer a request before showing what came
 # back.
@@ -167,8 +168,7 @@ export addCommand = (program) ->
                     "A=#{hex(reg[REG_A])} B=#{hex(reg[REG_B])} " +
                     "OUT=#{hex(reg[REG_OUT])}"
       console.log "listening to #{label(list)}"
-      # A GPC already running has the values; ask rather than wait for
-      # something to change.
+      # A GPC already running has the values, so they are asked for.
       bus.request(r1) for r1 in ALL
       if o.seconds
         setTimeout (->

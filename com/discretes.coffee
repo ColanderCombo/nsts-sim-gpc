@@ -3,19 +3,18 @@
 # This module models a GPC's discrete input and output registers
 # using the multicast bus mechanism.
 #
-# Each bit in a discrete register is attached to a physical wire
-# and will be asserted or read by devices likely modeled in a 
-# separate process. (e.g., the MMU1/MMU2 READY bits are asserted 
-# by the MMU and read by the GPC).  
+# Each bit in a discrete register is a physical wire, asserted or read by
+# devices modelled in separate processes (the MMU1/MMU2 READY bits are
+# asserted by the MMU and read by the GPC).
 #
-# Each line runs to one computer: busConfig._gpcDiscretes<N>, port 6980 +
-# GPC ID, 0 for a standalone GPC.  A device wired to every computer, such
+# Each line runs to one computer: busConfig._gpcDiscretes<N>, bus offset
+# 80 + GPC ID, 0 for a standalone GPC.  A device wired to every computer, such
 # as a mass memory's READY, drives them all through DiscreteLines.
 #
-# We don't yet model any ownership of fields, but to allow multiple
-# processes to write to a single word we use SET/RESET masks.  The GPC
+# Fields have no owner: any process writes a word through SET/RESET
+# masks.  The GPC
 # holds the canonical value of all three registers: it applies the
-# SET/RESET a device sends, it publishes its own writes to the output
+# SET/RESET a device sends, it publishes what it writes to the output
 # register the same way, and it is the only sender of VALUE.  Nothing is
 # re-broadcast on a timer, so a process that attaches late asks with
 # REQUEST.

@@ -120,6 +120,8 @@ export class MDU extends LRU
     @mdu_menuArea.build()
 
     @screens = {}
+    # a console handle: `mdu1.screens.DPS.walkReport()`
+    globalThis["mdu#{@id}"] = @
 
     @mdu_menuArea.setCurPort(@cmdPort)
     @mdu_menuArea.setFCBus(@flightCritBus)
@@ -181,7 +183,7 @@ export class MDU extends LRU
     @screens?['DPS']?.setPollFail(true)
     @redraw()
 
-  # A GPC is polling us again.
+  # A GPC is polling this unit again.
   _pollHeard: () ->
     return if not @dps_poll_fail
     @dps_poll_fail = false
@@ -254,9 +256,8 @@ export class MDU extends LRU
           scr.setRefreshStart(msg.data16[1])
           t.redraw()
 
-  # The secondary port has a heartbeat of its own, so it can drop
-  # independently of the primary -- which is what the AUTONOMOUS display's
-  # timeout line reports.
+  # The secondary port has a separate heartbeat and can drop independently
+  # of the primary; the AUTONOMOUS display's timeout line reports which.
   recvFromSec: (t,busID, msg, remote) ->
     if t._secTimedOut
       t._secTimedOut = false
@@ -360,7 +361,7 @@ export class MDU extends LRU
       console.log "AUTO", @prevMenuName
       @redraw()
     # keep the timeout-reason line current: the sec port can drop after the
-    # pri port did, and each has its own heartbeat
+    # pri port did; each has a heartbeat
     if @screens['AUTONOMOUS']?.setTimeouts(not @_idpUp, @_secTimedOut)
       @redraw()
 
@@ -464,8 +465,8 @@ export class MDU extends LRU
     # pulldown, plain get/set an on/off checkbox. Engaging a test rewrites
     # curData, so the value fields re-sync afterward.
     for tc in tcs
-      # {header: '...'} descriptors start a titled group (e.g. the
-      # reference-overlay controls) rather than adding a control row
+      # {header: '...'} descriptors start a titled group (the
+      # reference-overlay controls, for one)
       if tc.header?
         gh = document.createElement('div')
         gh.style.cssText = 'font-weight:bold; margin:8px 0 3px; padding-top:5px; color:#2df; border-top:1px solid #345;'

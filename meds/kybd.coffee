@@ -1,5 +1,7 @@
 
 import {Bus, BusMsg, busConfig} from './../com/bus.civet.jsx'
+import {KYBDMsg, KYBD_MSG_MASK} from 'meds/medsConf'
+import * as DEU from 'meds/deuProto'
 
 $ = require('jquery')
 
@@ -90,6 +92,30 @@ export class KYBD
       @_scanToKey[k.deuCode] = k for _, k of @DEUKey.keys
     @_scanToKey[scan & 0xffff]
 
+  # Major Function (MF) switch keybindings:
+  @MF_KEYS: {'<': 'GNC', '>': 'SM', '?': 'PL'}
+
+  # The switch position a keydown selects, under the same rule as deuKeyFor.
+  @majorFuncFor: (ev) ->
+    return null unless ev?
+    return null if @isEditable(ev.target)
+    return null if ev.ctrlKey or ev.metaKey or ev.altKey
+    @MF_KEYS[ev.key] ? null
+
+  # The word a switch position puts on the keyboard bus.
+  @majorFuncWord: (name) -> KYBDMsg.MAJOR_FUNC | DEU.MAJOR_FUNC_CODE[name]
+
+  # One halfword off a keyboard bus: {key} for a keyswitch scan pattern,
+  # {majorFunc} (the DEU code) for the switch, null for anything else.
+  @decode: (w) ->
+    w &= 0xffff
+    k = @byScan(w)
+    return {key: k} if k?
+    if (w & KYBD_MSG_MASK) == KYBDMsg.MAJOR_FUNC
+      code = w & ~KYBD_MSG_MASK & 0xffff
+      return {majorFunc: code} if DEU.MAJOR_FUNC_NAME[code]?
+    null
+
   @isEditable: (el) ->
     return false unless el?
     tag = el.tagName?.toLowerCase()
@@ -97,13 +123,13 @@ export class KYBD
     !!el.isContentEditable
 
   @deuKeyFor: (ev) ->
-    # don't steal Mod+Key's or when we're focused on a text box:
     return null unless ev?
     return null if @isEditable(ev.target)
     return null if ev.ctrlKey or ev.metaKey or ev.altKey
     @DPSKeys[ev.keyCode] ? null
 
   constructor: (@kybdBus, @mdu=null) ->
+    @majorFunc = DEU.MAJOR_FUNC_NAME[DEU.MAJOR_FUNC_DEFAULT]
     @_setupBus()
     $(document).keydown (ev) =>
       return if KYBD.isEditable(ev.target)
@@ -118,12 +144,10 @@ export class KYBD
         @mdu.screens['DPS']?.cycleBGDFB(if ev.key == 'F12' then 1 else -1)
         @mdu.redraw()
         return
-      # Debug: reference-screenshot overlays (Shift = cycle opacity). Images
-      # live in data/overlay_images/ and are selectable from the param
-      # editor's 'reference overlay' group, which every screen carries.
-      # F8 = the CURRENT screen's overlay (per-screen key via mdu.ovIdent;
-      # AE_PFD/DPS keep their legacy keys), F7 = the DPS overlay always
-      # (legacy shortcut).
+      # Debug: reference-screenshot overlays, Shift cycling the opacity.
+      # Images live in data/overlay_images/ and are selectable from the param
+      # editor's 'reference overlay' group.  F8 is the current screen's
+      # overlay, keyed by mdu.ovIdent; F7 is the DPS overlay.
       if ev.key == 'F8' and @mdu?
         ev.preventDefault()
         {key, dflt} = @mdu.ovIdent()
@@ -140,6 +164,11 @@ export class KYBD
         @mdu.screens['DPS']?.toggleSelfTest()
         @mdu.redraw()
         return
+      mf = KYBD.majorFuncFor(ev)
+      if mf?
+        ev.preventDefault()
+        @setMajorFunc(mf)
+        return
       k = KYBD.deuKeyFor(ev)
       @keyPress(k) if k?
 
@@ -150,6 +179,15 @@ export class KYBD
 
   recvKYBD: (busID, msg, remote) =>
     console.log "KYBD#{@kybdBus}: #{busID} recv #{msg}"
+
+  # Send the position on the keyboard bus, every press, and retitle the MDU.
+  setMajorFunc: (name) =>
+    return unless DEU.MAJOR_FUNC_CODE[name]?
+    @majorFunc = name
+    msg = new BusMsg(1)
+    msg.data16[0] = KYBD.majorFuncWord(name)
+    @bus.sendMsg msg
+    @mdu?.setMajorFunc(name)
 
   keyPress: (k) => 
     console.log "KYBD keyPress", k

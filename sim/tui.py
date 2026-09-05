@@ -7,6 +7,7 @@ import os
 import time
 from typing import Optional
 
+from .config import DEFAULT_BASE_PORT
 from .process import LIVE
 from .screen import Screen
 from .supervisor import Supervisor
@@ -17,9 +18,11 @@ SPINNER = "|/-\\"
 
 
 class App:
-    def __init__(self, sup: Supervisor, ascii_only: bool = False):
+    def __init__(self, sup: Supervisor, ascii_only: bool = False,
+                 base_port: int = DEFAULT_BASE_PORT):
         self.sup = sup
         self.ascii = ascii_only
+        self.base_port = base_port
         self.screen: Optional[Screen] = None
         self.view = None
         self.main = None
@@ -64,9 +67,11 @@ class App:
         bar = screen.attr("plain", reverse=True, bold=True)
         screen.fill(0, bar)
         screen.put(0, 1, " SIM ", screen.attr("title", reverse=True, bold=True))
-        screen.put(0, 7, screen.clip(text, screen.w - 30), bar)
-        clock = time.strftime("%H:%M:%S")
-        screen.put(0, max(0, screen.w - len(clock) - 2), clock, bar)
+        right = time.strftime("%H:%M:%S")
+        if self.base_port != DEFAULT_BASE_PORT:
+            right = "base:%d  %s" % (self.base_port, right)
+        screen.put(0, 7, screen.clip(text, screen.w - len(right) - 10), bar)
+        screen.put(0, max(0, screen.w - len(right) - 2), right, bar)
 
     def message_line(self, screen: Screen, y: int) -> None:
         if self.sup.busy():

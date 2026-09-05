@@ -8,6 +8,7 @@
 fs = require 'fs'
 path = require 'path'
 
+import {addBusOptions} from 'com/busCli'
 import {AGEHarness} from 'gpc/ageharness'
 import {IOHost} from 'gpc/iohost'
 import {DebugSession} from 'gpc/dbgsession'
@@ -24,6 +25,7 @@ export addCommand = (program) ->
 
   AGEHarness.addOptions(cmd)
   IOHost.addOptions(cmd, 3)
+  addBusOptions(cmd)
 
   cmd
     .option('--port <n>', "TCP port to listen on (default: #{DEFAULT_PORT})", String(DEFAULT_PORT))

@@ -8,6 +8,7 @@
 #   GPCMD.sh bite --idp 1                      # Built-In Test Equipment query
 #   GPCMD.sh resetspl                          # clear the Scratch Pad Line
 #   GPCMD.sh key SYS_SUMM --idp 1              # press a keyboard key
+#   GPCMD.sh mf SM --idp 1                     # the major function switch
 #   GPCMD.sh raw 71800 0001 19EE               # raw command and its data
 #   GPCMD.sh monitor                           # monitor every bus
 #   GPCMD.sh monitor DK1 --fcw                 # ... decoding the formats
@@ -16,6 +17,7 @@
 #
 import * as fs from 'fs'
 import {Bus, BusMsg, busConfig} from '../com/bus.civet.jsx'
+import {addBusOptions} from '../com/busCli'
 import {FCW, wordsFromBytes, bytesFromWords} from '../meds/deuFCW'
 import * as DEU from '../meds/deuProto'
 import {MDUMsgName} from '../meds/medsConf'
@@ -239,6 +241,25 @@ program.command('key')
         console.log "key #{k.ascii} (scan #{k.deuCode.toString(16)}, " +
                     "code #{k.gpcCode.toString(16)}) -> #{bus.busID}"), o
 
+program.command('mf')
+  .description('set a unit\'s major function switch')
+  .argument('<position>', 'GNC, SM or PL')
+  .option('--idp <n>', 'target IDP 1..4', '1')
+  .option('--kybd <bus>', 'keyboard bus to send on (default: the IDP\'s first)')
+  .action (position, o) ->
+    name = position.toUpperCase()
+    if not DEU.MAJOR_FUNC_CODE[name]?
+      console.error "gpcmd: the major function is GNC, SM or PL"
+      process.exit(2)
+    n = parseInt(o.idp, 10)
+    busName = o.kybd ? "_KYBD#{if n == 4 then 3 else n}"
+    bus = openBus(busName, true)
+    sendMsgs bus, (->
+      msg = new BusMsg(1)
+      msg.data16[0] = KYBD.majorFuncWord(name)
+      bus.sendMsg msg
+      console.log "major function #{name} (word #{hex4 msg.data16[0]}) -> #{bus.busID}"), o
+
 #
 # monitor
 #
@@ -334,12 +355,16 @@ program.command('monitor')
 
     onKYBD = (name, words) ->
       for w in words
-        k = KYBD.byScan(w)
-        if k?
+        d = KYBD.decode(w)
+        if d?.key?
+          k = d.key
           say name, "KEY #{k.ascii} (scan #{hex4 w}, code #{k.gpcCode.toString(16)})",
                {kind: 'key', key: k.ascii, code: k.gpcCode}
+        else if d?.majorFunc?
+          say name, "MAJOR FUNC #{DEU.MAJOR_FUNC_NAME[d.majorFunc]} (word #{hex4 w})",
+               {kind: 'major-func', majorFunc: DEU.MAJOR_FUNC_NAME[d.majorFunc]}
         else
-          say name, "scan #{hex4 w} (no such key)", {kind: 'key-unknown', raw: w}
+          say name, "word #{hex4 w} (no such key)", {kind: 'key-unknown', raw: w}
 
     for name in names
       if name not of busConfig
@@ -405,8 +430,8 @@ program.command('unit')
         msg.data16[i] = words[i] & 0xffff for i in [0...words.length]
         bus.sendMsg msg
       log: (text) -> console.log "#{ms()}  #{text}"
-    # answering with nothing in BITE register 1 reproduces "NO DEU POLL
-    # RESPONSE" from a unit that IS replying
+    # a zero BITE register 1 is what a GPC reads as no response, from a unit
+    # that is replying
     unit.biteState = (-> {bite1: 0}) if o.bite == false
 
     bus.onReceive ((_, busID, msg) ->
@@ -437,12 +462,15 @@ program.command('unit')
     kybd = new Bus(kybdName, busConfig[kybdName])
     kybd.onReceive ((_, busID, msg) ->
       for i in [0...msg.data16.length]
-        k = KYBD.byScan(msg.data16[i])
-        if k?
-          unit.pressKey k.gpcCode
-          console.log "#{ms()}  key #{k.ascii} (code #{k.gpcCode.toString(16)}) queued"
+        d = KYBD.decode(msg.data16[i])
+        if d?.key?
+          unit.pressKey d.key.gpcCode
+          console.log "#{ms()}  key #{d.key.ascii} (code #{d.key.gpcCode.toString(16)}) queued"
+        else if d?.majorFunc?
+          unit.majorFunc = d.majorFunc
+          console.log "#{ms()}  major function #{DEU.MAJOR_FUNC_NAME[d.majorFunc]}"
         else
-          console.log "#{ms()}  unknown keyboard scan 0x#{hex4 msg.data16[i]}"
+          console.log "#{ms()}  unknown keyboard word 0x#{hex4 msg.data16[i]}"
       ), null
 
     console.log "display unit #{n} on #{busName}, keyboard #{kybdName} " +
@@ -465,5 +493,8 @@ program.command('unit')
         console.log "display memory written to #{o.dump}"
       process.exit(0)
     setInterval (->), 60000
+
+# Every command here opens a bus.
+addBusOptions(c) for c in program.commands
 
 program.parse()

@@ -28,6 +28,13 @@ const civetPlugin = {
     },
 };
 
+// A bus domain for this test (com/bus.civet: every port is an offset from
+// NSTS_BASE_PORT): a base drawn from the process id, 20000 to 59900 by 100,
+// or NSTS_TEST_BASE_PORT.  It is printed first.
+process.env.NSTS_BASE_PORT =
+    process.env.NSTS_TEST_BASE_PORT ?? String(20000 + (process.pid % 400) * 100);
+console.log(`bus base port ${process.env.NSTS_BASE_PORT}`);
+
 async function bundle(rel) {
     const out = path.join(os.tmpdir(),
         `mmu.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
@@ -234,7 +241,7 @@ const xferOperand = (t, s, blk, cnt) =>
     ok(samePos(C.unpackPosition(heard.splice(0)[0]), {track: 4, file: 4, subfile: 2, bof: 0, eof: 0}),
        'and the transport reports where it was sent');
 
-    // A read of one block, from where the tape actually has data.
+    // A read of one block, from where the tape has data.
     send(cmd(C.OP.READ, xferOperand(4, 3, 8, 0)));
     await settle();
     const block = heard.splice(0);
@@ -260,7 +267,7 @@ const xferOperand = (t, s, blk, cnt) =>
        'blocks 8 through 24 of subfile 3 still end in the gap before subfile 4');
 
     // Running off the end of subfile 7 is an end-of-file block count error,
-    // and the read is cut short rather than wrapping into the next file.
+    // and the read is cut short at the file boundary.
     send(cmd(C.OP.POSITION, posOperand(0, 6, 0, 0, 0)));
     send(cmd(C.OP.READ, xferOperand(0, 7, 30, 8)));
     await settle(200);
@@ -294,7 +301,7 @@ const xferOperand = (t, s, blk, cnt) =>
     eq(heard.splice(0), [0, 0], 'and it is not latched as a status error');
 
     // An unknown opcode is a command error, and a command for another IUA
-    // is not ours to complain about.
+    // is ignored.
     send(cmd(0x7));
     send((7 << 19) | (0x7 << 15));
     await settle();

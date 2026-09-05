@@ -3,6 +3,7 @@
 import * as gpc from './../../gpc/gui.coffee'
 import * as mdu from './../../meds/mdu.coffee'
 import * as idp from './../../meds/idp.coffee'
+import {configureBus} from './../../com/bus.civet.jsx'
 
 ipcRenderer := window.ipcRenderer
 reactClient := require 'react-dom/client';
@@ -16,6 +17,7 @@ ipcRenderer.on "cde-left-inset", (e, inset) =>
 // LRU-mode renderer: one window per windowed LRU (MDU display), with
 // headless "shared" LRUs (IDPs) bundled in for bus comms only
 startLRUs := async (CONFIG) =>
+  configureBus(CONFIG.bus) if CONFIG.bus?
   lruMap := {
     'meds/mdu': mdu
     'meds/idp': idp
@@ -31,9 +33,8 @@ startLRUs := async (CONFIG) =>
       console.error "startup: no renderer module for #{lruConf.module} (LRU #{lruName})"
       continue
     lru := mod.default.start(lruConf)
-    // Shared (headless) LRUs are bundled into a windowed LRU's renderer for
-    // bus comms only -- they must not render initWindow() into #root, or they
-    // clobber the windowed LRU's React root (e.g. IDP blanking the MDU).
+    // A shared (headless) LRU is here for bus comms and does not render into
+    // #root.
     if lru.initWindow? and not lruConf.shared
       container := document.getElementById("root")
       await reactClient.createRoot(container!).render(await lru.initWindow())

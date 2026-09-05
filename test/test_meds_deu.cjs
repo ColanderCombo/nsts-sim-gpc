@@ -2,7 +2,7 @@
 //
 // Command encode and decode, the memory-fill message, the poll response and
 // its checksum, and a round trip over a real bus in the framing a GPC's bus
-// control element actually uses (a command is two halfwords, a data word is
+// control element uses (a command is two halfwords, a data word is
 // one).
 //
 // Usage:
@@ -32,6 +32,13 @@ const civetPlugin = {
         }));
     },
 };
+
+// A bus domain for this test (com/bus.civet: every port is an offset from
+// NSTS_BASE_PORT): a base drawn from the process id, 20000 to 59900 by 100,
+// or NSTS_TEST_BASE_PORT.  It is printed first.
+process.env.NSTS_BASE_PORT =
+    process.env.NSTS_TEST_BASE_PORT ?? String(20000 + (process.pid % 400) * 100);
+console.log(`bus base port ${process.env.NSTS_BASE_PORT}`);
 
 async function bundle(rel) {
     const out = path.join(os.tmpdir(),
@@ -100,7 +107,7 @@ async function main() {
     eq(hdr.length, 2, 'the fill header is two halfwords');
     eq(hdr[0], 3, 'word 1 is the count');
     eq(hdr[1], 0x19ee, 'word 2 is the address');
-    // the address is plain, not flagged: the DEU loader's own fill table
+    // the address is plain: the DEU loader's fill table
     // holds addresses with bit 12 both set and clear.
     eq(DEU.fillHeader(0x0f49, 1)[1], 0x0f49, 'an address below 0x1000 is left alone');
     eq(DEU.fillHeader(0x1fe4, 1)[1], 0x1fe4, 'and one above keeps its top bit');
@@ -206,7 +213,7 @@ async function main() {
     const one1 = DEU.pollResponse({keys: [DEU.KEY.SYS_SUMM]});
     eq(one1[1], 0xff01, 'one key');
     eq(one1[2], 0x8000, '...at the top of the first key halfword');
-    // More keys than the buffer holds are dropped, not wrapped.
+    // More keys than the buffer holds are dropped.
     const many = DEU.pollResponse({keys: new Array(40).fill(DEU.KEY['1'])});
     eq(many.length, 16, 'an over-full keyboard still gives 16 halfwords');
     eq(many[1] & DEU.KEY_COUNT_MASK, DEU.MAX_KEYS,
@@ -235,7 +242,7 @@ async function main() {
        '...and all four keys ride out together, in order');
     eq(u.pollResponse()[0] & DEU.HDR.KYBD_MSG, 0, 'and only once');
 
-    // CLEAR is the unit's own -- it wipes the scratch pad and is not sent.
+    // CLEAR wipes the scratch pad in the unit and is not sent.
     const uc = mkUnit();
     for (const k of ['ITEM', '1', 'CLEAR']) uc.pressKey(DEU.KEY[k]);
     eq(uc.pollResponse()[0] & DEU.HDR.KYBD_MSG, 0, 'CLEAR discards the entry');
@@ -255,7 +262,16 @@ async function main() {
     eq(u2.pollResponse()[1] & DEU.KEY_COUNT_MASK, 1, '...and the next follows');
     eq(u2.pollResponse()[0] & DEU.HDR.KYBD_MSG, 0, '...and then no more');
 
-    // MSG RESET and ACK are HEADER bits, not keystrokes
+    // The major function switch rides in the header, GNC until it is read.
+    const usw = mkUnit();
+    const mfOf = (u) => (u.pollResponse()[0] & DEU.HDR.MAJOR_FUNC) >>> DEU.MAJOR_FUNC_SHIFT;
+    eq(mfOf(usw), DEU.MAJOR_FUNC_CODE.GNC, 'a unit reports GNC before the switch is read');
+    usw.majorFunc = DEU.MAJOR_FUNC_CODE.SM;
+    eq(mfOf(usw), DEU.MAJOR_FUNC_CODE.SM, 'SM once the switch says so');
+    usw.majorFunc = DEU.MAJOR_FUNC_CODE.PL;
+    eq(mfOf(usw), DEU.MAJOR_FUNC_CODE.PL, '...and PL');
+
+    // MSG RESET and ACK are header bits
     //
     // The IPL monitor reads both out of the poll response header in
     // POLLRSP (bits 4 and 10, numbered from the most significant), and
@@ -288,8 +304,8 @@ async function main() {
        [DEU.KEY.ITEM, DEU.KEY['1'], DEU.KEY.EXEC].join(','),
        '...and the entry completes intact afterwards');
 
-    // A response carrying MSG RESET or ACK does NOT carry a keyboard
-    // message: when either bit is set, KYBD MSG PRESENT is not.
+    // A response carrying MSG RESET or ACK carries no keyboard message:
+    // when either bit is set, KYBD MSG PRESENT is clear.
     const uq = mkUnit();
     for (const k of ['ITEM', '1', '8', 'EXEC']) uq.pressKey(DEU.KEY[k]);
     uq.pressKey(DEU.KEY.MSG_RESET);
