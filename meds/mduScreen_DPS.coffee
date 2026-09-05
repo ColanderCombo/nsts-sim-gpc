@@ -47,14 +47,14 @@ export class Screen_DPS extends MDUScreen
       @group.add @geo_idpNo
     @d.dirty = true
 
+  # 'left', 'right', 'both' or null: the forward keyboards switched to the
+  # IDP whose display this is.
   setKybd: (@kybd) ->
     @curData.kybd = @kybd if @curData?
     @group.remove @geo_kybd_left
     @group.remove @geo_kybd_right
-    if @kybd == 'left'
-      @group.add @geo_kybd_left
-    else if @kybd == 'right'
-      @group.add @geo_kybd_right
+    @group.add @geo_kybd_left if @kybd in ['left', 'both']
+    @group.add @geo_kybd_right if @kybd in ['right', 'both']
     @d.dirty = true
 
   # Half a box height down and about four pixels up from the box origin.

@@ -21,6 +21,7 @@ import {VectorDisplay} from 'meds/mduVectorDisplay'
 import {MDUMenuArea} from 'meds/mduMenuArea'
 import {MDUEdgeKeys} from 'meds/mduEdgeKeys'
 import {KYBD} from 'meds/kybd'
+import {IDPSel} from 'meds/idpSel'
 import Menus from 'meds/mduMenu'
 
 ScreenMods = {
@@ -58,7 +59,13 @@ export class MDU extends LRU
     lruConfig.busses[0] = "_IDP#{priPortIDP}"
     if secPortIDP?
       lruConfig.busses[1] = "_IDP#{secPortIDP}"
+    lruConfig.busses.push '_IDPSW'
     super(lruConfig)
+
+    # The IDP/CRT SEL switches; the IDPs hold the positions and answer.
+    @sel = new IDPSel(@bus['_IDPSW'])
+    @sel.onChange (s) => @_selChanged(s)
+    @sel.query()
 
     @screenMods = ScreenMods
     @_pollWatchdog = null        # POLL FAIL: re-armed by the GPC's poll/clock
@@ -92,7 +99,6 @@ export class MDU extends LRU
 
     @cmdPort = 0
     @flightCritBus = 3
-    @kybd = 'left'
     @majorFunc = DEU.MAJOR_FUNC_NAME[DEU.MAJOR_FUNC_DEFAULT]
     @portReconfigureModeAuto = false
     @modeNegView = false
@@ -134,7 +140,7 @@ export class MDU extends LRU
     @watchIDP()
     @redraw()
 
-    @kybd = new KYBD(1,@)
+    @kybd = new KYBD(@, @sel)
 
     # Debug: double-click outside the display canvas (e.g. in space opened
     # by dragging the window edges out) toggles a live feed-parameter editor
@@ -156,16 +162,51 @@ export class MDU extends LRU
   commandingIDP: () ->
     if @cmdPort == 1 and @secPortIDP? then @secPortIDP else @priPortIDP
 
+  # The keyboard bars beside the IDP box on the DPS display, USA-007587
+  # sect.2.6: red on the left while the commander's keyboard is switched to
+  # the IDP whose display this is, yellow on the right for the pilot's.
+  # IDP 4's display has neither.
+  kybdBars: () ->
+    idp = @commandingIDP()
+    s = @sel.state()
+    left = IDPSel.selected(idp, IDPSel.LEFT, s)
+    right = IDPSel.selected(idp, IDPSel.RIGHT, s)
+    if left and right then 'both' else if left then 'left' else if right then 'right' else null
+
+  # The IDP self-test page's switch fields, for the commanding IDP.
+  idpCstData: (cur) ->
+    idp = @commandingIDP()
+    s = @sel.state()
+    d = IDPSel.discretes(idp, s)
+    Object.assign {}, cur, {
+      leftIdpSel: s.left
+      rightIdpSel: s.right
+      activeKybd: IDPSel.keyboardFor(idp, s) ? ''
+      kybdSelA: if d.A then 'ON' else 'OFF'
+      kybdSelB: if d.B then 'ON' else 'OFF'
+    }
+
+  _syncKybd: () ->
+    @screens?['DPS']?.setKybd(@kybdBars())
+    cst = @screens?['IDP_CST']
+    cst.setData(@idpCstData(cst.data())) if cst?.data()?
+
+  _selChanged: (s) ->
+    console.log "IDP/CRT SEL: LEFT #{s.left} RIGHT #{s.right}"
+    return unless @disp?
+    @_syncKybd()
+    @redraw()
+
   updateMduData: () ->
     @mdu_menuArea.setData {
       priPortIDP: @priPortIDP
       secPortIDP: @secPortIDP
-      cmdPort: 1
+      cmdPort: @cmdPort
       flightCritBus: @flightCritBus
       portReconfigureModeAuto: @portReconfigureModeAuto
       modNegView: @modeNegView
       faultLineMsg: @faultLineMsg
-      curIDP: @priPortIDP
+      curIDP: @commandingIDP()
     }
 
   POLL_FAIL_MS = 3000       # DPS poll fail timer
@@ -313,6 +354,9 @@ export class MDU extends LRU
         cd.setBigX(@dps_big_x and not @dps_otp)
         cd.setPollFail(@dps_poll_fail)
         cd.setIDPNo(@commandingIDP())
+        cd.setKybd(@kybdBars())
+      else if @curDisplay == 'IDP_CST'
+        cd.setData(@idpCstData(cd.data()))
       if cd.group?
         @disp.scene.add cd.group
         @redraw()
@@ -330,6 +374,7 @@ export class MDU extends LRU
     #@updateMduData()
     @mdu_menuArea.setCurPort(@cmdPort)
     @screens?['DPS']?.setIDPNo(@commandingIDP())
+    @_syncKybd()
     @redraw()
 
   toggleReconfigMode: () ->

@@ -2,6 +2,7 @@
 import {Bus, BusMsg, busConfig} from './../com/bus.civet.jsx'
 import {KYBDMsg, KYBD_MSG_MASK} from 'meds/medsConf'
 import * as DEU from 'meds/deuProto'
+import {IDPSel} from 'meds/idpSel'
 
 $ = require('jquery')
 
@@ -102,6 +103,16 @@ export class KYBD
     return null if ev.ctrlKey or ev.metaKey or ev.altKey
     @MF_KEYS[ev.key] ? null
 
+  # IDP/CRT SEL switch keybindings: '[' throws the LEFT switch between 1 and
+  # 3, ']' the RIGHT between 2 and 3.
+  @SEL_KEYS: {'[': 'left', ']': 'right'}
+
+  @selKeyFor: (ev) ->
+    return null unless ev?
+    return null if @isEditable(ev.target)
+    return null if ev.ctrlKey or ev.metaKey or ev.altKey
+    @SEL_KEYS[ev.key] ? null
+
   # The word a switch position puts on the keyboard bus.
   @majorFuncWord: (name) -> KYBDMsg.MAJOR_FUNC | DEU.MAJOR_FUNC_CODE[name]
 
@@ -128,7 +139,9 @@ export class KYBD
     return null if ev.ctrlKey or ev.metaKey or ev.altKey
     @DPSKeys[ev.keyCode] ? null
 
-  constructor: (@kybdBus, @mdu=null) ->
+  # A window's keystrokes go to the IDP commanding its MDU, over the
+  # keyboard the IDP/CRT SEL switches have on that IDP (meds/idpSel).
+  constructor: (@mdu=null, @sel=null) ->
     @majorFunc = DEU.MAJOR_FUNC_NAME[DEU.MAJOR_FUNC_DEFAULT]
     @_setupBus()
     $(document).keydown (ev) =>
@@ -169,30 +182,52 @@ export class KYBD
         ev.preventDefault()
         @setMajorFunc(mf)
         return
+      sw = KYBD.selKeyFor(ev)
+      if sw?
+        ev.preventDefault()
+        if sw == 'left' then @sel?.toggleLeft() else @sel?.toggleRight()
+        return
       k = KYBD.deuKeyFor(ev)
       @keyPress(k) if k?
 
   _setupBus: () ->
-    @busName = "_KYBD#{@kybdBus}" 
-    @bus = new Bus(@busName, busConfig[@busName])
-    @bus.onReceive @recvKYBD
+    @buses = {}
+    for n in [1..3]
+      @buses[n] = new Bus("_KYBD#{n}", busConfig["_KYBD#{n}"])
+      @buses[n].onReceive @recvKYBD, @
 
-  recvKYBD: (busID, msg, remote) =>
-    console.log "KYBD#{@kybdBus}: #{busID} recv #{msg}"
+  recvKYBD: (t, busID, msg, remote) ->
+    console.log "KYBD: #{busID} recv #{msg}"
 
-  # Send the position on the keyboard bus, every press, and retitle the MDU.
+  idp: () -> @mdu?.commandingIDP() ? 1
+
+  selState: () -> @sel?.state() ? {left: 1, right: 2}
+
+  # The keyboard switched to the IDP, or null.
+  kybdFor: (idp) -> IDPSel.keyboardFor(idp, @selState())
+
+  # Send the position on a keyboard bus wired to the IDP, every press, and
+  # retitle the MDU.  The MAJ FUNC switch is the IDP's, beside the select
+  # switch on panel C2, so it goes whether or not the keyboard is selected.
   setMajorFunc: (name) =>
     return unless DEU.MAJOR_FUNC_CODE[name]?
     @majorFunc = name
+    idp = @idp()
+    n = @kybdFor(idp) ? IDPSel.wiredTo(idp)[0]
     msg = new BusMsg(1)
     msg.data16[0] = KYBD.majorFuncWord(name)
-    @bus.sendMsg msg
+    @buses[n].sendMsg msg
     @mdu?.setMajorFunc(name)
 
   keyPress: (k) => 
-    console.log "KYBD keyPress", k
+    idp = @idp()
+    n = @kybdFor(idp)
+    if not n?
+      console.log "KYBD: no keyboard is switched to IDP #{idp}, #{k.ascii} dropped"
+      return
+    console.log "KYBD keyPress", k.ascii, "-> IDP#{idp} on _KYBD#{n}"
     kybdMsg = new BusMsg(1)
     kybdMsg.data16[0] = k.deuCode
-    @bus.sendMsg kybdMsg
+    @buses[n].sendMsg kybdMsg
     if @mdu
       @mdu.screens['DPS']?.recvKey(k)

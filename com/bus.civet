@@ -46,9 +46,10 @@ busConfig := {
   IP4: { gpcBceNum : 24, offset: 27, nom: "IP4", gpc: 4}
   IP5: { gpcBceNum : 24, offset: 28, nom: "IP5", gpc: 5}
 
-  _KYBD1: { offset: 31, nom: "DPS IDP Keyboard 1" }
-  _KYBD2: { offset: 32, nom: "DPS IDP Keyboard 2" }
-  _KYBD3: { offset: 33, nom: "DPS IDP Keyboard 3" }
+  _KYBD1: { offset: 31, nom: "Left keyboard, to IDP 1 and IDP 3" }
+  _KYBD2: { offset: 32, nom: "Right keyboard, to IDP 3 and IDP 2" }
+  _KYBD3: { offset: 33, nom: "Aft keyboard (R11L), to IDP 4" }
+  _IDPSW: { offset: 34, nom: "IDP/CRT SEL switch positions" }
 
   _IDP1: { offset: 41, nom: "MEDS IDP/MDU 1533B Bus 1" }
   _IDP2: { offset: 42, nom: "MEDS IDP/MDU 1533B Bus 2" }

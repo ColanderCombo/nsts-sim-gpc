@@ -592,6 +592,14 @@ DPS Keyboard Unit buttons are mapped to regular keyboard keys (mapped key in par
 
 The major function switch is `<` GNC, `>` SM and `?` PL.
 
+Keystrokes go to the IDP commanding the window's MDU, over the keyboard
+the IDP/CRT SEL switches have on that IDP: the left keyboard is wired to
+IDP 1 and IDP 3, the right to IDP 3 and IDP 2, the aft to IDP 4 (see
+`meds/idpSel.coffee`).  `[` throws the LEFT switch between 1 and 3, `]`
+the RIGHT between 2 and 3; the red and yellow bars beside the IDP box on
+the DPS display follow them.  With no keyboard switched to an IDP its
+windows drop their keystrokes.
+
 
 Debug tools: The `--dev` option enables a standalone development 
 mode that enables tools for refining the drawing and display features
@@ -615,6 +623,8 @@ GPCMD.sh unit --idp 1                         # BE a display unit, headless
 GPCMD.sh unit --ipl-request --fcw             # ... and ask to be loaded
 GPCMD.sh key SPEC 2 PRO --idp 1               # press keys on a unit's keyboard
 GPCMD.sh mf SM --idp 1                        # move its major function switch
+GPCMD.sh idpsel 3 2                           # LEFT IDP/CRT SEL to 3, RIGHT to 2
+GPCMD.sh idpsel                               # ask the IDPs where the switches are
 GPCMD.sh fill data/TEST-9011-GPC_MEMORY.dfb   # display data fill
 GPCMD.sh fill f.dfb --addr 19EE --format      # ... as a format data fill
 GPCMD.sh time --interval 1                    # the MET/CRT header clock

@@ -22,6 +22,7 @@ import {FCW, wordsFromBytes, bytesFromWords} from '../meds/deuFCW'
 import * as DEU from '../meds/deuProto'
 import {MDUMsgName} from '../meds/medsConf'
 import {KYBD} from '../meds/kybd'
+import {IDPSel, TAG as IDPSel_TAG} from 'meds/idpSel'
 import {DEUUnit} from '../meds/deuUnit'
 {Command} = require 'commander'
 process = require 'process'
@@ -219,11 +220,11 @@ program.command('raw')
 program.command('key')
   .description('press keys on a unit\'s keyboard')
   .argument('<keys...>', 'key names, e.g. SYS_SUMM ITEM 1 EXEC (see --list-keys)')
-  .option('--idp <n>', 'target IDP 1..4', '1')
-  .option('--kybd <bus>', 'keyboard bus to send on (default: the IDP\'s first)')
+  .option('--idp <n>', 'target IDP 1..4, over a keyboard wired to it (see idpsel)', '1')
+  .option('--kybd <bus>', 'keyboard bus to send on instead')
   .action (keys, o) ->
     n = parseInt(o.idp, 10)
-    busName = o.kybd ? "_KYBD#{if n == 4 then 3 else n}"
+    busName = o.kybd ? "_KYBD#{IDPSel.wiredTo(n)[0]}"
     codes = []
     for name in keys
       k = KYBD.DEUKey.keys[name.toUpperCase()] ? KYBD.DEUKey.keys[name]
@@ -244,15 +245,15 @@ program.command('key')
 program.command('mf')
   .description('set a unit\'s major function switch')
   .argument('<position>', 'GNC, SM or PL')
-  .option('--idp <n>', 'target IDP 1..4', '1')
-  .option('--kybd <bus>', 'keyboard bus to send on (default: the IDP\'s first)')
+  .option('--idp <n>', 'target IDP 1..4, over a keyboard wired to it', '1')
+  .option('--kybd <bus>', 'keyboard bus to send on instead')
   .action (position, o) ->
     name = position.toUpperCase()
     if not DEU.MAJOR_FUNC_CODE[name]?
       console.error "gpcmd: the major function is GNC, SM or PL"
       process.exit(2)
     n = parseInt(o.idp, 10)
-    busName = o.kybd ? "_KYBD#{if n == 4 then 3 else n}"
+    busName = o.kybd ? "_KYBD#{IDPSel.wiredTo(n)[0]}"
     bus = openBus(busName, true)
     sendMsgs bus, (->
       msg = new BusMsg(1)
@@ -260,24 +261,54 @@ program.command('mf')
       bus.sendMsg msg
       console.log "major function #{name} (word #{hex4 msg.data16[0]}) -> #{bus.busID}"), o
 
+program.command('idpsel')
+  .description('the IDP/CRT SEL switches: LEFT 1 or 3, RIGHT 2 or 3; no arguments asks the IDPs')
+  .argument('[left]', 'LEFT IDP/CRT SEL position')
+  .argument('[right]', 'RIGHT IDP/CRT SEL position')
+  .action (left, right, o) ->
+    bus = openBus('_IDPSW')
+    sel = new IDPSel(bus)
+    if left? or right?
+      l = parseInt(left, 10)
+      r = parseInt(right, 10)
+      if not (l in IDPSel.LEFT_POSITIONS and r in IDPSel.RIGHT_POSITIONS)
+        console.error "gpcmd: idpsel wants LEFT 1|3 and RIGHT 2|3"
+        process.exit(2)
+      sendMsgs bus, (->
+        sel.set(l, r)
+        console.log "IDP/CRT SEL: LEFT #{l} RIGHT #{r} -> #{bus.busID}"), o
+    else
+      # Print the first STATE back, the standing positions included.
+      bus.onReceive ((_, busID, msg) ->
+        d = IDPSel.decode(msg.data16)
+        return unless d?.tag == IDPSel_TAG.STATE
+        console.log "IDP/CRT SEL: LEFT #{d.left} RIGHT #{d.right}"
+        process.exit(0)), null
+      setTimeout (->
+        sel.query()
+        setTimeout (->
+          console.log "no IDP answered"
+          process.exit(1)), 1000), BIND_MS
+
 #
 # monitor
 #
 DK_BUSSES = ('DK' + n for n in [1..4])
 IDP_BUSSES = ('_IDP' + n for n in [1..4])
 KYBD_BUSSES = ('_KYBD' + n for n in [1..3])
+SW_BUSSES = ['_IDPSW']
 
 program.command('monitor')
   .alias('watch')
   .description('batch bus traffic into messages and decode')
-  .argument('[busses...]', 'bus names; default DK1-4, _IDP1-4, _KYBD1-3')
+  .argument('[busses...]', 'bus names; default DK1-4, _IDP1-4, _KYBD1-3, _IDPSW')
   .option('--fcw', 'also disassemble fill payloads as display instructions')
   .option('--hex', 'also dump the raw halfwords of every message')
   .option('--quiet-heartbeat', 'hide the IDP heartbeat')
   .option('--json <file>', 'append one JSON record per message for analysis')
   .action (busses, o) ->
     fcw = new FCW()
-    names = if busses.length then busses else DK_BUSSES.concat(IDP_BUSSES, KYBD_BUSSES)
+    names = if busses.length then busses else DK_BUSSES.concat(IDP_BUSSES, KYBD_BUSSES, SW_BUSSES)
     t0 = Date.now()
     jsonOut = if o.json then fs.createWriteStream(o.json, {flags: 'a'}) else null
     tally = {}
@@ -353,6 +384,16 @@ program.command('monitor')
         say name, "#{tag} #{words.length} hw #{words.map(hex4).slice(0,8).join(' ')}",
              {kind: 'mdu', tag: tag, words: words}
 
+    onSW = (name, words) ->
+      d = IDPSel.decode(words)
+      if d?.tag == IDPSel_TAG.QUERY
+        say name, "IDP/CRT SEL query", {kind: 'idpsel-query'}
+      else if d?
+        say name, "IDP/CRT SEL LEFT #{d.left} RIGHT #{d.right}",
+             {kind: 'idpsel', left: d.left, right: d.right}
+      else
+        say name, "?? #{words.map(hex4).join(' ')}", {kind: 'unknown', words: words}
+
     onKYBD = (name, words) ->
       for w in words
         d = KYBD.decode(w)
@@ -372,6 +413,7 @@ program.command('monitor')
         process.exit(2)
       bus = new Bus(name, busConfig[name])
       handler = if /^DK/.test(name) then onDK
+      else if name == '_IDPSW' then onSW
       else if /^_IDP/.test(name) then onIDP
       else if /^_KYBD/.test(name) then onKYBD
       else onDK
@@ -458,12 +500,17 @@ program.command('unit')
           console.log "#{ms()}    MEDS DK buffer, #{r.words.length} hw"
       ), null
 
-    kybdName = "_KYBD#{if n == 4 then 3 else n}"
-    kybd = new Bus(kybdName, busConfig[kybdName])
-    kybd.onReceive ((_, busID, msg) ->
+    # The keyboards wired to this unit, gated by the IDP/CRT SEL switches
+    # as an IDP gates them; this unit answers a switch query.
+    sel = new IDPSel(openBus('_IDPSW'), answers: true)
+    onKey = (_, busID, msg) ->
+      kybdNo = Number(busID.replace(/\D/g, ''))
       for i in [0...msg.data16.length]
         d = KYBD.decode(msg.data16[i])
         if d?.key?
+          if not IDPSel.selected(n, kybdNo, sel.state())
+            console.log "#{ms()}  key #{d.key.ascii} on #{busID} not selected, dropped"
+            continue
           unit.pressKey d.key.gpcCode
           console.log "#{ms()}  key #{d.key.ascii} (code #{d.key.gpcCode.toString(16)}) queued"
         else if d?.majorFunc?
@@ -471,9 +518,10 @@ program.command('unit')
           console.log "#{ms()}  major function #{DEU.MAJOR_FUNC_NAME[d.majorFunc]}"
         else
           console.log "#{ms()}  unknown keyboard word 0x#{hex4 msg.data16[i]}"
-      ), null
+    kybds = ("_KYBD#{k}" for k in IDPSel.wiredTo(n))
+    openBus(name).onReceive onKey, null for name in kybds
 
-    console.log "display unit #{n} on #{busName}, keyboard #{kybdName} " +
+    console.log "display unit #{n} on #{busName}, keyboards #{kybds.join(' ')} " +
                 "(#{if o.iplRequest then 'asking for an IPL' else 'reporting loaded'}" +
                 "#{if o.bite == false then ', BITE register ZERO' else ''}) -- ^C to stop"
 

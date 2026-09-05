@@ -7,6 +7,7 @@ import {FCW, wordsFromBytes} from 'meds/deuFCW'
 import * as DEU from 'meds/deuProto'
 import {DEUUnit} from 'meds/deuUnit'
 import {KYBD} from 'meds/kybd'
+import {IDPSel} from 'meds/idpSel'
 import React from 'react'
 
 #
@@ -64,6 +65,7 @@ export class IDP extends LRU
 
     @CONFIG = CONFIG
     @idpConfig = idpConfig
+    @idpNo = Number(@id.replace(/\D/g, ''))
 
     @keyBuf = []
 
@@ -86,6 +88,8 @@ export class IDP extends LRU
       console.log "|||", id, bus
       if /FC/.test id
         bus.onReceive @recvFC,@
+      else if id == '_IDPSW'
+        @sel = new IDPSel(bus, answers: true)
       else if /DK/.test id
         bus.onReceive @recvDK,@
       else if /IDP/.test id
@@ -94,6 +98,7 @@ export class IDP extends LRU
         bus.onReceive @recvKYBD,@
       else
         console.log "Bad bus name #{id}"
+    @sel ?= new IDPSel(null, answers: true)
 
   start: () ->
     @running = true
@@ -167,13 +172,19 @@ export class IDP extends LRU
 
   # Keyboard Handling
   #
-  # A keyswitch goes into the unit's entry; the major function switch sets
-  # the position the next poll response header reports.
+  # A keyswitch goes into the unit's entry when the IDP/CRT SEL switch has
+  # this keyboard on this unit (meds/idpSel); the major function switch is
+  # the unit's, on panel C2 beside the select switch, and sets the position
+  # the next poll response header reports whichever way that switch points.
   recvKYBD: (t,busID, msg, remote) ->
+    kybd = Number(busID.replace(/\D/g, ''))
     for w in msg.data16
       d = KYBD.decode(w)
       if d?.key?
-        t.unit.pressKey d.key.gpcCode
+        if IDPSel.selected(t.idpNo, kybd, t.sel.state())
+          t.unit.pressKey d.key.gpcCode
+        else
+          console.log "IDP#{t.idpNo}: #{d.key.ascii} on #{busID} not selected, dropped"
       else if d?.majorFunc?
         t.unit.majorFunc = d.majorFunc
         console.log "IDP#{t.id}: major function #{DEU.MAJOR_FUNC_NAME[d.majorFunc]}"

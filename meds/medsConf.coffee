@@ -127,7 +127,7 @@ export MEDSConf = {
   idps: {
     IDP1: {
       lruID: 0x00
-      busses: ['_IDP1', 'FC1', 'FC2', 'FC3', 'FC4', 'DK1','_KYBD1']
+      busses: ['_IDP1', 'FC1', 'FC2', 'FC3', 'FC4', 'DK1','_KYBD1','_IDPSW']
       powerBus: ["AB1","MNA"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK1"
@@ -136,7 +136,7 @@ export MEDSConf = {
     }
     IDP2: {
       lruID: 0x00
-      busses: ['_IDP2', 'FC1', 'FC2', 'FC3', 'FC4', 'DK2','_KYBD2','_KYBD3']
+      busses: ['_IDP2', 'FC1', 'FC2', 'FC3', 'FC4', 'DK2','_KYBD2','_IDPSW']
       powerBus: ["CA1","MNC"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK2"
@@ -145,7 +145,7 @@ export MEDSConf = {
     }
     IDP3: {
       lruID: 0x00
-      busses: ['_IDP3', 'FC1', 'FC2', 'FC3', 'FC4', 'DK3','_KYBD1','_KYBD2']
+      busses: ['_IDP3', 'FC1', 'FC2', 'FC3', 'FC4', 'DK3','_KYBD1','_KYBD2','_IDPSW']
       powerBus: ["BC2","MNB"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK3"
@@ -154,7 +154,7 @@ export MEDSConf = {
     }
     IDP4: {
       lruID: 0x00
-      busses: ['_IDP4', 'FC1', 'FC2', 'FC3', 'FC4', 'DK4','_KYBD3']
+      busses: ['_IDP4', 'FC1', 'FC2', 'FC3', 'FC4', 'DK4','_KYBD3','_IDPSW']
       powerBus: ["CA2","MNC"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK4"
