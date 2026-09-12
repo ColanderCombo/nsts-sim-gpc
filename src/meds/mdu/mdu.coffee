@@ -1,28 +1,41 @@
+import {call, registerType, setTimeout, clearTimeout, now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
+registerType(Type) for _, Type of THREE when typeof Type == 'function' and Type.prototype?
+# Rebuild graphics objects with their constructor-owned callbacks intact.
+for name in ['Object3D', 'Scene', 'Group', 'Mesh', 'Line', 'LineSegments',
+             'Vector2', 'Vector3', 'Vector4', 'Euler', 'Quaternion', 'Matrix3', 'Matrix4',
+             'Color', 'BufferGeometry', 'ShaderMaterial', 'MeshBasicMaterial',
+             'OrthographicCamera', 'PerspectiveCamera', 'Sphere', 'Box3', 'Layers']
+  do (name) -> registerType(THREE[name], -> new THREE[name]())
 import { createRoot } from 'react-dom/client'
 import React from 'react'
-# NOTE: do NOT mount an @react-three/fiber <Canvas> here — R3F's renderer
-# setup flips THREE.ColorManagement.enabled globally (after our screens
-# have already built), which silently sRGB->linear converts the colour of
-# every material created from then on: live-rebuilt fills (tape readout
-# boxes, faces, bars) render near-black while startup-built ones stay
-# correct. Cost a long debugging session (July 2026).
+# Do not mount an @react-three/fiber Canvas here: its renderer changes
+# THREE.ColorManagement.enabled after screen materials have been built,
+# causing rebuilt fills to use different colors.
 
 
 
 import 'cde/cde-window'
-import 'meds/style.css'
-import {LRU} from '../com/lru.civet.jsx'
-import {Bus, BusMsg} from '../com/bus.civet.jsx'
+import 'meds/mdu/style.css'
+import {LRU} from '../../com/lru.civet.jsx'
+import {Bus, BusMsg} from '../../com/bus.civet.jsx'
 
-import {MEDSConf, MDUMsg} from 'meds/medsConf'
-import * as DEU from 'meds/deuProto'
-import {VectorDisplay} from 'meds/mduVectorDisplay'
-import {MDUMenuArea} from 'meds/mduMenuArea'
-import {MDUEdgeKeys} from 'meds/mduEdgeKeys'
+import {MEDSConf, MDUMsg, MDUMsgName, powerFeedsOf} from 'meds/medsConf'
+import {sameField} from 'meds/mdu/mduScreen'
+import {decodeMduAdc} from 'meds/idp/idpAdc'
+import {decodeMduFc} from 'meds/idp/idpFc'
+import {wordToVolts} from '../../lru/adc/adcConf'
+import {fieldsOfPair} from '../../lru/adc/adcChannels'
+import {fieldsOfFeed, STATION_DDU} from '../../lru/ddu/dduFields'
+import {DDU_OF_IUA} from '../../lru/ddu/dduConf'
+import * as DEU from 'meds/deu/deuProto'
+import {VectorDisplay} from 'meds/mdu/mduVectorDisplay'
+import {MDUMenuArea} from 'meds/mdu/mduMenuArea'
+import {MDUEdgeKeys} from 'meds/mdu/mduEdgeKeys'
 import {KYBD} from 'meds/kybd'
-import {IDPSel} from 'meds/idpSel'
-import Menus from 'meds/mduMenu'
+import {IDPSel} from 'meds/idp/idpSel'
+import {IDPPanel} from 'meds/idp/idpDiscretes'
+import Menus from 'meds/mdu/mduMenu'
 
 ScreenMods = {
   'AE_PFD' : await import('./mduScreen_AE_PFD'),
@@ -39,6 +52,9 @@ ScreenMods = {
 }
 
 
+for _, mod of ScreenMods
+  registerType(Type) for _, Type of mod when typeof Type == 'function' and Type.prototype?
+
 export class MDU extends LRU
   Menus: Menus
 
@@ -51,29 +67,31 @@ export class MDU extends LRU
       secPortIDP = Number(config.dataBus.S[-1...])
 
     lruConfig = {
-      id: "MDU"
+      id: CONFIG.config.lru
       nom: "MEDS MDU"
       busses: []
+      # A control bus works the unit's remote power controller and a main
+      # bus comes through it: medsConf's `powerBus`, both needed.
+      power: powerFeedsOf(config.powerBus)
+      powerRule: 'all'
     }
     
     lruConfig.busses[0] = "_IDP#{priPortIDP}"
     if secPortIDP?
       lruConfig.busses[1] = "_IDP#{secPortIDP}"
-    lruConfig.busses.push '_IDPSW'
     super(lruConfig)
 
-    # The IDP/CRT SEL switches; the IDPs hold the positions and answer.
-    @sel = new IDPSel(@bus['_IDPSW'])
-    @sel.onChange (s) => @_selChanged(s)
-    @sel.query()
+    # The IDP/CRT SEL switches: the IDPs hold the lines they make, and the
+    # panel reads the positions back from them.
+    @panel = new IDPPanel(onChange: => @_selChanged())
+    @panel.query()
 
     @screenMods = ScreenMods
     @_pollWatchdog = null        # POLL FAIL: re-armed by the GPC's poll/clock
     @_updateWatchdog = null      # big "X": re-armed by a display update
     @_idpWatchdog = null         # the port: re-armed by the IDP's heartbeat
     @_idpWatchdogSec = null
-    # Assumed alive until the watchdog says otherwise -- `_idpLost` has to be
-    # able to fire the FIRST time, when nothing has been heard at all.
+    # Initially alive so the watchdog can report the first silence.
     @_idpUp = true
     @_secTimedOut = false
     @CONFIG = CONFIG
@@ -104,12 +122,8 @@ export class MDU extends LRU
     @modeNegView = false
 
     @faultLineMsg = ""
-    #@faultLineMsg = "MEDS I/O ERROR CDR1            1"
     @curDisplay = "BLANK"
 
-    # The big "X" indicates a lack of GPC updates,
-    # POLL FAIL indicates a lack of POLL messages
-    # Both initialize to 'on'
     @dps_big_x = true
     @dps_poll_fail = true
     @dps_otp = false           # ...and the test page hides the "X" while it
@@ -118,6 +132,49 @@ export class MDU extends LRU
     @_edgeKeys = new MDUEdgeKeys()
     @_edgeKeys.setHandler(@handleEdgekey, @handleEdgekeyFail)
 
+    # The subsystem display fields the commanding IDP's ADC frames gave,
+    # by screen name, and the screens whose picture is behind them.
+    @adcFeed = {}
+    @_adcDirty = {}
+    @_adcTimer = null
+
+    # The flight instrument data heard on each FC bus: by bus number, the
+    # words of each message as last heard (lru/ddu/dduConf MSG), for this crew
+    # station's DDU and the MEDS transfer.  The PFD screens follow the bus
+    # the DATA BUS edgekey selects.
+    @station = config.station
+    @fcFeed = {}
+    @fcHeard = {}
+    @fcFields = null
+    @_fcFieldsJson = null
+    @_fcDirty = false
+    @_fcTimer = null
+    @_fcWatchdog = null
+
+
+  beforeRestoreDstore: ->
+    # Rebuilt pages may need different vertex-buffer sizes.
+    seen = new Set()
+    release = (object) ->
+      geometry = object.geometry
+      if geometry? and not seen.has(geometry)
+        seen.add(geometry)
+        geometry.dispose()
+    @disp?.scene?.traverse(release)
+    screen.group?.traverse(release) for _, screen of @screens ? {}
+    return
+
+  afterRestoreDstore: ->
+    @disp?.scene?.traverse (object) ->
+      for _, attribute of object.geometry?.attributes ? {}
+        attribute.needsUpdate = true
+      materials = if Array.isArray(object.material) then object.material else [object.material]
+      material.needsUpdate = true for material in materials when material?
+      return
+    if @disp?
+      @disp.dirty = true
+      @disp.render()
+    return
 
   start: () ->
     @disp = new VectorDisplay(@CONFIG)
@@ -126,7 +183,6 @@ export class MDU extends LRU
     @mdu_menuArea.build()
 
     @screens = {}
-    # a console handle: `mdu1.screens.DPS.walkReport()`
     globalThis["mdu#{@id}"] = @
 
     @mdu_menuArea.setCurPort(@cmdPort)
@@ -140,10 +196,8 @@ export class MDU extends LRU
     @watchIDP()
     @redraw()
 
-    @kybd = new KYBD(@, @sel)
+    @kybd = new KYBD(@, @panel)
 
-    # Debug: double-click outside the display canvas (e.g. in space opened
-    # by dragging the window edges out) toggles a live feed-parameter editor
     document.addEventListener 'dblclick', (ev) => @_toggleParamEditor(ev)
 
   windowTitle: () ->
@@ -168,20 +222,20 @@ export class MDU extends LRU
   # IDP 4's display has neither.
   kybdBars: () ->
     idp = @commandingIDP()
-    s = @sel.state()
-    left = IDPSel.selected(idp, IDPSel.LEFT, s)
-    right = IDPSel.selected(idp, IDPSel.RIGHT, s)
+    lines = @panel.lines(idp)
+    left = IDPSel.selectedByLines(idp, IDPSel.LEFT, lines)
+    right = IDPSel.selectedByLines(idp, IDPSel.RIGHT, lines)
     if left and right then 'both' else if left then 'left' else if right then 'right' else null
 
   # The IDP self-test page's switch fields, for the commanding IDP.
   idpCstData: (cur) ->
     idp = @commandingIDP()
-    s = @sel.state()
-    d = IDPSel.discretes(idp, s)
+    s = @panel.positions()
+    d = @panel.lines(idp)
     Object.assign {}, cur, {
       leftIdpSel: s.left
       rightIdpSel: s.right
-      activeKybd: IDPSel.keyboardFor(idp, s) ? ''
+      activeKybd: IDPSel.keyboardForLines(idp, d) ? ''
       kybdSelA: if d.A then 'ON' else 'OFF'
       kybdSelB: if d.B then 'ON' else 'OFF'
     }
@@ -191,7 +245,8 @@ export class MDU extends LRU
     cst = @screens?['IDP_CST']
     cst.setData(@idpCstData(cst.data())) if cst?.data()?
 
-  _selChanged: (s) ->
+  _selChanged: () ->
+    s = @panel.positions()
     console.log "IDP/CRT SEL: LEFT #{s.left} RIGHT #{s.right}"
     return unless @disp?
     @_syncKybd()
@@ -215,8 +270,16 @@ export class MDU extends LRU
   STARTUP_MS = 10000        # ...but allow for an IDP that starts up slowly
 
   _rearm: (name, ms, expired) ->
-    window.clearTimeout(@[name]) if @[name]?
-    @[name] = window.setTimeout (() => @[name] = null ; expired()), ms
+    clearTimeout(@[name]) if @[name]?
+    @[name] = setTimeout call(@, '_expireTimer', name, expired), ms
+
+  _expireTimer: (name, expired) ->
+    @[name] = null
+    expired()
+
+  _secondaryLost: () ->
+    @_secTimedOut = true
+    @_autonomous() if @curDisplay == 'AUTONOMOUS'
 
   _pollLost: () ->
     return if @dps_poll_fail
@@ -224,7 +287,6 @@ export class MDU extends LRU
     @screens?['DPS']?.setPollFail(true)
     @redraw()
 
-  # A GPC is polling this unit again.
   _pollHeard: () ->
     return if not @dps_poll_fail
     @dps_poll_fail = false
@@ -254,20 +316,27 @@ export class MDU extends LRU
     @redraw()
 
   _pollTick: () ->
-    @_rearm '_pollWatchdog', POLL_FAIL_MS, (=> @_pollLost())
+    @_rearm '_pollWatchdog', POLL_FAIL_MS, call(@, '_pollLost')
     @_pollHeard()
 
   _updateTick: () ->
-    @_rearm '_updateWatchdog', BIG_X_MS, (=> @_updateLost())
+    @_rearm '_updateWatchdog', BIG_X_MS, call(@, '_updateLost')
     @_updateHeard()
 
+  # Only the IDP's messages count as the IDP being heard; the bus also
+  # carries the 1553B words between the IDP and its ADCs.
   recvFromPri: (t,busID, msg, remote) ->
+    return unless MDUMsgName[msg.data16[0]]?
     t._idpHeard()
-    t._rearm '_idpWatchdog', IDP_LOST_MS, (-> t._idpLost())
+    t._rearm '_idpWatchdog', IDP_LOST_MS, call(t, '_idpLost')
     scr = t.screens?['DPS']
     switch msg.data16[0]
       when MDUMsg.HEARTBEAT
         scr?.blinkTick()
+      when MDUMsg.ADC
+        t._adcFrame(msg.data16)
+      when MDUMsg.FC
+        t._fcMessage(msg.data16)
       when MDUMsg.POLL
         t._pollTick()
       when MDUMsg.FILL, MDUMsg.LOCAL_FILL
@@ -289,6 +358,11 @@ export class MDU extends LRU
         t.redraw()
       when MDUMsg.OTP
         t._otpPage(msg.data16[1] != 0)
+      when MDUMsg.LOAD
+        t.dps_vm_load = msg.data16[1] != 0
+        if scr?
+          scr.setVmLoad(t.dps_vm_load)
+          t.redraw()
       when MDUMsg.REFRESH
         # The DEU's control program says where a refresh starts.  It is
         # the message line buffer when the program is drawing the scratch
@@ -300,15 +374,116 @@ export class MDU extends LRU
   # The secondary port has a separate heartbeat and can drop independently
   # of the primary; the AUTONOMOUS display's timeout line reports which.
   recvFromSec: (t,busID, msg, remote) ->
+    return unless MDUMsgName[msg.data16[0]]?
     if t._secTimedOut
       t._secTimedOut = false
       t._autonomous() if t.curDisplay == "AUTONOMOUS"
-    t._rearm '_idpWatchdogSec', IDP_LOST_MS, (->
-      t._secTimedOut = true
-      t._autonomous() if t.curDisplay == "AUTONOMOUS")
+    t._rearm '_idpWatchdogSec', IDP_LOST_MS, call(t, '_secondaryLost')
 
   redraw: () ->
     @disp.dirty = true
+
+  # The 32 samples of a pair become the fields of the subsystem displays
+  # through the channel table (lru/adc/adcChannels); an invalid frame sets
+  # every field to the display's invalid marker.  A field changes when its
+  # value moves by a tenth of a unit, and a changed screen is redrawn at
+  # most ten times a second: the gauge screens rebuild on every refresh.
+  ADC_REFRESH_MS = 100
+
+  _adcFrame: (words) ->
+    f = decodeMduAdc(words)
+    return unless f?
+    volts = (wordToVolts(w) for w in f.data)
+    for scrName, fields of fieldsOfPair(f.pair, volts, f.valid)
+      feed = (@adcFeed[scrName] ?= {})
+      changed = false
+      for k, v of fields
+        v = Math.round(v * 10) / 10 if typeof v == 'number'
+        continue if feed[k] == v
+        feed[k] = v
+        changed = true
+      continue unless changed
+      Object.assign @screens[scrName].curData, feed if @screens?[scrName]?.curData?
+      @_adcDirty[scrName] = true
+    @_adcRefresh()
+    return
+
+  _adcRefresh: () ->
+    return if @_adcTimer? or not @disp?
+    @_adcTimer = setTimeout call(@, '_refreshAdcNow'), ADC_REFRESH_MS
+
+  _refreshAdcNow: () ->
+    @_adcTimer = null
+    if @_adcDirty[@curDisplay] and @screens[@curDisplay]?
+      @_adcDirty[@curDisplay] = false
+      @screens[@curDisplay].refreshFeed?()
+      @redraw()
+
+  # A screen shown after frames arrived takes the fields it missed.
+  _adcApply: (scrName) ->
+    scr = @screens[scrName]
+    feed = @adcFeed[scrName]
+    return unless scr?.curData? and feed?
+    Object.assign scr.curData, feed
+    @_adcDirty[scrName] = false
+    scr.refreshFeed?()
+
+  # Each DDU write and MEDS transfer the IDP heard on an FC bus arrives
+  # as an FC message.  The words of this station's DDU and of the MEDS
+  # transfer are kept by bus; the selected bus's words become the PFD
+  # fields through lru/ddu/dduFields ten times a second, and a bus quiet for
+  # a second gives the instruments their invalid markers.
+  FC_REFRESH_MS = 100
+  FC_STALE_MS = 1000
+  PFD_SCREENS = ['AE_PFD', 'ORBIT_PFD']
+
+  _fcMessage: (words) ->
+    m = decodeMduFc(words)
+    return unless m?
+    if m.msg.startsWith('MEDS')
+      return unless m.iua == 15
+    else
+      return unless DDU_OF_IUA[m.iua] == STATION_DDU[@station]
+    (@fcFeed[m.bus] ?= {})[m.msg] = m.words
+    @fcHeard[m.bus] = simNow()
+    return unless m.bus == @flightCritBus
+    @_fcDirty = true
+    @_rearm '_fcWatchdog', FC_STALE_MS, call(@, '_fcStale')
+    @_fcRefresh()
+
+  _fcStale: () ->
+    @_fcDirty = true
+    @_fcRefresh()
+
+  _fcFresh: (bus) -> (simNow() - (@fcHeard[bus] ? 0)) < FC_STALE_MS
+
+  _fcRefresh: () ->
+    return if @_fcTimer? or not @disp?
+    @_fcTimer = setTimeout call(@, '_refreshFcNow'), FC_REFRESH_MS
+
+  _refreshFcNow: () ->
+    @_fcTimer = null
+    return unless @_fcDirty
+    @_fcDirty = false
+    bus = @flightCritBus
+    fields = fieldsOfFeed(@station, @fcFeed[bus] ? {}, @_fcFresh(bus))
+    json = JSON.stringify(fields.AE_PFD)
+    return if json == @_fcFieldsJson
+    @_fcFieldsJson = json
+    @fcFields = fields
+    @_fcApply(@curDisplay) if @curDisplay in PFD_SCREENS
+
+  # A PFD screen takes the selected bus's fields: when shown, and when
+  # they change.  The fields that moved go with them, so the screen rebuilds
+  # the instruments that read one.
+  _fcApply: (scrName) ->
+    scr = @screens[scrName]
+    f = @fcFields?[scrName]
+    return unless scr?.curData? and f?
+    changed = (k for k, v of f when not sameField(scr.curData[k], v))
+    Object.assign scr.curData, f
+    scr.refreshFeed?(changed)
+    @redraw()
 
   handleEdgekey: (keyId) =>
     console.log "handleEdgekey", keyId, @currentMenu[keyId]
@@ -327,8 +502,7 @@ export class MDU extends LRU
     @currentMenuName = menuName
     @currentMenu = @Menus[menuName]
     @mdu_menuArea.setCurrentMenu(@currentMenu)
-    # menus that reflect a persistent setting (e.g. DATA BUS SELECT) declare
-    # activeItem to pre-highlight the edgekey matching the current state
+    # Persistent settings declare activeItem for the selected edgekey.
     if @currentMenu.activeItem?
       @mdu_menuArea.setActiveMenuItem(@currentMenu.activeItem(@))
     if @currentMenu.action?
@@ -343,16 +517,16 @@ export class MDU extends LRU
         @disp.scene.remove  @screens[@curDisplay].group
       @curDisplay = newCurDisplay
       if @curDisplay not of @screens
-        # screenModule = await import("mduScreen_#{@curDisplay}.coffee")
-        # screenModule = require 'meds/mduScreen_DPS.coffee'
-        # screenModule = require './mduScreen_#{@curDisplay}.coffee'
         screenModule = ScreenMods[@curDisplay]
         @screens[@curDisplay] = new screenModule["Screen_#{@curDisplay}"] @disp
       cd = @screens[@curDisplay]
       cd.draw()
+      @_adcApply(@curDisplay) if @adcFeed[@curDisplay]?
+      @_fcApply(@curDisplay) if @curDisplay in PFD_SCREENS
       if @curDisplay == 'DPS'
         cd.setBigX(@dps_big_x and not @dps_otp)
         cd.setPollFail(@dps_poll_fail)
+        cd.setVmLoad(!!@dps_vm_load)
         cd.setIDPNo(@commandingIDP())
         cd.setKybd(@kybdBars())
       else if @curDisplay == 'IDP_CST'
@@ -363,15 +537,16 @@ export class MDU extends LRU
 
   setFCBus: (bus) ->
     @flightCritBus = bus
-    #@updateMduData()
     @mdu_menuArea.setFCBus(@flightCritBus)
-    # keep the DATA BUS SELECT highlight in sync however the bus was set
+    @_fcDirty = true
+    if @_fcFresh(bus)
+      @_rearm '_fcWatchdog', FC_STALE_MS, call(@, '_fcStale')
+    @_fcRefresh()
     if @currentMenu?.activeItem?
       @mdu_menuArea.setActiveMenuItem(@currentMenu.activeItem(@))
 
   toggleCmdPort: () ->
     @cmdPort = (@cmdPort+1)%2
-    #@updateMduData()
     @mdu_menuArea.setCurPort(@cmdPort)
     @screens?['DPS']?.setIDPNo(@commandingIDP())
     @_syncKybd()
@@ -379,22 +554,18 @@ export class MDU extends LRU
 
   toggleReconfigMode: () ->
     @portReconfigModeAuto = not @portReconfigModeAuto
-    #@updateMduData()
     @mdu_menuArea.setReconfModeAuto(@portReconfigModeAuto)
 
   toggleNegView: () ->
     @modeNegView = not @modeNegView
-    #@updateMduData()
     @mdu_menuArea.setNegView(@modeNegView)
 
   watchIDP: () ->
     return if @CONFIG.dev
     # A longer grace at startup than mid-run: the IDP's process may still be
     # coming up.
-    @_rearm '_idpWatchdog', STARTUP_MS, (=> @_idpLost())
-    @_rearm '_idpWatchdogSec', STARTUP_MS, (=>
-      @_secTimedOut = true
-      @_autonomous() if @curDisplay == "AUTONOMOUS") if @secPortIDP?
+    @_rearm '_idpWatchdog', STARTUP_MS, call(@, '_idpLost')
+    @_rearm '_idpWatchdogSec', STARTUP_MS, call(@, '_secondaryLost') if @secPortIDP?
 
   _autonomous: () ->
     if @curDisplay != "AUTONOMOUS"
@@ -402,11 +573,8 @@ export class MDU extends LRU
       @prevMenuName = @currentMenuName
       @setCurrentDisplay('AUTONOMOUS')
       @setCurrentMenu('DISCONNECTED')
-      #@currentMenu = @Menus['DISCONNECTED']
       console.log "AUTO", @prevMenuName
       @redraw()
-    # keep the timeout-reason line current: the sec port can drop after the
-    # pri port did; each has a heartbeat
     if @screens['AUTONOMOUS']?.setTimeouts(not @_idpUp, @_secTimedOut)
       @redraw()
 
@@ -461,8 +629,6 @@ export class MDU extends LRU
        set: ((v) => d.overlayApplyValsSet(key, v, scr.ovHooks?()))}
     ]
 
-  # live feed-parameter editor (debug)
-  #
   # Double-click outside the display canvas toggles a panel placed to the
   # right of the active area (grow the window right/left first to make
   # room). It lists the current screen's curData fields; edits apply live
@@ -479,8 +645,6 @@ export class MDU extends LRU
       return
     scr = @screens[@curDisplay]
     data = scr?.curData
-    # every screen gets the reference-overlay group appended, so the panel
-    # opens on every page (screens without feed data show just the overlay)
     tcs = (scr?.testControls?() ? []).concat(@_ovControls())
     if not data? and tcs.length == 0
       console.log "param editor: #{@curDisplay} has no feed data or test controls"
@@ -510,8 +674,6 @@ export class MDU extends LRU
     # pulldown, plain get/set an on/off checkbox. Engaging a test rewrites
     # curData, so the value fields re-sync afterward.
     for tc in tcs
-      # {header: '...'} descriptors start a titled group (the
-      # reference-overlay controls, for one)
       if tc.header?
         gh = document.createElement('div')
         gh.style.cssText = 'font-weight:bold; margin:8px 0 3px; padding-top:5px; color:#2df; border-top:1px solid #345;'
@@ -526,8 +688,6 @@ export class MDU extends LRU
       row.appendChild(lab)
       if tc.options?
         ctl = document.createElement('select')
-        # options may be a function (dynamic lists — e.g. overlay slots,
-        # where 'new' grows the list); refill on every sync
         fill = do (tc, ctl) -> ->
           opts = if typeof tc.options == 'function' then tc.options() else tc.options
           ctl.innerHTML = ''

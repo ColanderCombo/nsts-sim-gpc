@@ -1,3 +1,4 @@
+import {call, setTimeout, now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
 
 # JSC-48025/p.230
@@ -26,9 +27,8 @@ import * as THREE from 'three'
 #                Wait up to 60 sec
 #               √IDP 1(2,3) box, rows 2,3 show all zeroes 
 #
-import * as machina from 'machina'
 
-import {MDUScreen} from 'meds/mduScreen'
+import {MDUScreen} from 'meds/mdu/mduScreen'
 
 export class Screen_IDP_CST extends MDUScreen
   setData: (@curData) ->
@@ -125,52 +125,13 @@ export class Screen_IDP_CST extends MDUScreen
     #                     √MDU Port assignment 
     #  
 
-    mdu = @
+    @sequence = {state: null, timer: null}
+    @_cstStep(1)
 
-    console.log 'seq_mdu_selftest'
-    @sequence = new machina.Fsm {
-      initialState: 'STEP_1'
-      states: {
-        STEP_1: {
-          _onEnter: () ->
-            mdu.curDisplay = "mdu_cst_blank"
-            mdu.draw()
-            @timer = setTimeout (() => @transition("STEP_2")), 10000
-        }
-        STEP_2: {
-          _onEnter: () ->
-            mdu.curDisplay = "mdu_cst_red"
-            mdu.draw()
-            @timer = setTimeout (() => @transition("STEP_3")), 10000
-        }
-        STEP_3: {
-          _onEnter: () ->
-            mdu.curDisplay = "mdu_cst_green"
-            mdu.draw()
-            @timer = setTimeout (() => @transition("STEP_4")), 10000
-        }
-        STEP_4: {
-          _onEnter: () ->
-            mdu.curDisplay = "mdu_cst_blue"
-            mdu.draw()
-            @timer = setTimeout (() => @transition("STEP_5")), 10000
-        }
-        STEP_5: {
-          _onEnter: () ->
-            mdu.curDisplay = "mdu_cst_white"
-            mdu.draw()
-            @timer = setTimeout (() => @transition("STEP_6")), 10000
-        }
-        STEP_6: {
-          _onEnter: () ->
-            mdu.curDisplay = "mdu_cst_test"
-            mdu.draw()
-            @timer = setTimeout (() => @transition("STEP_7")), 10000
-        }
-        STEP_7: {
-          _onEnter: () ->
-            mdu.curDisplay = "Maint"
-            mdu.draw()
-        }
-      }
-    }
+  _cstStep: (step) ->
+    @sequence.state = "STEP_#{step}"
+    @curDisplay = ['mdu_cst_blank', 'mdu_cst_red', 'mdu_cst_green',
+                   'mdu_cst_blue', 'mdu_cst_white', 'mdu_cst_test', 'Maint'][step - 1]
+    @draw()
+    @sequence.timer = if step < 7 then setTimeout(call(@, '_cstStep', step + 1), 10000) else null
+    return

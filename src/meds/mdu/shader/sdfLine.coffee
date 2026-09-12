@@ -181,6 +181,55 @@ export makeSDFLinesGeometry = (THREE, polylines, z=100) ->
   geom.setIndex new THREE.BufferAttribute(idx, 1)
   return geom
 
+# Concatenate SDF line geometries into one, applying to the three point
+# attributes the model matrix given with each.  `parts` is [[geometry, Matrix4]],
+# every geometry from makeSDFLineGeometry or makeSDFLinesGeometry; a null
+# matrix copies straight through.  Segments are four vertices apiece in
+# every source, so the index runs from the vertex count.
+export mergeSDFGeometries = (THREE, parts) ->
+  total = 0
+  total += p[0].attributes.position.count for p in parts
+  pos     = new Float32Array(total*3)
+  endA    = new Float32Array(total*3)
+  endB    = new Float32Array(total*3)
+  corner  = new Float32Array(total*2)
+  segDist = new Float32Array(total*2)
+  nSeg    = total >> 2
+  idx     = new (if total > 65535 then Uint32Array else Uint16Array)(nSeg*6)
+  xf = (dst, src, m, at) ->
+    e = m.elements
+    for i in [0...src.length] by 3
+      x = src[i] ; y = src[i+1] ; z = src[i+2]
+      dst[at+i]   = e[0]*x + e[4]*y + e[8]*z  + e[12]
+      dst[at+i+1] = e[1]*x + e[5]*y + e[9]*z  + e[13]
+      dst[at+i+2] = e[2]*x + e[6]*y + e[10]*z + e[14]
+    return
+  at = 0
+  for [g, m] in parts
+    a = g.attributes
+    n = a.position.count
+    corner.set  a.corner.array,  at*2
+    segDist.set a.segDist.array, at*2
+    if m?
+      xf pos,  a.position.array, m, at*3
+      xf endA, a.endA.array,     m, at*3
+      xf endB, a.endB.array,     m, at*3
+    else
+      pos.set  a.position.array, at*3
+      endA.set a.endA.array,     at*3
+      endB.set a.endB.array,     at*3
+    at += n
+  for s in [0...nSeg]
+    idx.set [s*4, s*4+2, s*4+1,  s*4+2, s*4+3, s*4+1], s*6
+  geom = new THREE.BufferGeometry()
+  geom.setAttribute 'position', new THREE.BufferAttribute(pos, 3)
+  geom.setAttribute 'endA',     new THREE.BufferAttribute(endA, 3)
+  geom.setAttribute 'endB',     new THREE.BufferAttribute(endB, 3)
+  geom.setAttribute 'corner',   new THREE.BufferAttribute(corner, 2)
+  geom.setAttribute 'segDist',  new THREE.BufferAttribute(segDist, 2)
+  geom.setIndex new THREE.BufferAttribute(idx, 1)
+  return geom
+
 # opt: color, opacity, widthPx (full stroke width, display px), aaPx (edge
 # feather half-width, display px), dashSize/gapSize (world units; gapSize<=0
 # means solid), resolution/pxRatio (pass shared uniform refs so one update
@@ -203,6 +252,12 @@ export makeSDFLineMaterial = (THREE, opt={}) ->
     transparent: true
     depthWrite: false      # AA fringe must not depth-block crossing lines
     side: THREE.DoubleSide
+    # A quad's winding follows its segment's direction, so both faces are
+    # drawn.  three.js splits a transparent DoubleSide material into a
+    # BackSide and a FrontSide draw and sets material.needsUpdate before
+    # each; forceSinglePass keeps it to one draw of a material shared by
+    # every stroke of a colour.
+    forceSinglePass: true
     clipping: true         # honor material.clippingPlanes (tape windows)
   }
   mat._color = opt.color

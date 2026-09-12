@@ -1,4 +1,4 @@
-// test_meds_pollfail.cjs — the big “X” and POLL FAIL, in `meds/mduScreen_DPS`.
+// pollfail.cjs — the big “X” and POLL FAIL, in `meds/mdu/mduScreen_DPS`.
 //
 //   Other indications of loss of communication between the IDP and GPC are
 //   the big “X” and POLL FAIL (Figure 3-48).  Big “X” appears when the IDP
@@ -12,10 +12,10 @@
 // Under test: each is a separate beam program -- the “X” two vectors and no
 // text, POLL FAIL nine glyphs in the lower right and no vector -- and each
 // draws with the other absent.  The two three-second timers that raise them
-// are in `meds/mdu.coffee`.
+// are in `meds/mdu/mdu.coffee`.
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_pollfail.cjs
+//   cd ext/sim && node test/meds/pollfail.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -26,7 +26,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -82,6 +82,7 @@ function stubSurface(THREE, drawn, lines) {
             lines.push({coords, color, dashed: true});
             return new THREE.Object3D();
         },
+        flatten(g) { return g; },
     };
 }
 
@@ -124,9 +125,9 @@ async function main() {
     const shim = path.join(os.tmpdir(), `deu.test.pf.shim.${process.pid}.js`);
     fs.writeFileSync(shim,
         "export * as three from 'three'\n" +
-        `export * as dps from ${JSON.stringify(path.join(SIM, 'meds/mduScreen_DPS.coffee'))}\n` +
-        `export * as fcw from ${JSON.stringify(path.join(SIM, 'meds/deuFCW.coffee'))}\n` +
-        `export * as spl from ${JSON.stringify(path.join(SIM, 'meds/deuSPL.coffee'))}\n`);
+        `export * as dps from ${JSON.stringify(path.join(SIM, 'src/meds/mdu/mduScreen_DPS.coffee'))}\n` +
+        `export * as fcw from ${JSON.stringify(path.join(SIM, 'src/meds/deu/deuFCW.coffee'))}\n` +
+        `export * as spl from ${JSON.stringify(path.join(SIM, 'src/meds/deu/deuSPL.coffee'))}\n`);
     const mods = await bundle(shim);
     const GLYPH_OFF = mods.fcw.glyphCentre();
     const cell = (g) => `${Math.round(g.x + GLYPH_OFF[0])},${Math.round(g.y + GLYPH_OFF[1])}`;

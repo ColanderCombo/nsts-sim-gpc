@@ -1,0 +1,40 @@
+# Panel O13 -- the essential bus circuit breakers
+#
+# USA-007587 Rev.A appendix A "Panel Diagrams", panel O13: three blocks,
+# one an essential bus.  The number in parentheses beside each breaker on
+# that drawing is its control ID here; `amps` is its rating.
+#
+#   ESS 1BC   C/W A (CB1, 5 A), MN A CONTR (CB2, 5 A),
+#             AC1 SNSR (CB3, 3 A), MTU A (CB4, 3 A)
+#   ESS 2CA   C/W B (CB9, 5 A), MN B CONTR (CB10, 5 A),
+#             AC2 SNSR (CB11, 3 A), MTU B (CB12, 3 A)
+#   ESS 3AB   MN C CONTR (CB16, 5 A), AC3 SNSR (CB17, 3 A),
+#             GPC STATUS (CB18, 5 A)
+#
+# The cryogenics breakers of rows B and D are not here.  Where the MTU
+# breakers go is wiring/eps.wir.
+panel: O13
+name: Essential bus circuit breakers
+
+groups:
+  - title: ESS 1BC
+    controls: [CB1, CB2, CB3, CB4]
+  - title: ESS 2CA
+    controls: [CB9, CB10, CB11, CB12]
+  - title: ESS 3AB
+    controls: [CB16, CB17, CB18]
+
+controls:
+  CB1:  {kind: breaker, label: "C/W A", amps: 5}
+  CB2:  {kind: breaker, label: "MN A CONTR", amps: 5}
+  CB3:  {kind: breaker, label: "AC1 SNSR", amps: 3}
+  CB4:  {kind: breaker, label: "MTU A", amps: 3}
+
+  CB9:  {kind: breaker, label: "C/W B", amps: 5}
+  CB10: {kind: breaker, label: "MN B CONTR", amps: 5}
+  CB11: {kind: breaker, label: "AC2 SNSR", amps: 3}
+  CB12: {kind: breaker, label: "MTU B", amps: 3}
+
+  CB16: {kind: breaker, label: "MN C CONTR", amps: 5}
+  CB17: {kind: breaker, label: "AC3 SNSR", amps: 3}
+  CB18: {kind: breaker, label: "GPC STATUS", amps: 5}

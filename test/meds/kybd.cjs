@@ -1,4 +1,4 @@
-// test_meds_kybd.cjs — which keystrokes the DEU keyboard is entitled to take.
+// kybd.cjs — which keystrokes the DEU keyboard is entitled to take.
 //
 // A browser keydown reaches the orbiter keyboard only when it is a bare
 // press of a mapped key outside a text widget.  KYBD.deuKeyFor is that
@@ -6,7 +6,7 @@
 // event-shaped objects.
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_kybd.cjs
+//   cd ext/sim && node test/meds/kybd.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -17,7 +17,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -38,7 +38,7 @@ async function bundle(rel) {
         `kybd.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SIM,
-        entryPoints: [path.isAbsolute(rel) ? rel : path.join(SIM, rel)],
+        entryPoints: [path.isAbsolute(rel) ? rel : path.join(SIM, 'src', rel)],
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [civetPlugin, coffeePlugin({})],
@@ -125,7 +125,7 @@ async function main() {
     // The word on the bus decodes back to the position, and a keyswitch
     // pattern still decodes as a key.
     const {KYBDMsg, KYBD_MSG_MASK} = await bundle('meds/medsConf.coffee');
-    const DEU = await bundle('meds/deuProto.coffee');
+    const DEU = await bundle('meds/deu/deuProto.coffee');
     for (const name of ['PL', 'GNC', 'SM']) {
         const w = KYBD.majorFuncWord(name);
         eq(w & KYBD_MSG_MASK, KYBDMsg.MAJOR_FUNC, `${name} is a MAJOR_FUNC word`);
@@ -143,6 +143,23 @@ async function main() {
     // back as the same key.
     for (const k of Object.values(KYBD.DEUKey.keys)) {
         ok(KYBD.byScan(k.deuCode) === k, `byScan round-trips ${k.ascii}`);
+    }
+
+    // --- a value-bearing item entry reaches the GPC whole ------------------
+    // A completed entry is queued for the GPC up to what the poll response
+    // carries (MAX_KEYS), not the IPL cap.  ITEM 3 +161 EXEC is seven keys.
+    {
+        const {DEUUnit} = await bundle('meds/deu/deuUnit.coffee');
+        const P = await bundle('meds/deu/deuProto.coffee');
+        const u = new DEUUnit({});
+        const seq = [0x14, 0x03, 0x16, 0x01, 0x06, 0x01, 0x1e]; // ITEM 3 + 1 6 1 EXEC
+        for (const c of seq) u.pressKey(c);
+        eq(u.keyQueue.length, 1, 'a value-bearing item entry is queued');
+        eq(u.keyQueue[0].length, 7, 'all seven keys of ITEM 3 +161 EXEC reach the GPC');
+        ok(u.keyQueue[0].length <= P.MAX_KEYS, 'the entry fits the poll response');
+        const short = new DEUUnit({});
+        for (const c of [0x14, 0x01, 0x1e]) short.pressKey(c); // ITEM 1 EXEC
+        eq(short.keyQueue[0].length, 3, 'a no-value item entry is three keys');
     }
 
     console.log(`test_meds_kybd: ${pass} passed, ${fail} failed`);

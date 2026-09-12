@@ -1,11 +1,15 @@
-name: ipl-gpc4
-description: gp4+mmu+meds
+name: five-gpcs
+description: gpc4 IPLed, gpcs 1 2 3 5 at HALT
 
 # Available to every LRU below as ${volume}.
 params:
-  volume: "${build}/mmu/mmu.mmv"
+  volume: "${pfs}/mmu.mmv"
 
 lrus:
+  ratsnest:
+    lru: ratsnest
+    order: 5
+
   mmu1:
     lru: mmu
     order: 10
@@ -16,17 +20,207 @@ lrus:
     order: 10
     params:
       unit: 2
+  # The sixteen MDMs a GPC talks to: FF and FA on the flight critical
+  # busses, PF on the payload busses, LF, LA and the four SRB units on the
+  # launch busses.
+  ff1:
+    lru: mdm
+    order: 20
+    params:
+      id: FF1
+  ff2:
+    lru: mdm
+    order: 20
+    params:
+      id: FF2
+  ff3:
+    lru: mdm
+    order: 20
+    params:
+      id: FF3
+  ff4:
+    lru: mdm
+    order: 20
+    params:
+      id: FF4
+  fa1:
+    lru: mdm
+    order: 20
+    params:
+      id: FA1
+  fa2:
+    lru: mdm
+    order: 20
+    params:
+      id: FA2
+  fa3:
+    lru: mdm
+    order: 20
+    params:
+      id: FA3
+  fa4:
+    lru: mdm
+    order: 20
+    params:
+      id: FA4
+  pf1:
+    lru: mdm
+    order: 20
+    params:
+      id: PF1
+  pf2:
+    lru: mdm
+    order: 20
+    params:
+      id: PF2
+  lf1:
+    lru: mdm
+    order: 20
+    params:
+      id: LF1
+  la1:
+    lru: mdm
+    order: 20
+    params:
+      id: LA1
+  ll1:
+    lru: mdm
+    order: 20
+    params:
+      id: LL1
+  ll2:
+    lru: mdm
+    order: 20
+    params:
+      id: LL2
+  lr1:
+    lru: mdm
+    order: 20
+    params:
+      id: LR1
+  lr2:
+    lru: mdm
+    order: 20
+    params:
+      id: LR2
+  # The two OI MDMs carrying the MTU's instrumentation outputs (MTU 1 voted
+  # behind OF1, MTU 2 non-voted behind OF2); the PCMMU reads them on OI1.
+  of1:
+    lru: mdm
+    order: 20
+    params:
+      id: OF1
+  of2:
+    lru: mdm
+    order: 20
+    params:
+      id: OF2
+  of3:
+    lru: mdm
+    order: 20
+    params:
+      id: OF3
+  of4:
+    lru: mdm
+    order: 20
+    params:
+      id: OF4
+  oa1:
+    lru: mdm
+    order: 20
+    params:
+      id: OA1
+  oa2:
+    lru: mdm
+    order: 20
+    params:
+      id: OA2
+  oa3:
+    lru: mdm
+    order: 20
+    params:
+      id: OA3
+  mtu:
+    lru: mtu
+    order: 30
+    depends: [ff1, ff2, ff3, of1, of2]
+  imu:
+    lru: imu
+    order: 30
+    depends: [ff1, ff2, ff3]
+  adta:
+    lru: adta
+    order: 30
+    depends: [ff1, ff2, ff3, ff4]
+  nsp:
+    lru: nsp
+    order: 30
+    depends: [ff1, ff3]
+  pcmmu:
+    lru: pcmmu
+    order: 30
+    depends: [of1, of2, of3, of4, oa1, oa2, oa3, mtu]
+  idp:
+    lru: idp
+    order: 30
+  adc:
+    lru: adc
+    order: 30
+  # The meter signals behind each ADC pair, held at nominal values; mode:
+  # sweep runs every meter over its scale.
+  adcsig1:
+    lru: adcdrive
+    order: 35
+    depends: [adc]
+    params:
+      pair: 1
+  adcsig2:
+    lru: adcdrive
+    order: 35
+    depends: [adc]
+    params:
+      pair: 2
   meds:
     lru: meds
     order: 40
-    args: [crt1, idp1]
+    depends: [idp, adc]
+    args: [crt1, crt2, crt3, crt4]
+  gpc1:
+    lru: gpchalt
+    order: 55
+    params:
+      unit: 1
+      dbgport: 4441
+    # depends: [gpc4]
+  gpc2:
+    lru: gpchalt
+    order: 55
+    params:
+      unit: 2
+      dbgport: 4442
+    # depends: [gpc4]
+  gpc3:
+    lru: gpchalt
+    order: 55
+    params:
+      unit: 3
+      dbgport: 4443
+    # depends: [gpc4]
   gpc4:
-    lru: gpc
-    order: 50
+    lru: gpchalt
+    order: 55
     params:
       unit: 4
-    depends: [mmu1, meds]
-    startDelay: 0
+      dbgport: 4444
+    # depends: [mmu1, idp, meds, mtu, nsp, pcmmu, ff1, ff2, ff3, ff4, fa1, fa2, fa3, fa4, pf1, pf2, lf1, la1, ll1, ll2, lr1, lr2]
+  gpc5:
+    lru: gpchalt
+    order: 55
+    params:
+      unit: 5
+      dbgport: 4445
+    # depends: [gpc4]
+
 
   dbg:
     lru: gpcdbg
@@ -34,4 +228,3 @@ lrus:
     autostart: false
     params:
       port: 4444
-      image: "${gen}/TEST.fcm"

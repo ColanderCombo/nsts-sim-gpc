@@ -1,59 +1,11 @@
 {
   "start": [
-    "crt1",
-    "idp1"
+    "crt1"
   ],
-  "startSharedWindow": true,
   "lrus": {
-    "shared": {
-      "window": {
-        "width": 400,
-        "height": 200,
-        "x": 10,
-        "y": 10,
-        "backgroundColor": "#222222",
-        "fullscreen": false
-      }
-    },
-    "idp1": {
-      "shared": true,
-      "lru": "IDP",
-      "module": "meds/idp",
-      "config": {
-        "lru": "IDP1",
-        "ipled": false
-      }
-    },
-    "idp2": {
-      "shared": true,
-      "lru": "IDP",
-      "module": "meds/idp",
-      "config": {
-        "lru": "IDP2",
-        "ipled": false
-      }
-    },
-    "idp3": {
-      "shared": true,
-      "lru": "IDP",
-      "module": "meds/idp",
-      "config": {
-        "lru": "IDP3",
-        "ipled": false
-      }
-    },
-    "idp4": {
-      "shared": true,
-      "lru": "IDP",
-      "module": "meds/idp",
-      "config": {
-        "lru": "IDP4",
-        "ipled": false
-      }
-    },
     "crt1": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -74,7 +26,7 @@
     },
     "crt2": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -95,7 +47,7 @@
     },
     "crt3": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -116,7 +68,7 @@
     },
     "crt4": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -137,7 +89,7 @@
     },
     "cdr1": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -158,7 +110,7 @@
     },
     "cdr2": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -179,7 +131,7 @@
     },
     "plt1": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -200,7 +152,7 @@
     },
     "plt2": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -221,7 +173,7 @@
     },
     "mfd1": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -242,7 +194,7 @@
     },
     "mfd2": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,
@@ -263,7 +215,7 @@
     },
     "afd1": {
       "lru": "MDU",
-      "module": "meds/mdu",
+      "module": "meds/mdu/mdu",
       "window": {
         "width": 1024,
         "height": 1024,

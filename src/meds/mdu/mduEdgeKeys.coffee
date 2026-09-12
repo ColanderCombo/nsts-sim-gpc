@@ -1,3 +1,4 @@
+import {call, setTimeout, clearTimeout} from '../../com/simRuntime.coffee'
 $ = require('jquery')
 
 import {KYBD} from 'meds/kybd'
@@ -19,7 +20,7 @@ export class MDUEdgeKeys
       i = ev.keyCode - 112
       return if @failed[i]
       return if @downTimers[i]?      # already armed (OS key auto-repeat)
-      @downTimers[i] = setTimeout (=> @_stuck(i)), STUCK_MS
+      @downTimers[i] = setTimeout call(@, '_stuck', i), STUCK_MS
 
     $(document).keyup (ev) =>
       return if KYBD.isEditable(ev.target)

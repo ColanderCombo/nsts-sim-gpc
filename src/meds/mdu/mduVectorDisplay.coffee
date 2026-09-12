@@ -1,3 +1,4 @@
+import {frozen} from '../../com/simRuntime.coffee'
 fs = window.fs
 OVERLAY_DIR = 'data/overlay_images/'   # reference-overlay image library
 import * as THREE from 'three';
@@ -9,9 +10,10 @@ import * as ss from 'svg-segmentize'
 deuFontSvg = require('data/deu_font.svg')
 medsFontSvg = require('data/meds_font.svg')
 
-import {makeSDFLineGeometry, makeSDFLineMaterial} from 'meds/shader/sdfLine'
+import {makeSDFLinesGeometry, mergeSDFGeometries, makeSDFLineMaterial} from 'meds/mdu/shader/sdfLine'
 
 Empty = Object.freeze( [] )
+IDENTITY = new THREE.Matrix4()
 
 rad2deg = (v) -> v * (180 / Math.PI)
 deg2rad = (v) -> v * (Math.PI / 180)
@@ -29,8 +31,6 @@ class CharGen
       deu: deuFontSvg
     }
     @chars = {
-      # meds: await fetch(medsFontSvg),
-      # deu: await fetch(deuFontSvg),
       meds: medsFontSvg,
       deu: deuFontSvg
     }
@@ -40,8 +40,6 @@ class CharGen
     console.log(@)
 
   makeGlyphMesh2: (svgDesc) ->
-    # Using svg-sgmentize:
-    # console.log(svgDesc)
     segs = ss.default(svgDesc, {output: 'data', resolution:{path:20}})
     # Get the character code from the id:
     id = $(svgDesc).prop('id')
@@ -49,13 +47,11 @@ class CharGen
       # Illustrator prepends a '_' if the layer starts with a number
       id = id[1..]
     chr = String.fromCharCode(parseInt(id)+33)
-    # console.log("CHAR", id, chr)
     @chars[chr] = segs
 
 
   makeGlyphMesh: (svgDesc) -> 
     id = $(svgDesc).prop('id')
-    # console.log("CHAR", id)
     if id[0] == 'c' 
       # Illustrator prepends a '_' if the layer starts with a number
       id = id[1..]
@@ -64,18 +60,9 @@ class CharGen
     strokes = []
     for stroke in $("*", svgDesc)    
       scl = (xc,xoff,s) -> 0.9*(xoff+xc/s)
-      # xy = (xc,yc) -> [scl(xc,-.15,55), scl(yc,-.65,80)]
-      # xy = (xc,yc) -> [0.75+scl(xc,0,512/53), scl(yc,0,512/35)]
       xy = (xc,yc) -> [0.95+scl(xc,0,512/43), 0.10+scl(yc,0,512/30)]
 
 
-      # segs = svgSegs(stroke, {output: 'data', resolution:{path:20}})
-      # console.log(segs)
-      # for seg in segs
-      #   coords = []
-      #   coords.push xy(seg[0], seg[1])
-      #   coords.push xy(seg[2], seg[3])
-      #   strokes.push coords
 
 
       if $(stroke).prop('tagName') == 'line'
@@ -84,7 +71,6 @@ class CharGen
         p2 = xy(parseFloat($(stroke).attr('x2')),
                 parseFloat($(stroke).attr('y2')))
         strokes.push [p1,p2]
-        # console.log("L",strokes.length, strokes)
       else if $(stroke).prop('tagName') == 'polyline'
         points = $(stroke).prop('points')
         coords = []
@@ -112,7 +98,6 @@ class CharGen
               coords.push xy(pt.values[0], pt.values[1])
             when 'm' # relative move to (x,y)
               newPt = [lastPt[0] + pt.values[0], lastPt[1]+pt.values[1]]
-              # coords.push xy(pt.values[0], pt.values[1])
               lastPt = newPt
             when 'V' # Vertical Line to (y)
               lastPt[1] = pt.values[0]
@@ -136,18 +121,17 @@ class CharGen
               coords.push xy(newPt[0], newPt[1])
               lastPt = newPt
             when 'Z'
-              # coords.push xy(data[0].values[0], data[0].values[1])
               coords.push coords[0]
         strokes.push coords
-        # console.log("P",strokes.length, strokes)
-        #strokes.push Line(coords,{distances:true})
 
-    # console.log(chr)
     @chars[chr] = strokes
 
-  drawGlyph: (mdu,dl,glyphChar,x,y,c,scaleFactor=1.0,scalex=1.0,rot=0,centered=false,clip=null) ->
-    # console.log("#{glyphChar} #{mat}")
-    if not @chars.hasOwnProperty(glyphChar) then return []
+  # The glyph's strokes at (x,y) in display coordinates.  The cell offset and
+  # the scale ride in the coordinates, so a string's glyphs share one
+  # geometry.  `centered` puts the glyph's bounding-box centre on (x,y); the
+  # cell corner goes there otherwise.
+  glyphStrokes: (glyphChar,x,y,scaleFactor=1.0,scalex=1.0,rot=0,centered=false) ->
+    if not @chars.hasOwnProperty(glyphChar) then return Empty
     strokes = @chars[glyphChar]
 
     gcx = 0 ; gcy = 0
@@ -166,18 +150,12 @@ class CharGen
       cs = Math.cos(rot) ; sn = Math.sin(rot) ; AR = 18.789/13.783   # pxRow/pxCol
       strokes = ( ([gcx+(p[0]-gcx)*cs-(p[1]-gcy)*AR*sn, gcy+(p[0]-gcx)*sn/AR+(p[1]-gcy)*cs] for p in stroke) for stroke in strokes )
 
-    geoms = []
-    for stroke in strokes
-      buffer = mdu.line(stroke,c,1.0,clip)
-      if centered
-        # the glyph's centre goes on (x,y); the corner does otherwise
-        buffer.position.set(x - scaleFactor*scalex*gcx, y - scaleFactor*gcy, 0)
-      else
-        buffer.position.set(x-1, y, 0)
-      buffer.scale.set(scaleFactor*scalex, scaleFactor, 1)
-      buffer.updateMatrix()
-      geoms.push buffer
-    return geoms
+    sx = scaleFactor*scalex ; sy = scaleFactor
+    if centered
+      ox = x - sx*gcx ; oy = y - sy*gcy
+    else
+      ox = x-1 ; oy = y
+    return ( ([ox+sx*p[0], oy+sy*p[1]] for p in stroke) for stroke in strokes )
 
 export class VectorDisplay
   # The fourteen colours of NASA-CR-2003-212258 Table 3, converted from the
@@ -360,23 +338,10 @@ export class VectorDisplay
     #   + 0.25 y border
     #   + menu y area
     #
-    # @camera = new THREE.OrthographicCamera 0,53,.25,36.25,-1,1
-    
-    # Normal:
-    #### @camera = new THREE.OrthographicCamera 0,53,.25,36.25,-20,20
     # top/bottom +0.374 pans the view ~10px so content sits higher and the menu
     # fits above the bottom clip plane (extent unchanged -> no distortion)
     @camera = new THREE.OrthographicCamera 0+.20,52.242456+.20,.25-2+0.374,38.57-2+0.374,-100,500
 
-# var camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 10000)
-# camera.position.set(500, 0, 0)
-
-
-    # Debug zoom:
-    # @camera = new THREE.OrthographicCamera 0,(53/5),20+.25,20+(36.25/5),-20,20
-    # @camera = new THREE.OrthographicCamera 0,(53/20),20+.25,20+(36.25/20),-20,20
-
-    # @camera.position.xyz = new THREE.Vector3(100,0,0)
     @camera.position.z = 0
 
     @superRatio = @CONFIG.supersample
@@ -412,39 +377,22 @@ export class VectorDisplay
         o.wrap.style.left = "#{@_leftInset}px"
 
     @renderPass = new RenderPass(@scene, @camera)
-    # @effectCopy = new ShaderPass(THREE.CopyShader)
-    # @effectCopy.renderToScreen = true
-
     @composer = new EffectComposer(@renderer)
     @composer.setSize(@widthPx*@superRatio, @heightPx*@superRatio)
 
     @composer.addPass(@renderPass)
-    # @composer.addPass(@effectCopy)
 
     @animate()
 
   animate: () =>
     requestAnimationFrame( @animate )
-    @render()
+    @render() unless frozen()
 
   clear: () ->
     for child in @scene.children.slice(0).reverse()
       @scene.remove child
       if child? and child.geometry?
         child.geometry.dispose()
-
-  # render: () ->
-  #   # JSC-18820/p.144 - The flash rate for characters is 1Hz with 5/8 second
-  #   # "on" time and 3/8 second "off" time.
-  #   blinkOn = ((performance.now()/1000)%1) < (5/8)
-
-  #   oldVal = @vectorMat.uniforms.opacity.value
-  #   @vectorMat.uniforms.opacity.value = blinkOn
-  #   if oldVal != blinkOn
-  #     @dirty = true
-  #   if @dirty
-  #     @composer.render()
-  #     @dirty = false
 
   render: () ->
     # keep the SDF line materials in sync with the framebuffer size so the
@@ -472,18 +420,21 @@ export class VectorDisplay
       if geom.geometry?
         geom.geometry.dispose()
 
+  # A string of glyphs in one colour: every stroke of every character goes
+  # into a single geometry.
   str: (x,y,s,color=@c2h.cyan,scale=1.0,advance=1.0,scalex=1.0,charGen=@deuFont,rot=0,centered=false,clip=null) ->
     xx=x
-    group = new THREE.Object3D()
-    group.name = s
+    strokes = []
     for c in s
       if c == '\n'
         y+=1*scale
         xx = x-1
-      geoms = charGen.drawGlyph(@,undefined, c, xx, y, color, scale, scalex, rot, centered, clip)
-      for geom in geoms
-        group.add(geom)
+      for stroke in charGen.glyphStrokes(c, xx, y, scale, scalex, rot, centered)
+        strokes.push stroke
       xx = xx+advance
+    group = new THREE.Object3D()
+    group.name = s
+    group.add @lines(strokes, color, 1.0, clip) if strokes.length
     return group
 
   strMEDS: (x,y,s,color=@c2h.cyan,scale=1.0,advance=0.62,scalex=1.0,clip=null) ->
@@ -521,17 +472,27 @@ export class VectorDisplay
       new THREE.Plane(new THREE.Vector3( 0,-1, 0),  cb.w)   # keep y <= yMax
     ]
 
-  # clip to a window (tape) by cloning a shared material with clippingPlanes
+  # clip to a window (tape) by cloning a shared material with clippingPlanes.
+  # The clones are cached per material and clip rect: callers rebuild their
+  # geometry at feed rate, and materials are never disposed.
   _clipMat: (material, clip) ->
     return material unless clip? and clip != @NO_CLIP
-    material = material.clone()
-    material.clippingPlanes = @clipPlanes(clip)
+    key = "#{material.uuid}|#{clip.x},#{clip.y},#{clip.z},#{clip.w}"
+    @_clipMats ?= {}
+    return @_clipMats[key] if @_clipMats[key]?
+    m = material.clone()
+    m.clippingPlanes = @clipPlanes(clip)
     # clone() deep-copies uniforms; re-share the screen-size refs
-    material.uniforms.resolution = @resolutionU
-    material.uniforms.pxRatio = @pxRatioU
-    return material
+    m.uniforms.resolution = @resolutionU
+    m.uniforms.pxRatio = @pxRatioU
+    @_clipMats[key] = m
 
   line: (coords, color=@c2h.cyan, intensity=1.0, clip=null) ->
+    @lines [coords], color, intensity, clip
+
+  # Many polylines in one geometry, drawn as one mesh (two for a bordered
+  # stroke).  `line` is the one-polyline case and `str` a string's glyphs.
+  lines: (polylines, color=@c2h.cyan, intensity=1.0, clip=null) ->
     # legacy callers (menu edgekey titles) pass a THREE material as the color;
     # the old THREE.Line path silently ignored it and rendered the default
     # white hairline — keep that look (white, normal weight)
@@ -549,7 +510,7 @@ export class VectorDisplay
       @bMats ?= {}
       bMat = @bMats[key] ?= makeSDFLineMaterial(THREE, @sdfOpt({color: color.border, widthPx: @LINE_PX + 2*bp}))
       cMat = @mats[0][cc] ?= makeSDFLineMaterial(THREE, @sdfOpt({color: cc}))
-      geom = makeSDFLineGeometry(THREE, coords)   # shared by both passes
+      geom = makeSDFLinesGeometry(THREE, polylines)   # shared by both passes
       g = new THREE.Object3D()
       for [mat, order] in [[bMat, 0], [cMat, 1]]
         mesh = new THREE.Mesh(geom, @_clipMat(mat, clip))
@@ -568,9 +529,90 @@ export class VectorDisplay
       ramp = (@intMats[color] ?= [])
       material = ramp[lvl] ?=
         makeSDFLineMaterial(THREE, @sdfOpt({color: color, opacity: lvl/(@NINT-1)}))
-    mesh = new THREE.Mesh(makeSDFLineGeometry(THREE, coords), @_clipMat(material, clip))
+    mesh = new THREE.Mesh(makeSDFLinesGeometry(THREE, polylines), @_clipMat(material, clip))
     mesh.frustumCulled = false   # quads are expanded in the vertex shader
     return mesh
+
+  # Merge the strokes of a freshly built subtree into fewer meshes.
+  #
+  # three.js draws the transparent pass in render order, then far origin to
+  # near, then in the order the meshes were made.  Every transparent mesh of
+  # the subtree is remade along that same sequence, and a run of neighbours
+  # sharing a material, a host node and an origin depth becomes one mesh with
+  # its members' transforms baked into the vertices.  The merged mesh keeps
+  # that origin depth, so what overlaps what comes out as it went in.
+  #
+  # A node the caller moves or hides after the build holds the strokes under
+  # it: a run stops at its edge and merged geometry stays inside it.  Such a node
+  # carries `userData.flattenApart`; the tape layers' `keepAlive` says the
+  # same thing.  A host already merged is left alone -- it is the one a
+  # rebuild keeps, and its strokes hold the place in the sequence they were
+  # made in.  Opaque geometry draws in the opaque pass and stays where it
+  # is.
+  flatten: (root) ->
+    return root unless root?
+    hosts = []
+    items = []
+    walk = (node, host, m) =>
+      for child in node.children
+        child.updateMatrix() if child.matrixAutoUpdate
+        if (child.userData.flattenApart or child.userData.keepAlive) and not child.isMesh
+          continue if child.userData.flattened
+          hosts.push child
+          walk(child, child, new THREE.Matrix4())
+          continue
+        cm = new THREE.Matrix4().multiplyMatrices(m, child.matrix)
+        if child.isMesh
+          if child.material?.transparent
+            # the depth three.js sorts on is the mesh origin's, which the
+            # merged mesh takes as its position, so the bake leaves it out
+            oz = cm.elements[14]
+            bake = null
+            if not cm.equals(IDENTITY)
+              bake = cm.clone()
+              bake.elements[14] -= oz
+            items.push {mesh: child, host: host, ro: child.renderOrder, oz: oz,
+                        sdf: child.geometry?.attributes?.endA?, xf: bake}
+        else if child.children.length
+          walk(child, host, cm)
+      return
+    walk(root, root, new THREE.Matrix4())
+    return root if items.length < 2
+    items.sort (a, b) -> (a.ro - b.ro) or (a.mesh.id - b.mesh.id)
+    runs = []
+    for e in items
+      last = runs[runs.length-1]
+      if last?.sdf and e.sdf and last.ro == e.ro and last.host == e.host and
+         last.oz == e.oz and last.parts[0].mesh.material == e.mesh.material
+        last.parts.push e
+      else
+        runs.push {ro: e.ro, host: e.host, sdf: e.sdf, oz: e.oz, parts: [e]}
+    h.userData.flattened = true for h in hosts
+    root.userData.flattened = true
+    return root if runs.length == items.length
+    for r in runs
+      if r.parts.length == 1
+        old = r.parts[0].mesh
+        mesh = new THREE.Mesh(old.geometry, old.material)
+        mesh.position.copy old.position
+        mesh.quaternion.copy old.quaternion
+        mesh.scale.copy old.scale
+        mesh.frustumCulled = old.frustumCulled
+        mesh.renderOrder = old.renderOrder
+        parent = old.parent
+        parent.remove old
+        parent.add mesh
+      else
+        geom = mergeSDFGeometries(THREE, ([e.mesh.geometry, e.xf] for e in r.parts))
+        for e in r.parts
+          e.mesh.parent.remove e.mesh
+          e.mesh.geometry.dispose()
+        mesh = new THREE.Mesh(geom, r.parts[0].mesh.material)
+        mesh.frustumCulled = false
+        mesh.renderOrder = r.ro
+        mesh.position.z = r.oz
+        r.host.add mesh
+    return root
 
   # Dashed variant of line() for DEU FEAT lineDash. Dash distances ride in
   # the geometry's segDist attribute (world units, like computeLineDistances).
@@ -580,7 +622,7 @@ export class VectorDisplay
   dashedLine: (coords, color=@c2h.cyan) ->
     material = @dashMats[color] ?=
       makeSDFLineMaterial(THREE, @sdfOpt({color: color, dashSize: 1.0, gapSize: 0.35}))
-    mesh = new THREE.Mesh(makeSDFLineGeometry(THREE, coords), material)
+    mesh = new THREE.Mesh(makeSDFLinesGeometry(THREE, [coords]), material)
     mesh.frustumCulled = false
     return mesh
 
@@ -1090,7 +1132,7 @@ export class VectorDisplay
   # asp: x aspect factor. Default 1.47222 is the empirical row->col stretch
   # matching the MEDS reference imagery. Pass 1 when drawing inside a group
   # that already applies an x scale (e.g. the ADI circular space, which
-  # uses 1.3632 [= drawGlyph AR, a true circle] times a tunable stretch).
+  # uses 1.3632 [= glyphStrokes AR, a true circle] times a tunable stretch).
   arc: (x,y,r,sa,ea, color=@c2h.darkGray, asp=1.47222) ->
     l = []
     for a in [sa...ea+1]
@@ -1098,22 +1140,17 @@ export class VectorDisplay
               y + (r*Math.sin(deg2rad(a)))*(1.00)]
     return @line l, color
 
+  # solid sector, from sa to ea degrees, on the same row->col stretch as arc()
+  # A circular segment about (x,y), a degree a point, filled as a fan about
+  # the first point: the shape is convex, which is all a fan needs.
   filledArc: (x,y,r,sa,ea, color=0x333333) ->
-    earcut = require('earcut')
-    l = []
-    dl = new THREE.BufferGeometry()
+    v = [] ; idx = []
     for a in [sa...ea+1]
-      x0 = x + (r*Math.cos(deg2rad(a)))*(1.47222)
-      y0 = y + r*Math.sin(deg2rad(a))
-      l = l.concat [x0, y0]
-      #vertices.push(x0,y0,-1)
-    vertices = new Float32Array(l)
-    dl.setAttribute( 'position', new THREE.BufferAttribute( vertices, 3 ) );  
-    pts =  earcut(l)
-    faces = []
-    for e,i in pts by 3
-      faces.push(pts[i], pts[i+1], pts[i+2])
-    dl.setIndex(faces)
+      v.push x + (r*Math.cos(deg2rad(a)))*(1.47222), y + r*Math.sin(deg2rad(a)), 0
+    idx.push 0, i, i+1 for i in [1...v.length/3 - 1]
+    dl = new THREE.BufferGeometry()
+    dl.setAttribute 'position', new THREE.BufferAttribute(new Float32Array(v), 3)
+    dl.setIndex idx
     fill = new THREE.MeshBasicMaterial({color:color, side:THREE.DoubleSide})
     return new THREE.Mesh(dl,fill)
 
@@ -1176,7 +1213,6 @@ export class VectorDisplay
           ]
       console.log(v)
       console.log(i)
-      # menuMask = new THREE.PlaneGeometry(52, 5)
       g.setIndex(i)
       g.setAttribute('position', new THREE.Float32BufferAttribute( v, 3 ))
       console.log(g)

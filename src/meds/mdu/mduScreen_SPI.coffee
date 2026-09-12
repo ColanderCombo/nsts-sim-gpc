@@ -1,11 +1,21 @@
+import {call, setInterval, clearInterval, now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
 
-import {MDUScreen} from 'meds/mduScreen'
+import {MDUScreen} from 'meds/mdu/mduScreen'
 
 export class Screen_SPI extends MDUScreen
   setData: (@curData) ->
-    if not @curData?
-      @curData = {
+    @curData ?= if @dev() then @sampleData() else @noData()
+    @draw()
+
+  # No ADC frame: the bars outlined red with no pointers.
+  noData: () ->
+    d = {adcValid: false}
+    d[k] = null for k of @sampleData()
+    d
+
+  sampleData: () ->
+    {
         elevonDeg_LL: -25
         elevonDeg_LR: -30
         elevonDeg_RL: -20
@@ -15,8 +25,7 @@ export class Screen_SPI extends MDUScreen
         aileronDeg: -1
         speedbrakePc_ACT: 30
         speedbrakePc_CMD: 40
-      }
-    @draw()
+    }
 
   data: () ->
     return @curData
@@ -94,6 +103,10 @@ export class Screen_SPI extends MDUScreen
       @bg.add @d.line line, @d.c2h.green
 
     grayBar = @d.c2h.darkGray
+    # "For ADC failures or invalid data cases, the SPI bars will be
+    # outlined in red and the triangles will disappear." (SFOC-FL0884
+    # sect.2.13)
+    barOutline = if @curData?.adcValid == false then @d.c2h.red else null
 
     @bg.add @d.box 47.17, 19.1, 50.67, 20.15, @d.c2h.white
     @bg.add @d.box 47.17, 26.1, 50.67, 27.15, @d.c2h.white
@@ -104,7 +117,7 @@ export class Screen_SPI extends MDUScreen
     if @data().elevonDeg_LR?
       elrVal = (@data().elevonDeg_LR + 35) / (55/11)
     @bg.add @drawVertGauge ellVal, 7.6, 23.5, 3.75, 1.25, .75, 11
-    @bg.add @d.box  4.05, 7.2, 5.45,24.0, null, grayBar
+    @bg.add @d.box  4.05, 7.2, 5.45,24.0, barOutline, grayBar
     @bg.add @drawVertGauge elrVal, 7.6, 23.5, 5.75, 1.25, .75, 11, left=false
 
     # Elevons Deg R
@@ -113,27 +126,30 @@ export class Screen_SPI extends MDUScreen
     if @data().elevonDeg_RR?
       errVal = (@data().elevonDeg_RR + 35) / (55/11)
     @bg.add @drawVertGauge erlVal, 7.6, 23.5, 12, 1.25, .75, 11
-    @bg.add @d.box 12.25, 7.2,13.75,24.0, null, grayBar
+    @bg.add @d.box 12.25, 7.2,13.75,24.0, barOutline, grayBar
     @bg.add @drawVertGauge errVal, 7.6, 23.5, 14, 1.25, .75, 11, left=false
 
     # Body Flap %
     if @data().bodyFlapPc?
       bfpVal = (@data().bodyFlapPc) / (100/10)
-    @bg.add @d.box 19.5, 7.2,20.75,24.0, null, grayBar
+    @bg.add @d.box 19.5, 7.2,20.75,24.0, barOutline, grayBar
     @bg.add @drawVertGauge bfpVal,7.6, 23.5, 21.10, .75, 1.25, 10, left=false
-    @bg.add @flpPointer 21.9,12.85,@d.c2h.yellow
+    # "The small pointer at 34 percent is fixed and shows the trail
+    # position" (SFOC-FL0884,Rev.B,CPN-2 sect.2.7).  The scale runs 7.6 to
+    # 23.5 over 0 to 100 percent, so 34 percent is 13.006.
+    @bg.add @flpPointer 21.9,13.006,@d.c2h.yellow
 
     # Rudder-Deg
     if @data().rudderDeg?
       rdVal = (@data().rudderDeg + 30) / (60/12)
     @bg.add @drawHorizGauge rdVal, 28.30, 50.95, 6.5, .55, .9, 12
-    @bg.add @d.box 27.45,6.7,51.75,7.6,null,grayBar
+    @bg.add @d.box 27.45,6.7,51.75,7.6, barOutline, grayBar
 
     # Aileron-Deg
     if @data().aileronDeg?
       alVal = (@data().aileronDeg + 5) / (10/20)
     @bg.add @drawHorizGauge alVal, 28.30, 50.95, 13.75, .6, .85, 20
-    @bg.add @d.box 27.45,13.95, 51.75, 14.85, null, grayBar
+    @bg.add @d.box 27.45,13.95, 51.75, 14.85, barOutline, grayBar
 
     # Speedbrake %
     if @data().speedbrakePc_ACT?
@@ -141,11 +157,12 @@ export class Screen_SPI extends MDUScreen
     if @data().speedbrakePc_CMD?
       spcVal = (@data().speedbrakePc_CMD) / (100/10)
     @bg.add @drawHorizGauge spaVal, 28.37, 51.02, 22.75, .55, .9, 10
-    @bg.add @d.box 27.52,22.95, 51.82, 23.8, null,grayBar
+    @bg.add @d.box 27.52,22.95, 51.82, 23.8, barOutline, grayBar
     @bg.add @drawHorizGauge spcVal, 28.37, 51.02, 24.05, .55, .9, 10, false
 
-    @bg.add @d.str 47.32,19.15, "00#{@data().speedbrakePc_ACT}".slice(-3), @d.c2h.yellow, scale=0.96,advance=1.01,scalex=1.111
-    @bg.add @d.str 47.32,26.15, "00#{@data().speedbrakePc_CMD}".slice(-3), @d.c2h.cyan, scale=0.96,advance=1.01,scalex=1.111
+    pct = (v) -> if v? then "00#{Math.round v}".slice(-3) else "   "
+    @bg.add @d.str 47.32,19.15, pct(@data().speedbrakePc_ACT), @d.c2h.yellow, scale=0.96,advance=1.01,scalex=1.111
+    @bg.add @d.str 47.32,26.15, pct(@data().speedbrakePc_CMD), @d.c2h.cyan, scale=0.96,advance=1.01,scalex=1.111
 
     @group = new THREE.Object3D()
     @group.add @bg
@@ -191,14 +208,14 @@ export class Screen_SPI extends MDUScreen
   enterSweepTest: () ->
     return if @_stTimer?
     @_st0 = Object.assign({}, @curData)    # restore the statics on exit
-    @_stT0 = Date.now()
-    @_stTimer = window.setInterval((=> @tickSweepTest()), ST_TICK)
+    @_stT0 = simNow()
+    @_stTimer = setInterval(call(@, 'tickSweepTest'), ST_TICK)
     @tickSweepTest()
     console.log "SPI sweep test ON"
 
   exitSweepTest: () ->
     return if not @_stTimer?
-    window.clearInterval(@_stTimer)
+    clearInterval(@_stTimer)
     @_stTimer = null
     Object.assign(@curData, @_st0) if @_st0?
     @_st0 = null
@@ -206,7 +223,7 @@ export class Screen_SPI extends MDUScreen
     console.log "SPI sweep test OFF"
 
   tickSweepTest: () ->
-    t = (Date.now() - @_stT0) / 1000
+    t = (simNow() - @_stT0) / 1000
     for [k, lo, hi, period] in ST_SWEEPS
       ph = (t % period) / period
       tri = if ph < 0.5 then 2*ph else 2 - 2*ph        # 0..1..0

@@ -1,8 +1,8 @@
 # dfbDump — print a format control word stream.
 #
-#   node dfbDump.js <file.dfb>
+#   node build/dist/dfbDump.js <file.dfb>
 #
-import {FCW, wordsFromBytes} from '../meds/deuFCW'
+import {FCW, wordsFromBytes} from 'meds/deu/deuFCW'
 import * as fs from 'fs'
 process = require 'process'
 

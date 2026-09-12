@@ -1,0 +1,26 @@
+# Panel O14 -- the MN A controls the DPS uses
+#
+# USA-007587 Rev.A appendix A "Panel Diagrams", panel O14, which is fed
+# from main bus A.  The number in parentheses beside each control on that
+# drawing is its id here.
+#
+#   DDU LEFT   CB30, 7.5 A       the commander's device driver unit
+#   DDU AFT    CB31, 7.5 A       the aft station's
+#   MMU 1      S13, ON over OFF  mass memory unit 1
+#
+# The rest of the panel -- the signal conditioners, cryogenics,
+# navigation aids and reaction jet drivers -- is not here.  Where these
+# go is wiring/eps.wir.
+panel: O14
+name: MN A power controls
+
+groups:
+  - title: DDU
+    controls: [CB30, CB31]
+  - title: MASS MEMORY
+    controls: [S13]
+
+controls:
+  CB30: {kind: breaker, label: "DDU LEFT", amps: 7.5}
+  CB31: {kind: breaker, label: "DDU AFT", amps: 7.5}
+  S13:  {kind: switch, label: "MMU 1", positions: [ON, OFF], at: ON}

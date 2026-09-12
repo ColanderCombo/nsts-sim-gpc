@@ -1,29 +1,34 @@
 # gpcmd — utility to send/monitor DEU traffic on a DK bus.
 #
 # Usage:
-#   GPCMD.sh fill data/TEST.dfb --idp 1        # display data fill
-#   GPCMD.sh fill f.dfb --addr 19EE --format   # format data fill
-#   GPCMD.sh time --idp 1 --interval 1         # the header clock
-#   GPCMD.sh poll --idp 1 --interval 1         # poll, and print the response
-#   GPCMD.sh bite --idp 1                      # Built-In Test Equipment query
-#   GPCMD.sh resetspl                          # clear the Scratch Pad Line
-#   GPCMD.sh key SYS_SUMM --idp 1              # press a keyboard key
-#   GPCMD.sh mf SM --idp 1                     # the major function switch
-#   GPCMD.sh raw 71800 0001 19EE               # raw command and its data
-#   GPCMD.sh monitor                           # monitor every bus
-#   GPCMD.sh monitor DK1 --fcw                 # ... decoding the formats
-#   GPCMD.sh unit --idp 1                      # simulate IDP state machine
-#   GPCMD.sh unit --ipl-request --fcw          # ... and ask to be IPL'd
+#   gpcmd fill data/TEST.dfb --idp 1        # display data fill
+#   gpcmd fill f.dfb --addr 19EE --format   # format data fill
+#   gpcmd time --idp 1 --interval 1         # the header clock
+#   gpcmd poll --idp 1 --interval 1         # poll, and print the response
+#   gpcmd bite --idp 1                      # Built-In Test Equipment query
+#   gpcmd resetspl                          # clear the Scratch Pad Line
+#   gpcmd key SYS_SUMM --idp 1              # press a keyboard key
+#   gpcmd mf SM --idp 1                     # the major function switch
+#   gpcmd idpsel 3 2                        # the IDP/CRT SEL switches
+#   gpcmd idpload 1                         # the IDP LOAD momentary
+#   gpcmd raw 71800 0001 19EE               # raw command and its data
+#   gpcmd monitor                           # monitor every bus
+#   gpcmd monitor DK1 --fcw                 # ... decoding the formats
+#   gpcmd unit --idp 1                      # simulate IDP state machine
+#   gpcmd unit --ipl-request --fcw          # ... and ask to be IPL'd
 #
 import * as fs from 'fs'
 import {Bus, BusMsg, busConfig} from '../com/bus.civet.jsx'
 import {addBusOptions} from '../com/busCli'
-import {FCW, wordsFromBytes, bytesFromWords} from '../meds/deuFCW'
-import * as DEU from '../meds/deuProto'
+import {FCW, wordsFromBytes, bytesFromWords} from '../meds/deu/deuFCW'
+import * as DEU from '../meds/deu/deuProto'
 import {MDUMsgName} from '../meds/medsConf'
+import {decode1553, fmt1553, SA} from '../lru/adc/adcConf'
 import {KYBD} from '../meds/kybd'
-import {IDPSel, TAG as IDPSel_TAG} from 'meds/idpSel'
-import {DEUUnit} from '../meds/deuUnit'
+import {IDPSel} from 'meds/idp/idpSel'
+import {IDPPanel, IDPDiscretes, IDP_DISCRETES, IDP_IDS, LOAD_PRESS_MS} from 'meds/idp/idpDiscretes'
+import {decodeDiscrete, SET, RESET, REQUEST, VALUE} from '../com/discretes'
+import {DEUUnit} from '../meds/deu/deuUnit'
 {Command} = require 'commander'
 process = require 'process'
 
@@ -81,10 +86,7 @@ program = new Command()
   .version('1.0.0')
 
 sendCommand = (bus, cmd24) ->
-  msg = new BusMsg(2)
-  msg.data16[0] = (cmd24 >>> 8) & 0xffff
-  msg.data16[1] = (cmd24 & 0xff) << 8
-  bus.sendMsg msg
+  bus.sendMsg BusMsg.Command(cmd24)
 
 sendWords = (bus, words) ->
   for w in words
@@ -192,9 +194,12 @@ program.command('bite')
   .option('--idp <n>', 'target IDP 1..4', '1')
   .action (o) ->
     bus = dkBusForIDP(o, false)
-    bus.onReceive ((_, busID, msg) ->
-      hex = (hex4 msg.data16[i] for i in [0...msg.data16.length])
-      console.log "BITE: #{hex.join(' ')}"), null
+    bus.onReceive replyReader(DEU.BITE_WORDS, (w) ->
+      flags = headerFlags(w[0])
+      console.log "BITE: hdr #{hex4 w[0]}" +
+                  (if flags.length > 0 then "  [#{flags.join(' ')}]" else '') +
+                  "  HW1 #{hex4 w[1]} HW2 #{hex4 w[2]} SW #{hex4 w[3]}  " +
+                  (if sum16(w) == 0 then 'cksum ok' else "cksum BAD (#{hex4 sum16 w})")), null
     sendMsgs bus, (-> sendCommand bus, DEU.encodeCommand(DEU.FUNC.BITE)), o
 
 program.command('resetspl')
@@ -261,34 +266,55 @@ program.command('mf')
       bus.sendMsg msg
       console.log "major function #{name} (word #{hex4 msg.data16[0]}) -> #{bus.busID}"), o
 
+# The switches on the IDP discrete channels (meds/idp/idpDiscretes): the
+# positions are read back from the KYBD SEL lines the IDPs hold.
 program.command('idpsel')
-  .description('the IDP/CRT SEL switches: LEFT 1 or 3, RIGHT 2 or 3; no arguments asks the IDPs')
+  .description('set or read the IDP/CRT SEL switches')
   .argument('[left]', 'LEFT IDP/CRT SEL position')
   .argument('[right]', 'RIGHT IDP/CRT SEL position')
   .action (left, right, o) ->
-    bus = openBus('_IDPSW')
-    sel = new IDPSel(bus)
+    panel = new IDPPanel()
     if left? or right?
       l = parseInt(left, 10)
       r = parseInt(right, 10)
       if not (l in IDPSel.LEFT_POSITIONS and r in IDPSel.RIGHT_POSITIONS)
-        console.error "gpcmd: idpsel wants LEFT 1|3 and RIGHT 2|3"
+        console.error "gpcmd: invalid IDP/CRT SEL positions '#{left} #{right}'"
         process.exit(2)
-      sendMsgs bus, (->
-        sel.set(l, r)
-        console.log "IDP/CRT SEL: LEFT #{l} RIGHT #{r} -> #{bus.busID}"), o
-    else
-      # Print the first STATE back, the standing positions included.
-      bus.onReceive ((_, busID, msg) ->
-        d = IDPSel.decode(msg.data16)
-        return unless d?.tag == IDPSel_TAG.STATE
-        console.log "IDP/CRT SEL: LEFT #{d.left} RIGHT #{d.right}"
-        process.exit(0)), null
       setTimeout (->
-        sel.query()
+        panel.setSel(l, r)
+        console.log "IDP/CRT SEL: LEFT #{l} RIGHT #{r} -> IDP 1, 2 and 3"
+        setTimeout (-> process.exit(0)), LINGER_MS), BIND_MS
+    else
+      setTimeout (->
+        panel.query()
         setTimeout (->
-          console.log "no IDP answered"
-          process.exit(1)), 1000), BIND_MS
+          heard = (n for n in IDP_IDS when panel.heard[n])
+          if heard.length == 0
+            console.log "no IDP answered"
+            process.exit(1)
+          p = panel.positions()
+          console.log "IDP/CRT SEL: LEFT #{p.left} RIGHT #{p.right}  (from IDP #{heard.join(', ')})"
+          for n in heard
+            d = panel.lines(n)
+            console.log "   IDP #{n}  KYBD SEL A #{if d.A then 'on ' else 'off'}  B #{if d.B then 'on ' else 'off'}" +
+                        "#{if panel.loading(n) then '  loading' else ''}"
+          process.exit(0)), 500), BIND_MS
+
+program.command('idpload')
+  .description('press an IDP LOAD switch')
+  .argument('<idp>', 'IDP 1..4')
+  .option('--hold <ms>', 'how long the switch is held', String(LOAD_PRESS_MS))
+  .action (idp, o) ->
+    n = parseInt(idp, 10)
+    if n not in IDP_IDS
+      console.error "gpcmd: invalid IDP '#{idp}'"
+      process.exit(2)
+    panel = new IDPPanel(ids: [n])
+    ms = Number(o.hold)
+    setTimeout (->
+      panel.pressLoad(n, ms)
+      console.log "IDP #{n} LOAD"
+      setTimeout (-> process.exit(0)), ms + LINGER_MS), BIND_MS
 
 #
 # monitor
@@ -296,15 +322,15 @@ program.command('idpsel')
 DK_BUSSES = ('DK' + n for n in [1..4])
 IDP_BUSSES = ('_IDP' + n for n in [1..4])
 KYBD_BUSSES = ('_KYBD' + n for n in [1..3])
-SW_BUSSES = ['_IDPSW']
+SW_BUSSES = (IDP_DISCRETES.busName(n) for n in IDP_IDS)
 
 program.command('monitor')
   .alias('watch')
   .description('batch bus traffic into messages and decode')
-  .argument('[busses...]', 'bus names; default DK1-4, _IDP1-4, _KYBD1-3, _IDPSW')
+  .argument('[busses...]', 'bus names; default DK1-4, _IDP1-4, _KYBD1-3, _idpDiscretes1-4')
   .option('--fcw', 'also disassemble fill payloads as display instructions')
   .option('--hex', 'also dump the raw halfwords of every message')
-  .option('--quiet-heartbeat', 'hide the IDP heartbeat')
+  .option('--quiet-heartbeat', 'hide the IDP heartbeat and the ADC frames')
   .option('--json <file>', 'append one JSON record per message for analysis')
   .action (busses, o) ->
     fcw = new FCW()
@@ -321,9 +347,9 @@ program.command('monitor')
     for name in names
       state[name] = {xfer: null}
 
-    onDK = (name, words) ->
+    onDK = (name, words, isCmd) ->
       st = state[name]
-      if words.length == 2
+      if isCmd
         cmd = ((words[0] & 0xffff) << 8) | ((words[1] >> 8) & 0xff)
         c = DEU.decodeCommand(cmd)
         tally["#{name} #{c.name}"] = (tally["#{name} #{c.name}"] ? 0) + 1
@@ -338,10 +364,13 @@ program.command('monitor')
           when DEU.FUNC.MEDS_XFER then DEU.MEDS_XFER_WORDS
           else c.count
         st.xfer = if expect > 0 then {c: c, left: expect, words: []} else null
+        st.lastCmd = c
         return
-      if words.length == 1 and st.xfer?
-        st.xfer.words.push words[0] & 0xffff
-        return if --st.xfer.left > 0
+      if st.xfer?
+        for w in words
+          st.xfer.words.push w & 0xffff
+          break if --st.xfer.left == 0
+        return if st.xfer.left > 0
         x = st.xfer ; st.xfer = null
         f = DEU.parseFill(x.words)
         nz = x.words.filter((w) -> w != 0).length
@@ -357,9 +386,19 @@ program.command('monitor')
                {kind: 'headerless', func: x.c.name, words: x.words}
         console.log '           ' + x.words.map(hex4).join(' ') if o.hex
         return
-      # A single word with no transfer running is an orphan, which is what a
+      # A single word answering a poll is mode status: the header alone,
+      # from a unit without its control program.  One with no transfer
+      # running and no poll before it is an orphan, which is what a
       # miscounted command looks like.
       if words.length == 1
+        if st.lastCmd?.func == DEU.FUNC.POLL
+          st.lastCmd = null
+          hdr = words[0] & 0xffff
+          flags = headerFlags(hdr)
+          say name, "MODE STATUS hdr #{hex4 hdr}" +
+                    (if flags.length > 0 then "  [#{flags.join(' ')}]" else ''),
+               {kind: 'modeStatus', hdr: hdr, flags: flags}
+          return
         say name, "orphan data #{hex4 words[0]} (no transfer running)",
              {kind: 'orphan', words: words}
         return
@@ -372,8 +411,13 @@ program.command('monitor')
              {kind: 'reply', words: words}
 
     onIDP = (name, words) ->
+      # Below the tags: the 1553B words between the IDP and its ADCs.
+      if not MDUMsgName[words[0]]? and (m = decode1553(words))?
+        return if o.quietHeartbeat and (m.sa == SA.SAMPLES or m.data.length == 32)
+        say name, "ADC #{fmt1553 m}", {kind: 'adc-1553', words: words}
+        return
       tag = MDUMsgName[words[0]] ? "0x#{hex4 words[0]}"
-      return if o.quietHeartbeat and tag == 'POLL'
+      return if o.quietHeartbeat and tag in ['POLL', 'ADC']
       if tag == 'FILL'
         addr = words[1]
         body = words[2...]
@@ -385,14 +429,15 @@ program.command('monitor')
              {kind: 'mdu', tag: tag, words: words}
 
     onSW = (name, words) ->
-      d = IDPSel.decode(words)
-      if d?.tag == IDPSel_TAG.QUERY
-        say name, "IDP/CRT SEL query", {kind: 'idpsel-query'}
-      else if d?
-        say name, "IDP/CRT SEL LEFT #{d.left} RIGHT #{d.right}",
-             {kind: 'idpsel', left: d.left, right: d.right}
-      else
+      d = decodeDiscrete({data16: words})
+      unless d?
         say name, "?? #{words.map(hex4).join(' ')}", {kind: 'unknown', words: words}
+        return
+      op = {1: 'SET', 2: 'RESET', 3: 'REQUEST', 4: 'VALUE'}[d.op]
+      what = if d.op == VALUE then "0x#{(d.mask >>> 0).toString(16).padStart(8, '0')}" \
+             else IDP_DISCRETES.describe(d.reg, d.mask)
+      say name, "#{op} #{IDP_DISCRETES.regName(d.reg)} #{what}",
+           {kind: 'discrete', op: op, reg: IDP_DISCRETES.regName(d.reg), mask: d.mask}
 
     onKYBD = (name, words) ->
       for w in words
@@ -413,14 +458,14 @@ program.command('monitor')
         process.exit(2)
       bus = new Bus(name, busConfig[name])
       handler = if /^DK/.test(name) then onDK
-      else if name == '_IDPSW' then onSW
+      else if /^_idpDiscretes/.test(name) then onSW
       else if /^_IDP/.test(name) then onIDP
       else if /^_KYBD/.test(name) then onKYBD
       else onDK
       do (name, handler) ->
         bus.onReceive ((_, busID, msg) ->
           words = (msg.data16[i] for i in [0...msg.data16.length])
-          handler name, words), null
+          handler name, words, msg.cmd), null
 
     console.log "monitoring #{names.join(' ')} -- ^C to stop"
     process.on 'SIGINT', () ->
@@ -471,6 +516,7 @@ program.command('unit')
         msg = new BusMsg(words.length)
         msg.data16[i] = words[i] & 0xffff for i in [0...words.length]
         bus.sendMsg msg
+      load: (stage) -> disc.setLoadState(stage)
       log: (text) -> console.log "#{ms()}  #{text}"
     # a zero BITE register 1 is what a GPC reads as no response, from a unit
     # that is replying
@@ -478,11 +524,7 @@ program.command('unit')
 
     bus.onReceive ((_, busID, msg) ->
       words = (msg.data16[i] for i in [0...msg.data16.length])
-      # Our own replies come back through multicast loopback and the bus drops
-      # them only by exact match, so discard anything longer than a command:
-      # no GPC sends more than two words at a time.
-      return if words.length > 2
-      r = unit.recv words
+      r = unit.recv words, msg.cmd
       return if o.quiet or not r?
       switch r.kind
         when 'command'
@@ -500,15 +542,18 @@ program.command('unit')
           console.log "#{ms()}    MEDS DK buffer, #{r.words.length} hw"
       ), null
 
-    # The keyboards wired to this unit, gated by the IDP/CRT SEL switches
-    # as an IDP gates them; this unit answers a switch query.
-    sel = new IDPSel(openBus('_IDPSW'), answers: true)
+    # The unit's discrete lines, as an IDP holds them: the keyboards wired
+    # to it are gated by the KYBD SEL lines, and the LOAD momentary asks
+    # for a load.
+    disc = new IDPDiscretes n, onInput: (bit, on_) ->
+      unit.requestLoad() if bit == IDP_DISCRETES.resolve(1, 'load') and on_
+    disc.setLoadState(if unit.ipled then 'complete' else 'requested')
     onKey = (_, busID, msg) ->
       kybdNo = Number(busID.replace(/\D/g, ''))
       for i in [0...msg.data16.length]
         d = KYBD.decode(msg.data16[i])
         if d?.key?
-          if not IDPSel.selected(n, kybdNo, sel.state())
+          if not IDPSel.selectedByLines(n, kybdNo, disc.lines())
             console.log "#{ms()}  key #{d.key.ascii} on #{busID} not selected, dropped"
             continue
           unit.pressKey d.key.gpcCode

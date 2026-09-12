@@ -2,6 +2,7 @@
 
 name: selftest
 description: synthetic LRUs, for trying sim without touching the busses
+concurrency: 2
 
 lrus:
   tick1:  {lru: ticker,  order: 10}

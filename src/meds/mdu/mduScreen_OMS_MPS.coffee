@@ -1,10 +1,20 @@
+import {now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen,VertGauge} from 'meds/mduScreen'
+import {MDUScreen,VertGauge} from 'meds/mdu/mduScreen'
 
 export class Screen_OMS_MPS extends MDUScreen
   setData: (@curData) ->
-    if not @curData?
-      @curData = {
+    @curData ?= if @dev() then @sampleData() else @noData()
+    @draw()
+
+  # No ADC frame: every gauge invalid (a negative value is the red box).
+  noData: () ->
+    d = {}
+    d[k] = -1 for k of @sampleData()
+    d
+
+  sampleData: () ->
+    {
         omsHeTKP_L: 2500
         omsHeTKP_R: 0
         omsN2TKP_L: 0
@@ -24,8 +34,7 @@ export class Screen_OMS_MPS extends MDUScreen
         mpsPc_L: 67
         mpsPc_C: 67
         mpsPc_R: 67
-      }
-    @draw()
+    }
 
   data: () -> return @curData
 
@@ -71,7 +80,7 @@ export class Screen_OMS_MPS extends MDUScreen
       {src:'omsPcL',x:6.2,y:20.41,l:'L', d:3, h:6.5,mf:true, r:[0,120],t:[80],s:{0:'black',4:'red',80:'white'}}
       {src:'omsPcR',x:11.75,y:20.41,l:'R', d:3, h:6.5,mf:true, r:[0,120],t:[80],s:{0:'black',4:'red',80:'white'}}
       # PNEU He TK PRESS meter / psia / 600-900 / red:3000-3799, green:3800+
-      {src:'mpsREG_P',x:22.25,y:3.5,l:'PNEU',d:4,h:4,bd:-0.11,mf:false,r:[3000,5000],t:[3800],s:{0:'red',3800:'green'}}
+      {src:'mpsPneuTK_P',x:22.25,y:3.5,l:'PNEU',d:4,h:4,bd:-0.11,mf:false,r:[3000,5000],t:[3800],s:{0:'red',3800:'green'}}
       # L(C,R) ENG He TK PRESS meter / psia / 1000-5000 / red:600-679 green:680-810 red:811+
       {src:'mpsHeTKP_L',x:32.5,y:3.5,l:'L/2',d:4,h:4,bd:-0.11,mf:false,r:[1000,5000],t:[1150],s:{0:'red',680:'green',811:'red'}}
       {src:'mpsHeTKP_C',x:38.25,y:3.5,l:'C/1',d:4,h:4,mf:false,r:[1000,5000],t:[1150],s:{0:'red',680:'green',811:'red'},up:.50}

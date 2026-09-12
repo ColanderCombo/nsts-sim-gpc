@@ -11,14 +11,20 @@
 
 version: 1
 
+# How many LRUs an autostart lets be coming up at once: spawned, and not
+# yet judged up or down.  runConfig.yml may set its own.
+concurrency: 8
+
 # Written relative to this file, so a checkout can sit anywhere.
 paths:
   root:   ".."                    # the simulator tree
-  dist:   "${root}/dist"          # the bundles GPC.sh and friends build
+  build:  "${root}/build"         # the cmake build tree (BUILD.sh)
+  dist:   "${build}/dist"         # the bundles cmake writes
+  bin:    "${build}/bin"          # the command wrappers cmake writes
   data:   "${root}/data"
-  gen:    "${root}/gpc/gen"       # committed images -- iplmicro, test FCMs
   sdl:    "${root}/../.."         # the nsts-sdl-dps tree that builds the tapes
-  build:  "${sdl}/build"
+  sdlbuild: "${sdl}/build"
+  pfs:    "${sdlbuild}/OI340700"  # the flight load: fcm/ and mmu.mmv
   logs:   "${root}/run/logs"      # one file per LRU, appended across sessions
 
 # What every LRU inherits.  A catalog entry or an instance overrides any
@@ -29,9 +35,22 @@ defaults:
   maxRestarts: 3
   stopSignal: TERM
   stopTimeout: 5
-  startDelay: 0.5                 # pause before the next LRU is started
+  startDelay: 0                   # pause after a start before the next is issued
   readyTimeout: 20                # how long a start has to reach healthy
   logLines: 5000
+  # Every process of a session takes the same two settings.  `gui` puts
+  # every bus but the MDU display busses, the keyboards and the Python
+  # ones through the shared-memory ring (com/busshm.coffee): the flight
+  # critical and mass-memory busses cross in shared memory while the MEDS
+  # windows, which V8 cannot map under Electron, stay on UDP on the IDP
+  # busses the CLI idp process bridges to.  A session whose GPC runs under
+  # Electron (the GUI debugger) reads the flight critical busses there and
+  # takes `ic` or `off`.  The paced machines hold each other inside 50 us
+  # of one simulated time (com/simbarrier.coffee), which is what a common
+  # set needs to keep its inter-computer exchange inside the deadline.
+  env:
+    NSTS_BUS_SHM: "gui"
+    NSTS_SIM_BARRIER: "50"
   health:
     type: process                 # none | process | port | log | command
     grace: 1.0                    # nothing is held against it this soon
@@ -41,41 +60,196 @@ lrus:
   gpc:
     name: General Purpose Computer
     kind: AP-101S
-    description: CPU, IOP and its bus control elements; IPLs from a mass memory
-    build: [node, "${root}/esbuild/esbuild.gpc.config.js"]
-    command: [node, "${dist}/gpc.js", run]
-    args: ["--ipl", "--real-time", "--max-steps", "0", "--gpc", "${unit}"]
+    description: GPC mode=STBY + IPL
+    build: [node, "${root}/cmake/esbuild/bundle.js", "gpc"]
+    # dbg-serve --autostart runs the machine as `gpc run` does and holds it
+    # on a socket, so `gpc dbg-client --port ${dbgport}` attaches to the
+    # running GPC.  The large step budget re-arms rarely; a client breakpoint
+    # or pause stops the run.
+    command: [node, "${dist}/gpc.js", "dbg-serve"]
+    args: ["--ipl", "--real-time", "--gpc", "${unit}", "--max-steps", "4000000000",
+           "--autostart", "--port", "${dbgport}", "--name", "gpc${unit}", "--quiet",
+           "--config-root", "${configroot}"]
+    # The flight software leaves the flight critical bus receive timeout at
+    # 2 counts, 33 us, which a subsystem answering on a wire meets and a
+    # reply crossing two host processes does not.  The floor stands in for
+    # the wire.
+    env:
+      NSTS_RECV_TIMEOUT_FLOOR_MS: "10"
+      # Every receive that times out, with the timeout in force, to the log.
+      NSTS_BUS_TIMEOUT_TRACE: "1"
     params:
       unit: 1
+      dbgport: 4444              # the socket gpc dbg-client attaches to
+      # The composed memory configurations, for `symauto`: a machine that
+      # IPLs over the bus is never told where the build it loaded sits.
+      configroot: "${pfs}/fcm"
+    debugPort: "${dbgport}"       # the GPC STATUS page talks to it too
     readyTimeout: 60              # filling storage and reading the tape takes a while
     health:
-      type: process
-      # A running GPC is the only answer a supervisor needs; what it is
-      # doing is a question for the debugger.  A line it prints only when
-      # well would go here:
-      #   type: log
-      #   up: "GPC \\d+ ready"
+      type: port                 # up when the debug socket answers, after the IPL
+      port: "${dbgport}"
+      grace: 2.0
+
+  gpchalt:
+    name: General Purpose Computer at HALT
+    kind: AP-101S
+    description: GPC mode=HALT
+    build: [node, "${root}/cmake/esbuild/bundle.js", "gpc"]
+    command: [node, "${dist}/gpc.js", "dbg-serve"]
+    args: ["--mode", "halt", "--real-time", "--gpc", "${unit}", "--max-steps", "4000000000",
+           "--autostart", "--port", "${dbgport}", "--name", "gpc${unit}", "--quiet",
+           "--config-root", "${configroot}"]
+    env:
+      NSTS_RECV_TIMEOUT_FLOOR_MS: "10"
+      NSTS_BUS_TIMEOUT_TRACE: "1"
+    params:
+      unit: 1
+      dbgport: 4441
+      configroot: "${pfs}/fcm"
+    debugPort: "${dbgport}"
+    health:
+      type: port
+      port: "${dbgport}"
       grace: 2.0
 
   mmu:
     name: Mass Memory Unit
     kind: MMU
-    description: Serves a tape on its bus -- the GPC IPLs and loads from it
-    build: [node, "${root}/esbuild/esbuild.mmu.config.js"]
+    description:
+    build: [node, "${root}/cmake/esbuild/bundle.js", "mmu"]
     command: [node, "${dist}/mmu.js", run, "--unit", "${unit}", "--volume", "${volume}"]
     params:
       unit: 1
-      volume: "${build}/mmu/mmu.mmv"
+      volume: "${pfs}/mmu.mmv"
     health:
       type: log
-      up: "MMU\\d+ on MM\\d"      # mmu/cli.coffee prints this once bound
+      up: "MMU\\d+ on MM\\d"
+
+  mdm:
+    name: Multiplexer/Demultiplexer
+    kind: MDM
+    description:
+    build: [node, "${root}/cmake/esbuild/bundle.js", "mdm"]
+    command: [node, "${dist}/mdm.js", run, "${id}"]
+    params:
+      id: FF1
+    health:
+      type: log
+      up: "MDM \\w+ on "
+
+  mtu:
+    name: Master Timing Unit
+    kind: MTU
+    description: Attached to FF1/FF2/FF3
+    build: [node, "${root}/cmake/esbuild/bundle.js", "mtu"]
+    command: [node, "${dist}/mtu.js", run, "-q"]
+    health:
+      type: log
+      up: "MTU accumulator \\d on "
+
+  imu:
+    name: Inertial Measurement Unit
+    kind: IMU
+    description: IMU1/IMU2/IMU3 attached to FF1/FF2/FF3
+    build: [node, "${root}/cmake/esbuild/bundle.js", "imu"]
+    command: [node, "${dist}/imu.js", run, "-q"]
+    health:
+      type: log
+      up: "IMU \\d on "
+
+  adta:
+    name: Air Data Transducer Assembly
+    kind: ADTA
+    description: ADTA1/2/3/4 attached to FF1/FF2/FF3/FF4
+    build: [node, "${root}/cmake/esbuild/bundle.js", "adta"]
+    command: [node, "${dist}/adta.js", run, "-q"]
+    health:
+      type: log
+      up: "ADTA \\d on "
+
+  nsp:
+    name: Network Signal Processor
+    kind: NSP
+    description: NSP1/NSP2 attached to FF1/FF3
+    build: [node, "${root}/cmake/esbuild/bundle.js", "nsp"]
+    command: [node, "${dist}/nsp.js", run, "-q"]
+    health:
+      type: log
+      up: "NSP \\d on "
+
+  pcmmu:
+    name: PCM Master Unit
+    kind: PCMMU
+    description: PCMMU1/PCMMU2
+    build: [node, "${root}/cmake/esbuild/bundle.js", "pcmmu"]
+    # A unit powered and read before the session: the PASS's first read
+    # of PMU time at initialization sees S set.
+    command: [node, "${dist}/pcmmu.js", run, "-q", "--status-normal"]
+    health:
+      type: log
+      up: "PCMMU \\d on "
+
+  idp:
+    name: Integrated Display Processor
+    kind: IDP
+    description: IDP1/IDP2/IDP3/IDP4
+    build: [node, "${root}/cmake/esbuild/bundle.js", "idp"]
+    # The units come up already loaded.  `iplRequest` is the list that
+    # asks the GPC for a control program at power-up instead, and
+    # `gpcmd idpload <n>` is the same request from the IDP LOAD momentary
+    # at any time: GPCIPL loads a unit and draws its menu for an IDP whose
+    # LOAD discrete is set (USA-005350 sect.4, p.4-27).
+    command: [node, "${dist}/idp.js", run, "-q", "--units", "${units}",
+              "--ipl-request", "${iplRequest}"]
+    params:
+      units: "1,2,3,4"
+      iplRequest: ""
+    health:
+      type: log
+      up: "IDP \\d on "
+
+  adc:
+    name: Analog to Digital Converter
+    kind: ADC
+    description: ADC1A/ADC2A/ADC1B/ADC2B
+    build: [node, "${root}/cmake/esbuild/bundle.js", "adc"]
+    command: [node, "${dist}/adc.js", run, "-q"]
+    health:
+      type: log
+      up: "ADC \\w+ on "
+
+  adcdrive:
+    name: ADC signal source
+    kind: ADC inputs
+    description: Modeled meter signal inputs for one ADC pair
+    build: [node, "${root}/cmake/esbuild/bundle.js", "adc"]
+    command: [node, "${dist}/adc.js", drive, "${pair}", "--${mode}"]
+    params:
+      pair: 1
+      mode: nominal               # nominal | sweep | zero
+    health:
+      type: log
+      up: " on _ADC\\d_analogs"
+
+  ddudrive:
+    name: DDU signal source
+    kind: GPC flight instrument output
+    description: Test DDU signal source
+    build: [node, "${root}/cmake/esbuild/bundle.js", "ddu"]
+    command: [node, "${dist}/ddu.js", drive, "${busses}", "--mm", "${mm}"]
+    params:
+      busses: all                 # FC1..FC4, a list, or all
+      mm: 305
+    health:
+      type: log
+      up: "DDU drive on "         # lru/ddu/cli.coffee prints this once started
 
   deu:
-    name: Display Electronics Unit
+    name: DK utility
     kind: DEU/IDP
-    description: A display unit on a DK bus with no window -- the fast way to
-                 drive flight software
-    build: [node, "${root}/esbuild/esbuild.gpcmd.config.js"]
+    description:
+    build: [node, "${root}/cmake/esbuild/bundle.js", "gpcmd"]
     command: [node, "${dist}/gpcmd.js", unit, "--idp", "${idp}"]
     params:
       idp: 1
@@ -86,18 +260,12 @@ lrus:
   meds:
     name: MEDS
     kind: MDU/IDP
-    description: The glass cockpit -- display units and IDPs, one window each
-    # electron-esbuild cleans dist/, which takes the node bundles with it,
-    # so they are rebuilt after it.  MEDS.sh does the same thing.
-    build:
-      - bash
-      - -c
-      - >-
-        node_modules/.bin/electron-esbuild build &&
-        for c in gpc gpcmd mmu; do
-          node esbuild/esbuild.$c.config.js >/dev/null || exit 1;
-        done
+    description: The glass cockpit -- the display units, one window each
+    # The Electron bundles and the units MEDS shares a bus with.
+    build: [cmake, --build, "${build}", --target, meds]
     command: ["${root}/node_modules/.bin/electron", "${dist}/main/main.js", meds]
+    env:
+      NSTS_TOP: "${root}"       # config/meds.json and data/ are read from here
     # Which units to bring up is a property of the configuration, so the
     # instance in runConfig.yml supplies them as args.
     stopTimeout: 8
@@ -106,16 +274,42 @@ lrus:
       type: process
       grace: 4.0                  # Electron takes a moment to get a window up
 
+  ratsnest:
+    name: Ratsnest
+    kind: Vehicle wiring
+    description: The wiring between the panels, the MDMs and the discrete lines
+    build: [node, "${root}/cmake/esbuild/bundle.js", "ratsnest"]
+    command: [node, "${dist}/ratsnest.js", run, "${wiring}"]
+    params:
+      wiring: "${root}/config/wiring"   # a directory of .wir, or one file
+    health:
+      type: log
+      up: "^ratsnest \\d+ wiring unit"
+
+  panel:
+    name: Crew panels
+    kind: Panel frontend
+    description: The controls and indicators of config/panels, on a terminal
+    # The sim manager's PANEL page holds the same controls.  One holder
+    # a panel: a configuration that runs this should name panels the
+    # manager's page is not showing, or run without the page.
+    command: [python3, -m, "simMgr.panel", "${panels}"]
+    params:
+      panels: O6
+    health:
+      type: process
+
   gpcdbg:
     name: GPC debug session
     kind: AP-101S
-    description: A GPC held on a socket, driven by `gpc dbg-client`
-    build: [node, "${root}/esbuild/esbuild.gpc.config.js"]
+    description:
+    build: [node, "${root}/cmake/esbuild/bundle.js", "gpc"]
     command: [node, "${dist}/gpc.js", "dbg-serve", "--port", "${port}"]
-    args: ["${image}"]
+    env:
+      NSTS_RECV_TIMEOUT_FLOOR_MS: "10"
     params:
       port: 4444
-      image: "${gen}/TEST.fcm"
+    debugPort: "${port}"
     health:
       type: port                  # it is up when it answers on its socket
       port: "${port}"

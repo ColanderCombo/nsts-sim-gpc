@@ -1,19 +1,14 @@
-fs = window.fs
-import 'com/util'
-import {LRU} from './../com/lru.civet.jsx'
-import {Bus, BusMsg} from './../com/bus.civet.jsx'
-import {MEDSConf, MDUMsg} from 'meds/medsConf'
-import {FCW, wordsFromBytes} from 'meds/deuFCW'
-import * as DEU from 'meds/deuProto'
-import {DEUUnit} from 'meds/deuUnit'
-import {KYBD} from 'meds/kybd'
-import {IDPSel} from 'meds/idpSel'
-import React from 'react'
-
+import {call, setInterval, clearInterval} from '../../com/simRuntime.coffee'
+# Integrated Display Processor
 #
-# Interface/Display Processor
+# One IDP: the DEU protocol state machine (meds/deu/deuUnit) on its DK bus, the
+# bus controller toward its two ADCs (meds/idp/idpAdc), the receivers on the
+# four flight critical busses (meds/idp/idpFc), the keyboards the IDP/CRT SEL
+# switches route to it (meds/idp/idpSel, meds/kybd), its discrete lines
+# (meds/idp/idpDiscretes), and the 1553B bus to its MDUs, where everything
+# it has for them goes as the messages tagged in meds/medsConf.  The busses
+# are MEDSConf.idps in meds/medsConf.
 #
-
 # DEU Display Control Program (DCP) info
 #  (DCP 8.07)
 #
@@ -48,80 +43,166 @@ import React from 'react'
 #   0x0FB4
 #     ->
 #   0x0FD4  keyswitch code table
-#   
+#
 #   0x19EE  Display Header - ADDRESS OF DEU FILL FOR HEADER
 #
 #   0x1A06  Address of the Uplink Indicator
 #
-#   0x1A0E  Address of the Uplink Indicator - DEU BRANCH ADDRESS 
+#   0x1A0E  Address of the Uplink Indicator - DEU BRANCH ADDRESS
 #
 
+import {LRU} from './../../com/lru.civet.jsx'
+import {BusMsg} from './../../com/bus.civet.jsx'
+import {MEDSConf, MDUMsg, powerFeedsOf} from './../medsConf'
+import * as DEU from './../deu/deuProto'
+import {DEUUnit} from './../deu/deuUnit'
+import {KYBD} from './../kybd'
+import {IDPSel} from './idpSel'
+import {IDPDiscretes, IDP_BITS} from './idpDiscretes'
+import {IDPAdcBC, encodeMduAdc} from './idpAdc'
+import {IDPFcRx, encodeMduFc} from './idpFc'
 
+export UNITS = Object.keys(MEDSConf.idps)
+
+# One ADC frame: command both units, then pass each unit's last frame and
+# its validity on to the MDUs.  lru/adc/adcConf SAMPLE_MS.
+export ADC_FRAME_MS = 40
+
+# The heartbeat, free-running: an MDU goes autonomous when its port is
+# quiet, and the port is quiet when the IDP has stopped, so this ticks with
+# or without a GPC on the DK bus.
+#
+# The MDU advances the DEU's flashing attribute on this beat; eight a
+# second holds the flash's 5/8 : 3/8 duty cycle.  See Screen_DPS.blinkTick.
+export HEARTBEAT_MS = 125
+
+# opts:
+#   unit    IDP1 to IDP4, or the number
+#   ipled   true for a unit already holding its control program; false has
+#           it ask the GPC for a load (poll header bit 16)
+#   log     where the DEU unit's trace goes; console.log by default
+#   quiet   no trace
 export class IDP extends LRU
-  constructor: (CONFIG) ->
-    idpConfig = MEDSConf.idps[CONFIG.config.lru]
-    idpConfig.id = CONFIG.config.lru
+  constructor: (opts = {}) ->
+    unit = "IDP#{String(opts.unit ? 1).toUpperCase().replace(/^IDP/, '')}"
+    throw new Error("invalid IDP '#{opts.unit}'") unless MEDSConf.idps[unit]?
+    idpConfig = Object.assign({id: unit}, MEDSConf.idps[unit],
+      {power: powerFeedsOf(MEDSConf.idps[unit].powerBus), powerRule: 'all'})
     super(idpConfig)
 
-    @CONFIG = CONFIG
     @idpConfig = idpConfig
     @idpNo = Number(@id.replace(/\D/g, ''))
+    @quiet = !!opts.quiet
+    @log = if @quiet then (->) else (opts.log ? ((text) -> console.log text))
 
-    @keyBuf = []
-
-    @fcw = new FCW()
     @mduCmdBus = @bus["_#{@id}"]
     @dkBus = @bus[@idpConfig.dkBus]
     @running = false
+    @stats = {heartbeats: 0, adcFrames: 0, fcMessages: 0, keys: 0, keysDropped: 0}
+
+    @adc = new IDPAdcBC(@idpNo, {send: (words) => @_sendWordsMDU words})
+
+    @fcRx = {}
+    for name in @idpConfig.fcBus
+      @fcRx[name] = new IDPFcRx(Number(name.replace(/\D/g, '')),
+                                onMessage: (m) => @_recvFcMessage(m))
 
     @unit = new DEUUnit
-      name: "IDP#{@id}"
-      ipled: @CONFIG.config?.ipled
+      name: @id
+      ipled: opts.ipled ? true
       send: (words) => @_send words
       fill: (addr, words) => @_sendToMDUs addr, words
       reset: () => @_resetScratchPad()
       time: (t) => @_sendClock t
       poll: () => @_sendPollTick()
-      log: (text) => console.log text
+      load: (stage) => @_loadStage(stage)
+      log: (text) => @log text
 
-    for id,bus of @bus
-      console.log "|||", id, bus
-      if /FC/.test id
-        bus.onReceive @recvFC,@
-      else if id == '_IDPSW'
-        @sel = new IDPSel(bus, answers: true)
-      else if /DK/.test id
-        bus.onReceive @recvDK,@
-      else if /IDP/.test id
-        bus.onReceive @recvMDU,@
-      else if /KYBD/.test id
-        bus.onReceive @recvKYBD,@
-      else
-        console.log "Bad bus name #{id}"
-    @sel ?= new IDPSel(null, answers: true)
+    @discretes = new IDPDiscretes @idpNo, onInput: (bit, on_) => @_input(bit, on_)
+    @discretes.setLoadState(if @unit.ipled then 'complete' else 'requested')
+
+    for id, bus of @bus
+      if /^FC/.test id
+        bus.onReceive @recvFC, @
+      else if id == @idpConfig.dkBus
+        bus.onReceive @recvDK, @
+      else if id == "_#{@id}"
+        bus.onReceive @recvMDU, @
+      else if /^_KYBD/.test id
+        bus.onReceive @recvKYBD, @
+
+  busPorts: () ->
+    ports = ("#{id}:#{bus.busDesc.port}" for id, bus of @bus)
+    ports.push "#{@discretes.channel.name}:#{@discretes.channel.bus.busDesc.port}" if @discretes.channel.bus?
+    ports.join(' ')
+
+  ready: () -> Promise.all([super(), @discretes.ready()])
+
+  close: () ->
+    @halt()
+    @discretes.close()
+    bus.close() for id, bus of @bus
+    return
+
+  # A discrete line changed.  The LOAD momentary made asks the GPC for a
+  # load; the KYBD SEL lines are read as keystrokes arrive.
+  _input: (bit, on_) ->
+    if bit == IDP_BITS.A.load
+      @unit.requestLoad() if on_
+    else
+      @log "#{@id}: #{IDP_BITS.A.kybdsela == bit and 'KYBD SEL A' or 'KYBD SEL B'} #{if on_ then 'on' else 'off'}"
+    return
+
+  # The load's stages, from the DEU unit: the status lines and the MDUs
+  # follow them, VM LOAD IN PROGRESS from the request to the last fill.
+  _loadStage: (stage) ->
+    @discretes.setLoadState(stage)
+    @_sendMDU MDUMsg.LOAD, [if stage == 'complete' then 0 else 1]
+    return
 
   start: () ->
+    return if @running
     @running = true
-    @exec()
+    @_hbTimer = setInterval call(@, '_heartbeat'), HEARTBEAT_MS
+    @_adcTimer = setInterval call(@, '_adcTick'), ADC_FRAME_MS
+    return
 
-  initWindow: () ->
-    <cde-window title="IDP" resizable="false">
-      <canvas id="screen"></canvas>
-    </cde-window>
+  halt: () ->
+    clearInterval @_hbTimer if @_hbTimer?
+    clearInterval @_adcTimer if @_adcTimer?
+    @_hbTimer = @_adcTimer = null
+    @running = false
+    return
+
+  onStop: () -> @halt()
 
 
-  # The FC1-4 busses carry flight instrument (a.k.a. "steam gauge")
-  # data from the ADC.  Not yet implemented.
-  #
-  #
-  recvFC: (t,busID, msg, remote) ->
+  # "IDPs require 28 V dc that is supplied by a main bus (IDP1 - main
+  # A/FPC1, IDP2 - main B/FPC2, and IDP3 and 4 - main C/FPC3).  The IDP
+  # power switches are located on panels C2 and R11" (USA-007587
+  # sect.2.6).  A unit with no supply sends no heartbeat, which is what
+  # its MDUs read as a lost port.
+  onPowerOn: () ->
+    @start()
+    return
 
-  # Display/Keyboard (DK) busses
-  #
-  recvDK: (t,busID, msg, remote) ->
-    t.unit.recv msg.data16
+  onPowerOff: () ->
+    @halt()
+    return
 
-  # `DEUUnit` has already counted these in `stats.wordsOut`.
+  # The FC1-4 busses carry the GPC's flight instrument data: the DDU words
+  # for the ADI, HSI, AMI and AVVI and the MEDS transfer (lru/ddu/dduConf).
+  recvFC: (t, busID, msg, remote) ->
+    t.fcRx[busID]?.recv(msg.data16, msg.cmd)
+
+  _recvFcMessage: (m) ->
+    @stats.fcMessages += 1
+    @_sendWordsMDU encodeMduFc(MDUMsg.FC, m)
+
+  # Display/Keyboard (DK) bus: the GPC's commands to this unit.
+  recvDK: (t, busID, msg, remote) ->
+    t.unit.recv msg.data16, msg.cmd
+
   _send: (words) ->
     return if not @dkBus? or words.length == 0
     msg = new BusMsg(words.length)
@@ -136,24 +217,25 @@ export class IDP extends LRU
     msg.data16[1 + i] = words[i] & 0xffff for i in [0...words.length]
     @mduCmdBus.sendMsg msg
 
+  _sendWordsMDU: (words) ->
+    return if not @mduCmdBus? or words.length == 0
+    msg = new BusMsg(words.length)
+    msg.data16[i] = words[i] & 0xffff for i in [0...words.length]
+    @mduCmdBus.sendMsg msg
+
   _sendToMDUs: (addr, words) -> @_sendMDU MDUMsg.FILL, [addr].concat(words)
 
-  # The GPC polled this unit, which is what holds POLL FAIL off the MDU's
-  # DPS display.  See `_heartbeat`.
-  _sendPollTick: () -> @_sendMDU MDUMsg.POLL, [@id]
-
-  # The heartbeat, free-running: an MDU goes autonomous when its port is
-  # quiet, and the port is quiet when the IDP has stopped, so this ticks with
-  # or without a GPC on the DK bus.
-  #
-  # The MDU advances the DEU's flashing attribute on this beat; eight a
-  # second holds the flash's 5/8 : 3/8 duty cycle.  See Screen_DPS.blinkTick.
-  HEARTBEAT_MS = 125
+  _adcTick: () ->
+    @adc.tick()
+    for _, u of @adc.units
+      @stats.adcFrames += 1
+      @_sendWordsMDU encodeMduAdc(MDUMsg.ADC, u)
 
   _heartbeat: () ->
-    return if @_hbTimer?
-    @_hbTimer = window.setInterval (() => @_sendMDU MDUMsg.HEARTBEAT, [@id]),
-                                   HEARTBEAT_MS
+    @stats.heartbeats += 1
+    @_sendMDU MDUMsg.HEARTBEAT, [@idpNo]
+
+  _sendPollTick: () -> @_sendMDU MDUMsg.POLL, [@idpNo]
 
   # The header clock, straight from the GPC, sent as a separate message: the
   # GPC's variable-data fill covers 0x19EE..0x1AB2, and on a real unit the
@@ -165,57 +247,37 @@ export class IDP extends LRU
 
   _resetScratchPad: () -> @_sendMDU MDUMsg.RESET_SPL
 
-  recvMDU: (t,busID, msg, remote) ->
-    if msg.data16[0] < MDUMsg.FILL
-      console.log "IDP#{t.id}: #{busID} recv #{msg}"
-      #console.log msg
+  recvMDU: (t, busID, msg, remote) ->
+    t.adc.recv(msg.data16)
+    return
 
-  # Keyboard Handling
-  #
-  # A keyswitch goes into the unit's entry when the IDP/CRT SEL switch has
-  # this keyboard on this unit (meds/idpSel); the major function switch is
-  # the unit's, on panel C2 beside the select switch, and sets the position
-  # the next poll response header reports whichever way that switch points.
-  recvKYBD: (t,busID, msg, remote) ->
+  # A keyswitch goes into the unit's entry while the KYBD SEL line of the
+  # channel it comes in on is up (meds/idp/idpSel); the major function
+  # switch is the unit's, on panel C2 beside the select switch, and sets the
+  # position the next poll response header reports whichever way that
+  # switch points.
+  recvKYBD: (t, busID, msg, remote) ->
     kybd = Number(busID.replace(/\D/g, ''))
     for w in msg.data16
       d = KYBD.decode(w)
       if d?.key?
-        if IDPSel.selected(t.idpNo, kybd, t.sel.state())
+        if IDPSel.selectedByLines(t.idpNo, kybd, t.discretes.lines())
+          t.stats.keys += 1
           t.unit.pressKey d.key.gpcCode
         else
-          console.log "IDP#{t.idpNo}: #{d.key.ascii} on #{busID} not selected, dropped"
+          t.stats.keysDropped += 1
+          t.log "#{t.id}: #{d.key.ascii} on #{busID} not selected, dropped"
       else if d?.majorFunc?
         t.unit.majorFunc = d.majorFunc
-        console.log "IDP#{t.id}: major function #{DEU.MAJOR_FUNC_NAME[d.majorFunc]}"
+        t.log "#{t.id}: major function #{DEU.MAJOR_FUNC_NAME[d.majorFunc]}"
       else
-        console.log "IDP#{t.id}: unknown keyboard word " +
-                    "0x#{(w & 0xffff).toString(16)}"
+        t.log "#{t.id}: unknown keyboard word 0x#{(w & 0xffff).toString(16)}"
+    return
 
-  #
-  # Dev mode (--dev)
-  #
-  # Load a raw format control word stream into display memory at the display
-  # header address, which is where a refresh starts.
+  # Load a format control word stream into display memory at the display
+  # header address, where a refresh starts, and send it on to the MDUs: a
+  # display with no GPC on the DK bus.
   loadFCWs: (words, addr = DEU.ADDR.DISPLAY_HEADER) ->
     for w, i in words
       @unit.mem[(addr + i) & (DEU.DEU_MEMORY_WORDS - 1)] = w & 0xffff
     @_sendToMDUs(addr, Array.from(words))
-
-  execDPS: () ->
-    @bgDFB = fs.readFileSync @CONFIG.NSTS_TOP+'data/'+'TEST-9011-GPC_MEMORY.dfb'
-    @loadFCWs wordsFromBytes(@bgDFB)
-
-  exec: () ->
-    @_heartbeat()
-    # dev mode has no GPC, so the test background is loaded once here
-    @execDPS() if @CONFIG.dev and not @bgDFB
-
-
-start = (CONFIG) ->
-  console.log "start IDP", CONFIG
-  idp = new IDP(CONFIG)
-  console.log idp
-  return idp
-
-export default { start }

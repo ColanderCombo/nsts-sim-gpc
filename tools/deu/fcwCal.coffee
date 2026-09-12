@@ -1,8 +1,8 @@
 # fcwCal — measure the beam grid a format control word stream is written on.
 #
-#   node fcwCal.js <file.dfb> [...]
+#   node build/dist/fcwCal.js <file.dfb> [...]
 #
-# The screen geometry in `meds/deuFCW` is a fit to streams like these.  This
+# The screen geometry in `meds/deu/deuFCW` is a fit to streams like these.  This
 # reports what a stream says about the grid it was written on, so a fit can
 # be checked against the thing it was fitted to.
 #
@@ -23,8 +23,8 @@
 #   ORIGIN    where cell column 0 would be, if the leftmost character is in
 #             column 0.  Only meaningful once the wrap is settled.
 #
-import {FCW, wordsFromBytes} from '../meds/deuFCW'
-import * as FCWD from '../meds/deuFCW'
+import {FCW, wordsFromBytes} from 'meds/deu/deuFCW'
+import * as FCWD from 'meds/deu/deuFCW'
 import * as fs from 'fs'
 process = require 'process'
 

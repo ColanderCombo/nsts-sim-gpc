@@ -39,8 +39,8 @@
 #     up, nothing else is accepted.
 #   * the grammar is below, and `_transition` is it as an acceptor.
 #
-import * as DEU from 'meds/deuProto'
-import {FCW} from 'meds/deuFCW'
+import * as DEU from 'meds/deu/deuProto'
+import {FCW} from 'meds/deu/deuFCW'
 
 export SPL_ROW = 26                    # the last character row, which POLL FAIL shares
 export SPL_LENGTH = 51                 # positions 0..50

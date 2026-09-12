@@ -1,4 +1,4 @@
-// test_meds_selftest.cjs — the DEU stand-alone self test.
+// selftest.cjs — the DEU stand-alone self test.
 //
 // The specification (STS-83-0020V2-34/sect.4.6.8) gives the display in
 // inches and degrees per second.  These tests assert the two properties
@@ -9,7 +9,7 @@
 // code.
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_selftest.cjs
+//   cd ext/sim && node test/meds/selftest.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -19,14 +19,14 @@ const os = require('os');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 async function bundle(rel) {
     const out = path.join(os.tmpdir(),
         `meds.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SIM,
-        entryPoints: [path.join(SIM, rel)],
+        entryPoints: [path.join(SIM, 'src', rel)],
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [coffeePlugin({})],
@@ -48,8 +48,8 @@ function near(a, b, tol, what) {
 }
 
 async function main() {
-    const FCWM = await bundle('meds/deuFCW.coffee');
-    const ST = await bundle('meds/deuSelfTest.coffee');
+    const FCWM = await bundle('meds/deu/deuFCW.coffee');
+    const ST = await bundle('meds/deu/deuSelfTest.coffee');
     const f = new FCWM.FCW();
     const st = new ST.SelfTest(f);
 

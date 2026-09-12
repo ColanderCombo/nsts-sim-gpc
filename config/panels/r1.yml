@@ -1,0 +1,62 @@
+# Panel R1 -- POWER DISTRIBUTION
+#
+# USA-007587 Rev.A appendix A "Panel Diagrams", panel R1, the left half.
+# The number in parentheses beside each control on that drawing is its id
+# here.
+#
+#   CONTROL BUS PWR MN A/B/C  S1-S3, ON over RESET
+#   ESS BUS SOURCE MN B/C     S4, feeding ESS 1BC, ON over OFF
+#                  MN C/A     S5, feeding ESS 2CA
+#                  MN A/B     S6, feeding ESS 3AB
+#   ESS BUS SOURCE FC 1/2/3   S7-S9, the same three busses from the cells
+#   FC/MAIN BUS A/B/C         S10-S12, lever locked, talkbacks DS1/DS3/DS5
+#   MN BUS TIE A/B/C          S13-S15, talkbacks DS2/DS4/DS6
+#
+# Where each position goes is wiring/eps.wir.  The right half of the
+# panel -- the inverters, the ac busses and the ac bus sensors -- is not
+# here, nor is the payload block below.
+panel: R1
+name: Power distribution
+
+groups:
+  - title: CONTROL BUS PWR
+    controls: [S1, S2, S3]
+  - title: ESS BUS SOURCE, MAIN
+    controls: [S4, S5, S6]
+  - title: ESS BUS SOURCE, FUEL CELL
+    controls: [S7, S8, S9]
+  - title: FC/MAIN BUS
+    controls: [S10, DS1, S11, DS3, S12, DS5]
+  - title: MN BUS TIE
+    controls: [S13, DS2, S14, DS4, S15, DS6]
+
+controls:
+  S1: {kind: switch, label: "MN A", positions: [ON, RESET], at: ON}
+  S2: {kind: switch, label: "MN B", positions: [ON, RESET], at: ON}
+  S3: {kind: switch, label: "MN C", positions: [ON, RESET], at: ON}
+
+  S4: {kind: switch, label: "MN B/C", positions: [ON, OFF], at: ON}
+  S5: {kind: switch, label: "MN C/A", positions: [ON, OFF], at: ON}
+  S6: {kind: switch, label: "MN A/B", positions: [ON, OFF], at: ON}
+
+  S7: {kind: switch, label: "FC 1", positions: [ON, OFF], at: ON}
+  S8: {kind: switch, label: "FC 2", positions: [ON, OFF], at: ON}
+  S9: {kind: switch, label: "FC 3", positions: [ON, OFF], at: ON}
+
+  S10: {kind: switch, label: "FC/MAIN A", positions: [ON, OFF], at: ON}
+  S11: {kind: switch, label: "FC/MAIN B", positions: [ON, OFF], at: ON}
+  S12: {kind: switch, label: "FC/MAIN C", positions: [ON, OFF], at: ON}
+
+  # Blank while the bus its switch names carries the cell, barberpole
+  # otherwise.
+  DS1: {kind: talkback, label: "A", positions: [GRAY, BARBERPOLE]}
+  DS3: {kind: talkback, label: "B", positions: [GRAY, BARBERPOLE]}
+  DS5: {kind: talkback, label: "C", positions: [GRAY, BARBERPOLE]}
+
+  S13: {kind: switch, label: "TIE A", positions: [ON, OFF], at: OFF}
+  S14: {kind: switch, label: "TIE B", positions: [ON, OFF], at: OFF}
+  S15: {kind: switch, label: "TIE C", positions: [ON, OFF], at: OFF}
+
+  DS2: {kind: talkback, label: "A", positions: [GRAY, BARBERPOLE]}
+  DS4: {kind: talkback, label: "B", positions: [GRAY, BARBERPOLE]}
+  DS6: {kind: talkback, label: "C", positions: [GRAY, BARBERPOLE]}

@@ -1,5 +1,6 @@
+import {now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen} from 'meds/mduScreen'
+import {MDUScreen} from 'meds/mdu/mduScreen'
 
 export class Screen_FILE_PATCH extends MDUScreen
   draw: () ->

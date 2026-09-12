@@ -1,7 +1,7 @@
-// test_mmu.cjs — the Mass Memory Unit 
+// mmu.cjs — the Mass Memory Unit
 //
 // Usage:
-//   cd ext/sim && node test/test_mmu.cjs
+//   cd ext/sim && node test/lru/mmu.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -12,7 +12,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -40,7 +40,7 @@ async function bundle(rel) {
         `mmu.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SIM,
-        entryPoints: [path.join(SIM, rel)],
+        entryPoints: [path.join(SIM, 'src', rel)],
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [civetPlugin, coffeePlugin({})],
@@ -70,9 +70,9 @@ const xferOperand = (t, s, blk, cnt) =>
     ((t & 7) << 12) | ((s & 7) << 9) | ((blk & 0x1f) << 4) | (cnt & 0xf);
 
 (async () => {
-    const C = await bundle('mmu/mmuConf.coffee');
-    const V = await bundle('mmu/volume.coffee');
-    const M = await bundle('mmu/mmu.coffee');
+    const C = await bundle('lru/mmu/mmuConf.coffee');
+    const V = await bundle('lru/mmu/volume.coffee');
+    const M = await bundle('lru/mmu/mmu.coffee');
 
     // geometry
     //
@@ -218,12 +218,7 @@ const xferOperand = (t, s, blk, cnt) =>
     tape.write({track: 4, file: 4, subfile: 3, block: 8}, rec);
     const mmu = new M.MMU({unit: 1, volume: tape, blockDelayMs: 0});
 
-    const send = (c24) => {
-        const m = new B.BusMsg(2);
-        m.data16[0] = (c24 >>> 8) & 0xffff;
-        m.data16[1] = (c24 & 0xff) << 8;
-        listener.sendMsg(m);
-    };
+    const send = (c24) => listener.sendMsg(B.BusMsg.Command(c24));
     const settle = (msec = 120) => new Promise((r) => setTimeout(r, msec));
 
     await settle(200);          // let the sockets join the group

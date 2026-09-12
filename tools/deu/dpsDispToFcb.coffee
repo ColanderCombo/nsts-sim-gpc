@@ -6,11 +6,11 @@
 # optional block after a `----` line holds drawing commands.  Output is a
 # `.dfb`, the stream a memory fill would carry.
 #
-# Usage:  node dpsDispToFcb.js <in.dsp> <out.dfb>
+# Usage:  node build/dist/dpsDispToFcb.js <in.dsp> <out.dfb>
 #
 
-import {FCW} from '../meds/deuFCW'
-import * as FCWD from '../meds/deuFCW'
+import {FCW} from 'meds/deu/deuFCW'
+import * as FCWD from 'meds/deu/deuFCW'
 
 import * as fs from 'fs'
 process = require 'process'

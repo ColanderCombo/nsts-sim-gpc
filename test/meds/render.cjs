@@ -1,4 +1,4 @@
-// test_meds_render.cjs — the DEU beam interpreter in `meds/mduScreen_DPS`.
+// render.cjs — the DEU beam interpreter in `meds/mdu/mduScreen_DPS`.
 //
 // The renderer is a Three.js screen class, so it is driven here through a
 // stub `@d` drawing surface that records what was drawn and where.  Under
@@ -12,7 +12,7 @@
 // which sit on the same lines on both pages.
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_render.cjs
+//   cd ext/sim && node test/meds/render.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -23,7 +23,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -44,7 +44,7 @@ async function bundle(rel) {
         `deu.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SIM,
-        entryPoints: [path.isAbsolute(rel) ? rel : path.join(SIM, rel)],
+        entryPoints: [path.isAbsolute(rel) ? rel : path.join(SIM, 'src', rel)],
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [civetPlugin, coffeePlugin({})],
@@ -84,6 +84,7 @@ function stubSurface(THREE, drawn, lines, polys) {
             lines.push({coords, color, dashed: true});
             return new THREE.Object3D();
         },
+        flatten(g) { return g; },
     };
 }
 
@@ -133,9 +134,9 @@ async function main() {
     const shim = path.join(os.tmpdir(), `deu.test.shim.${process.pid}.js`);
     fs.writeFileSync(shim,
         "export * as three from 'three'\n" +
-        `export * as dps from ${JSON.stringify(path.join(SIM, 'meds/mduScreen_DPS.coffee'))}\n` +
-        `export * as fcw from ${JSON.stringify(path.join(SIM, 'meds/deuFCW.coffee'))}\n` +
-        `export * as deu from ${JSON.stringify(path.join(SIM, 'meds/deuProto.coffee'))}\n`);
+        `export * as dps from ${JSON.stringify(path.join(SIM, 'src/meds/mdu/mduScreen_DPS.coffee'))}\n` +
+        `export * as fcw from ${JSON.stringify(path.join(SIM, 'src/meds/deu/deuFCW.coffee'))}\n` +
+        `export * as deu from ${JSON.stringify(path.join(SIM, 'src/meds/deu/deuProto.coffee'))}\n`);
     const mods = await bundle(shim);
     const f = new mods.fcw.FCW();
     GLYPH_OFF = mods.fcw.glyphCentre();
@@ -479,7 +480,7 @@ async function main() {
     // down the screen for the vertical array.  This walks both through the
     // real interpreter and checks where the marks land.
     {
-        const ST = await bundle(path.join(SIM, 'meds/deuSelfTest.coffee'));
+        const ST = await bundle(path.join(SIM, 'src/meds/deu/deuSelfTest.coffee'));
         const st = new ST.SelfTest(f);
         const COL = mods.fcw.COL_PITCH, ROW = mods.fcw.ROW_PITCH;
         for (const down of [false, true]) {
@@ -518,7 +519,8 @@ async function main() {
     // branch to the body, so the picture the crew sees is the body drawn
     // from resident memory, followed by the display's dynamic fields.
     // Nothing but the branch crosses the bus for it.
-    const cflm = path.join(SIM, '..', '..', 'build', 'OI340700', 'DEUCFLM.bin');
+    const cflm = path.join(SIM, '..', '..', 'build', 'OI340700',
+                           'mmusrc', 'DEUCFLM.bin');
     if (fs.existsSync(cflm)) {
         const raw = fs.readFileSync(cflm);
         const CRIT = 0x0100, HDR = 0x19ee;
@@ -599,7 +601,7 @@ async function main() {
         eq(render(mods, {memory: mem, start: HDR}).length, 0,
            'a branch word alone does not reach the format buffer');
     } else {
-        console.log('SKIP  build/OI340700/DEUCFLM.bin not built '
+        console.log('SKIP  build/OI340700/mmusrc/DEUCFLM.bin not built '
                     + "(con80build --critfmt)");
     }
 

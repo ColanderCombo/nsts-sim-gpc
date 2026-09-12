@@ -1,12 +1,10 @@
+import {now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen} from 'meds/mduScreen'
+import {MDUScreen} from 'meds/mdu/mduScreen'
 
 export class Screen_AUTONOMOUS extends MDUScreen
   build: () ->
     @group = new THREE.Object3D()
-    # @group.add @d.line [[0, 32.15], [53, 32.15]], @d.c2h.cyan
-    # @group.add @d.line [[25, 10], [25, 15]], @d.c2h.cyan
-
     @group.add @d.str 18,15,"MDU IS AUTONOMOUS", @d.c2h.red
     @geo_msg = null
     @_drawMsg()

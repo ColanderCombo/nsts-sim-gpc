@@ -5,12 +5,12 @@
 # putting anything on the busses -- which are fixed ports, and will not
 # have two sessions on them.
 #
-#   SIM.sh -c config/selftest.yml -r config/selftest-run.yml
+#   sim -c test/sim/selftest.yml -r test/sim/selftest-run.yml
 
 version: 1
 
 paths:
-  root: ".."
+  root: "../.."
   logs: "${root}/run/logs"
 
 defaults:

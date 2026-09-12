@@ -1,4 +1,4 @@
-import {PackedBits} from '../gpc/util'
+import {PackedBits} from '../../gpc/util'
 
 #
 # DEU Format Control Words 

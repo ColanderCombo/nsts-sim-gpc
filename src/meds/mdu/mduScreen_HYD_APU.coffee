@@ -1,10 +1,20 @@
+import {now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen,VertGauge} from 'meds/mduScreen'
+import {MDUScreen,VertGauge} from 'meds/mdu/mduScreen'
 
 export class Screen_HYD_APU extends MDUScreen
   setData: (@curData) ->
-    if not @curData?
-      @curData = {
+    @curData ?= if @dev() then @sampleData() else @noData()
+    @draw()
+
+  # No ADC frame: every gauge invalid (a negative value is the red box).
+  noData: () ->
+    d = {}
+    d[k] = -1 for k of @sampleData()
+    d
+
+  sampleData: () ->
+    {
         apuFuelQty_1: -1
         apuFuelQty_2: 0
         apuFuelQty_3: 0
@@ -23,8 +33,7 @@ export class Screen_HYD_APU extends MDUScreen
         hydPress_1: 2103
         hydPress_2: -1
         hydPress_3: 1050
-      }
-    @draw()
+    }
 
   data: () ->
     return @curData

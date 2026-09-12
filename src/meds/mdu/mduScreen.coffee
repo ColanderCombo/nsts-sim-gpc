@@ -1,4 +1,13 @@
+import {registerType} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
+
+# Whether a feed field still holds what it held.  A field carrying a
+# structure (the ADI rate scales) compares by content.
+export sameField = (a, b) ->
+  return true if a == b
+  return false unless a? and b? and typeof a == 'object' and typeof b == 'object'
+  JSON.stringify(a) == JSON.stringify(b)
+
 
 export class VertGauge
   constructor: (@x, @y, @config, @dataSrc) ->
@@ -100,6 +109,11 @@ export class MDUScreen
   constructor: (@d) ->
     @build()
 
+  # meds --dev: a screen with no feed starts on sample values; started
+  # normally it shows every instrument's invalid indication until data
+  # arrives.
+  dev: () -> !!@d?.CONFIG?.dev
+
   setData: () ->
 
   draw: () ->
@@ -135,30 +149,6 @@ export class MDUScreen
 
   vx: (x) -> x*(51/1152)
   vy: (y) -> y*(30/1008)
-
-  # drawNumGauge: (x,y,width,label=null, nodata=false, low=false, meds=false,value) ->
-  #   #if label
-  #   #    @addGeoms @drawStr 6.5,2.75, label, @material.white                
-
-  #   if nodata
-  #     frameMat = @material.red
-  #   else
-  #     frameMat = @material.green
-
-  #   if low
-  #     fillMat = @material.red
-  #   else
-  #     fillMat = @material.white
-
-  #   g = []
-  #   if meds == false
-  #     g = g.concat @box x-0.25,y-0.15, x+width+0.25, y+1.15, frameMat
-  #     g = g.concat @str x,y,value,fillMat
-  #   else
-  #     g = g.concat @box x+0.05,y-0.2, x+width+1.0, y+1.65, frameMat
-  #     g = g.concat @strMEDS x-.2,y,value,fillMat, scale=1.5,advance=1.0,scalex=1
-  #   return g
-
 
   drawHorizGauge: (value,tickLeft,tickRight,tickBot,sLen,lLen, count,top=true) ->
     group = new THREE.Object3D(name="horizGauge") #"
@@ -233,3 +223,6 @@ export class MDUScreen
       ptr.renderOrder = 2
       group.add ptr
     return group
+
+registerType(VertGauge)
+registerType(MDUScreen)

@@ -1,10 +1,16 @@
+import {now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen} from 'meds/mduScreen'
+import {MDUScreen} from 'meds/mdu/mduScreen'
 
 export class Screen_FAULT_SUMM extends MDUScreen
   setData: (@curData) ->
-    if not @curData?
-      @curData = {
+    @curData ?= if @dev() then @sampleData() else @noData()
+
+  noData: () ->
+    faults: ({msg: '', time: ''} for i in [0...16])
+
+  sampleData: () ->
+    {
         faults: [
           {msg:'MEDS I/O ERROR ADC2B', time:'000/00:00:00'},
           {msg:'MEDS I/O ERROR ADC1B', time:'000/00:00:00'},
@@ -23,7 +29,7 @@ export class Screen_FAULT_SUMM extends MDUScreen
           {msg:'', time:''},
           {msg:'', time:''}
         ]
-      }
+    }
 
   data: () -> return @curData
 
@@ -58,4 +64,3 @@ export class Screen_FAULT_SUMM extends MDUScreen
       @errors.add tme
       @errorTxt.push msg
       @errorTxt.push tme
-

@@ -1,6 +1,7 @@
+import {call, setInterval, clearInterval, now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen} from 'meds/mduScreen'
-import {makeSDFLineGeometry, makeSDFLinesGeometry, makeSDFLineMaterial} from 'meds/shader/sdfLine'
+import {MDUScreen, sameField} from 'meds/mdu/mduScreen'
+import {makeSDFLineGeometry, makeSDFLinesGeometry, makeSDFLineMaterial} from 'meds/mdu/shader/sdfLine'
 
 rad2deg = (v) -> v * (180 / Math.PI)
 deg2rad = (v) -> v * (Math.PI / 180)
@@ -14,13 +15,45 @@ spad = (s) ->
 
 export class Screen_AE_PFD extends MDUScreen
   setData: (@curData) ->
-    if not @curData?
-      @curData = {
+    @curData ?= if @dev() then @sampleData() else @noData()
+    @draw()
+
+  # No data from the GPC: the ADI's OFF flag, every needle and pointer
+  # stowed, every tape a red box, the meter without its needle, the mode
+  # and DAP fields blank (STS-83-0020V1-34 sect.3.12: "a stow (out-of-view)
+  # position which is used to indicate invalid conditions", "An OFF flag is
+  # provided to indicate when the attitude ball display may be invalid",
+  # "invalid indicator - solid red rectangle").
+  noData: () ->
+    adiValid: false
+    adiRolRate: null, adiPchRate: null, adiYawRate: null
+    adiRolErr: null, adiPchErr: null, adiYawErr: null
+    machValid: false, alphaValid: false, keasValid: false, accValid: false
+    altValid: false, hdotValid: false, radarValid: false, vertAccelValid: false
+    hsiHeadingValid: false, hsiCourseValid: false, hsiCdiValid: false
+    hsiPriBearingValid: false, hsiSecBearingValid: false
+    hsiGsiValid: false, hsiPriRangeValid: false, hsiSecRangeValid: false
+
+  # The sample of an entry, for --dev.
+  sampleData: () ->
+    {
         majorMode: 305
         abortMode: "TAL"
         fcsConfDAPAuto: true
         fcsConfThrotAuto: true
-        #fcsConfDAPSel: true
+        fcsConfPitchAuto: true
+        fcsConfRYAuto: true
+        fcsConfSBAuto: true
+        attSel: 2          # ADI ATTITUDE: 1 INRTL, 2 LVLH, 3 REF
+        hsiMode: 2         # HSI MODE: 1 Entry, 2 TAEM, 3 Approach
+        # TAEM, ADI RATE high: 5 deg/s each axis, pitch error 1.25 g
+        adiRateScale: {roll: 5, pitch: 5, yaw: 5, rollTgo: false, rollZeroOnRight: false}
+        adiPchErrScale: 1.25
+        # sin(THETA_MAX - THETA) and sin(THETA - THETA_MIN)
+        thetaMaxDelta: 0.20
+        thetaMinDelta: 0.14
+        dAz: 1,             dAzWarn: false
+        iphase: 1          # TAEM guidance phase
         adiRolRate: -1.05 # -5 -> +5
         adiYawRate:  0 # -5 -> +5
         adiPchRate:  -0.1 # -5 -> +5
@@ -51,8 +84,20 @@ export class Screen_AE_PFD extends MDUScreen
         hdotValid: true    # false -> Hdot tape replaced by a blank red box
         radarAlt: 1950     # radar altitude, ft (pointer + 'R' digital when valid)
         radarValid: false  # radar altimeter lock (entry, < 5000 ft)
-      }
-    @draw()
+        vertAccel: -10     # altitude acceleration, fps2
+        vertAccelValid: true
+        # HSI: heading turns the compass card; course, the deviation and the
+        # bearings are angles on the case (the DDU words carry heading
+        # already subtracted)
+        hsiHeading: 90,     hsiHeadingValid: true
+        hsiCourse: 19,      hsiCourseValid: true
+        hsiCdi: -2,         hsiCdiValid: true      # dots, + flies right
+        hsiPriBearing: 122, hsiPriBearingValid: true
+        hsiSecBearing: 59,  hsiSecBearingValid: true
+        hsiGsi: -2,         hsiGsiValid: true      # dots, + flies down
+        hsiPriRange: 0,     hsiPriRangeValid: true
+        hsiSecRange: 0,     hsiSecRangeValid: true
+    }
 
   T_setRPY: (rpy) ->
     @curData.adiRol = rpy[0]
@@ -75,21 +120,21 @@ export class Screen_AE_PFD extends MDUScreen
   enterTapeTest: () ->
     return if @_ttTimer?
     @_ttHdot0 = @curData.hdot          # restore the static sample on exit
-    @_ttT0 = Date.now()
+    @_ttT0 = simNow()
     @tickTapeTest()
-    @_ttTimer = window.setInterval((=> @tickTapeTest()), TT_TICK)
+    @_ttTimer = setInterval(call(@, 'tickTapeTest'), TT_TICK)
     console.log "PFD tape feed test ON"
 
   exitTapeTest: () ->
     return if not @_ttTimer?
-    window.clearInterval(@_ttTimer)
+    clearInterval(@_ttTimer)
     @_ttTimer = null
     @curData.hdot = @_ttHdot0
     @_redrawAVVI()
     console.log "PFD tape feed test OFF"
 
   tickTapeTest: () ->
-    ph = ((Date.now() - @_ttT0) / 1000 % TT_PERIOD) / TT_PERIOD   # 0..1
+    ph = ((simNow() - @_ttT0) / 1000 % TT_PERIOD) / TT_PERIOD   # 0..1
     tri = if ph < 0.5 then 2*ph else 2 - 2*ph                     # 0..1..0
     posMax = 1000*HD_S + (HDOT_MAX - 1000)*HD_SHI
     pos = -posMax + tri*2*posMax
@@ -108,14 +153,14 @@ export class Screen_AE_PFD extends MDUScreen
   enterAltTest: () ->
     return if @_altTimer?
     @_alt0 = [@curData.altitude, @curData.radarAlt, @curData.radarValid]
-    @_altT0 = Date.now()
-    @_altTimer = window.setInterval((=> @tickAltTest()), TT_TICK)
+    @_altT0 = simNow()
+    @_altTimer = setInterval(call(@, 'tickAltTest'), TT_TICK)
     @tickAltTest()
     console.log "PFD altitude tape test ON"
 
   exitAltTest: () ->
     return if not @_altTimer?
-    window.clearInterval(@_altTimer)
+    clearInterval(@_altTimer)
     @_altTimer = null
     [@curData.altitude, @curData.radarAlt, @curData.radarValid] = @_alt0 if @_alt0?
     @_alt0 = null
@@ -123,7 +168,7 @@ export class Screen_AE_PFD extends MDUScreen
     console.log "PFD altitude tape test OFF"
 
   tickAltTest: () ->
-    ph = ((Date.now() - @_altT0) / 1000 % AT2_PERIOD) / AT2_PERIOD
+    ph = ((simNow() - @_altT0) / 1000 % AT2_PERIOD) / AT2_PERIOD
     tri = if ph < 0.5 then 2*ph else 2 - 2*ph
     p0 = altMapRows(ALT_MIN) ; p1 = altMapRows(ALT_MAX)
     alt = altInvRows(p0 + tri*(p1 - p0))
@@ -134,16 +179,105 @@ export class Screen_AE_PFD extends MDUScreen
     @curData.radarAlt = Math.max(0, Math.round(alt*0.92 - 40))
     @_redrawAVVI()
 
-  _redrawAVVI: () ->
-    if @avviGrp?
-      @group.remove @avviGrp
-      @_disposeGroup @avviGrp
-    @avviGrp = @drawAVVI()
-    @group.add @avviGrp
-    @d.dirty = true
+  _redrawAVVI: () -> @_part 'avvi'
 
-  # G-meter placement, shared by build/refreshFeed/the G-meter test
+  # G-meter and ADI placement, shared by the part table and the tests
   ACC_ARGS = [7.6, 28.25, 2.55, -1, 4]
+  ADI_C = [24.90, 12.0]
+
+  # The instruments a PFD is assembled from.  Each is a group built from
+  # curData, held on the named field, and rebuilt when the feed changes;
+  # `u` names a cheaper update where a wholesale rebuild is not wanted.
+  # A screen carries the ones its `parts` names.
+  PARTS =
+    fcsConfig: {f: 'fcsConfig', b: (t) -> t.drawFCSConfig()}
+    majorMode: {f: 'majorMode', b: (t) -> t.drawMajorMode()}
+    ami:       {f: 'ami',       b: (t) -> t.drawAMI()}
+    avvi:      {f: 'avviGrp',   b: (t) -> t.drawAVVI()}
+    accMeter:  {f: 'accMeter',  b: (t) -> t.drawAccMeter(ACC_ARGS...)}
+    adi:
+      f: 'adi'
+      b: (t) -> t.drawADI(ADI_C...)
+      # the ball geometry is static and expensive to build; updateADI()
+      # redraws the attitude-driven overlays alone
+      u: (t) -> t.updateADI()
+    hsi:       {f: 'hsi',       b: (t) -> t.drawHSI()}
+    gsi:       {f: 'gsi',       b: (t) -> t.drawGSI()}
+    attAcc:    {f: 'attAcc',    b: (t) -> t.drawAttAcc()}
+    xtrk:      {f: 'xtrk',      b: (t) -> t.drawXtrk()}
+    range:     {f: 'range',     b: (t) -> t.drawRange()}
+    dAz:       {f: 'dAz',       b: (t) -> t.drawDAz()}
+
+  # A/E PFD: every instrument.  Screen_ORBIT_PFD names a subset.
+  screenName: 'AE_PFD'
+  parts: () -> ['fcsConfig', 'majorMode', 'ami', 'avvi', 'accMeter', 'adi',
+                'hsi', 'gsi', 'attAcc', 'range', 'dAz', 'xtrk']
+
+  # rebuild one part in place; a screen that does not carry it has nothing
+  # to redraw
+  _part: (name) ->
+    return unless name in @parts()
+    {f, b} = PARTS[name]
+    @[f] = @_redo @[f], (=> @_reading name, (=> b(@)))
+    return
+
+  # The feed fields an instrument reads.
+  #
+  # A builder runs with `curData` behind a recorder, and the fields it read
+  # are what a later feed has to name for it to be built again.  A builder
+  # that enumerates the feed reads all of it, `ALL_FIELDS`.
+  ALL_FIELDS = Symbol('all fields')
+
+  _recorded: (build) ->
+    keys = new Set()
+    outer = @curData
+    @curData = new Proxy outer,
+      get: (t, k) -> keys.add(k) ; t[k]
+      set: (t, k, v) -> t[k] = v ; true
+      ownKeys: (t) -> keys.add(ALL_FIELDS) ; Reflect.ownKeys(t)
+    try
+      g = build()
+    finally
+      @curData = outer
+    [g, keys]
+
+  # `add` keeps what the part read before: an update path (`u` below) reads
+  # what it draws now, and an instrument built with no data to draw has not
+  # yet read the fields it will.
+  _reading: (name, build, add = false) ->
+    [g, keys] = @_recorded build
+    prev = (@_partKeys ?= {})[name]
+    if add and prev?
+      keys.add(k) for k in Array.from(prev)
+    @_partKeys[name] = keys
+    g
+
+  _reads: (name, changed) ->
+    keys = @_partKeys?[name]
+    return true if not keys? or keys.has(ALL_FIELDS)
+    for k in changed
+      return true if keys.has(k)
+    false
+
+  # An element of a part that is built once and kept until a field it reads
+  # moves.  The builder runs behind the recorder, so what it read and what
+  # those fields held is what the next call compares, and the part rebuilds
+  # around the group it already has.  `_disposeGroup` spares a kept subtree
+  # and `flatten` merges it once, leaving it under the strokes built after
+  # it: a kept element stays where its builder put it.
+  _kept: (name, build) ->
+    c = (@_keptEls ?= {})[name]
+    if c?
+      moved = false
+      for k, v of c.vals
+        moved = true unless sameField(@curData[k], v)
+      return c.g unless moved
+    [g, keys] = @_recorded build
+    g.userData.keepAlive = true
+    vals = {}
+    vals[k] = @curData[k] for k in Array.from(keys) when typeof k == 'string'
+    @_keptEls[name] = {g, vals}
+    g
 
   # Dispose a rebuilt group's geometry, sparing cached (userData.keepAlive)
   # subtrees: those are detached for reuse on the next build. Geometries are
@@ -165,7 +299,9 @@ export class Screen_AE_PFD extends MDUScreen
       @group.remove grp
       @_disposeGroup grp
     ng = builder()
-    @group.add ng if ng?
+    if ng?
+      @d.flatten ng
+      @group.add ng
     @d.dirty = true
     ng
 
@@ -177,6 +313,12 @@ export class Screen_AE_PFD extends MDUScreen
   # `fp` (the visible-mark fingerprint) changes — marks scrolling in or out
   # of the window, formats changing, or a mark crossing the readout centre
   # (its clip rect is chosen by side).
+  # A tape's whole mark grid, which is the tape and not the value on it: the
+  # id names the variant, so the provider runs once for each.
+  _marksOf: (opts) ->
+    return opts.marks() unless opts.id?
+    (@_marksCache ?= {})[opts.id] ?= opts.marks()
+
   _tapeLayer: (id, fp, value, mapFn, scale, builder) ->
     return builder() if not id?                # uncached fallback
     @_tapeCache ?= {}
@@ -189,15 +331,15 @@ export class Screen_AE_PFD extends MDUScreen
     c.layer.position.y = if c.m0? then mapFn(value) - c.m0 else (value - c.anchor)*scale
     c.layer
 
-  # rebuild every data-driven element from curData: used by the debug
-  # parameter editor (dbl-click outside the canvas) after live pokes
-  refreshFeed: () ->
-    @fcsConfig = @_redo @fcsConfig, => @drawFCSConfig()
-    @majorMode = @_redo @majorMode, => @drawMajorMode()
-    @ami = @_redo @ami, => @drawAMI()
-    @accMeter = @_redo @accMeter, => @drawAccMeter(ACC_ARGS...)
-    @_redrawAVVI()
-    @updateADI()
+  # Rebuild the data-driven elements `changed` reaches, naming the feed
+  # fields that moved.  Without it every element is rebuilt: the debug
+  # parameter editor (dbl-click outside the canvas) pokes curData directly.
+  refreshFeed: (changed) ->
+    for name in @parts()
+      continue if changed? and not @_reads(name, changed)
+      {u} = PARTS[name]
+      if u? then @_reading name, (=> u(@)), true else @_part name
+    return
 
   # live-feed ADI test
   #
@@ -223,7 +365,7 @@ export class Screen_AE_PFD extends MDUScreen
     return if i == (@_atMode ? -1)
     d = @curData
     if i < 0                                   # off
-      window.clearInterval(@_atTimer) if @_atTimer?
+      clearInterval(@_atTimer) if @_atTimer?
       @_atTimer = null
       if @_at0?
         [d.adiRol, d.adiPch, d.adiYaw, d.adiRolErr, d.adiPchErr,
@@ -237,11 +379,11 @@ export class Screen_AE_PFD extends MDUScreen
                 d.adiYawErr, d.adiRolRate, d.adiPchRate, d.adiYawRate]
       @_atMode = i
       if i == 4                                # freeze: hold data as-is
-        window.clearInterval(@_atTimer) if @_atTimer?
+        clearInterval(@_atTimer) if @_atTimer?
         @_atTimer = null
       else
-        @_atT0 = Date.now()                    # each sweep starts from zero
-        @_atTimer ?= window.setInterval((=> @tickAdiTest()), AT_TICK)
+        @_atT0 = simNow()                    # each sweep starts from zero
+        @_atTimer ?= setInterval(call(@, 'tickAdiTest'), AT_TICK)
         @tickAdiTest()
     console.log "PFD ADI test: #{@adiTestMode()}"
     return
@@ -251,13 +393,13 @@ export class Screen_AE_PFD extends MDUScreen
   testControls: () ->
     [
       {label: 'ADI test', options: ['off'].concat(AT_MODES),
-       get: (=> @adiTestMode()), set: ((m) => @setAdiTestMode(m))}
+       get: call(@, 'adiTestMode'), set: ((m) => @setAdiTestMode(m))}
       {label: 'Hdot tape test',
        get: (=> @_ttTimer?), set: ((v) => if v then @enterTapeTest() else @exitTapeTest())}
       {label: 'Alt tape test',
        get: (=> @_altTimer?), set: ((v) => if v then @enterAltTest() else @exitAltTest())}
       {label: 'G-meter test', options: ['off'].concat(m[0] for m in GT_MODES),
-       get: (=> @gTestMode()), set: ((m) => @setGTestMode(m))}
+       get: call(@, 'gTestMode'), set: ((m) => @setGTestMode(m))}
       {label: 'Alpha tape test',
        get: (=> @_apTimer?), set: ((v) => if v then @enterAlphaTest() else @exitAlphaTest())}
       {label: 'Vel tape test',
@@ -268,7 +410,7 @@ export class Screen_AE_PFD extends MDUScreen
 
   tickAdiTest: () ->
     return unless @_atMode? and @_atMode < 4
-    t = (Date.now() - @_atT0) / 1000
+    t = (simNow() - @_atT0) / 1000
     d = @curData
     d.adiRol = 0 ; d.adiPch = 0 ; d.adiYaw = 0
     switch @_atMode
@@ -312,7 +454,7 @@ export class Screen_AE_PFD extends MDUScreen
     return if i == (@_gtMode ? -1)
     d = @curData
     if i < 0                                   # off
-      window.clearInterval(@_gtTimer) if @_gtTimer?
+      clearInterval(@_gtTimer) if @_gtTimer?
       @_gtTimer = null
       [d.majorMode, d.vehicleAcceleration, d.targetNZ] = @_gt0 if @_gt0?
       @_gt0 = null
@@ -323,15 +465,15 @@ export class Screen_AE_PFD extends MDUScreen
       @_gt0 ?= [d.majorMode, d.vehicleAcceleration, d.targetNZ]
       @_gtMode = i
       d.majorMode = GT_MODES[i][1]
-      @_gtT0 = Date.now()
-      @_gtTimer ?= window.setInterval((=> @tickGTest()), GT_TICK)
+      @_gtT0 = simNow()
+      @_gtTimer ?= setInterval(call(@, 'tickGTest'), GT_TICK)
       @tickGTest()
     console.log "PFD G-meter test: #{@gTestMode()}"
     return
 
   tickGTest: () ->
     return unless @_gtMode?
-    t = (Date.now() - @_gtT0) / 1000
+    t = (simNow() - @_gtT0) / 1000
     d = @curData
     ph = (t % 12) / 12
     tri = if ph < 0.5 then 2*ph else 2 - 2*ph          # 0..1..0
@@ -344,8 +486,8 @@ export class Screen_AE_PFD extends MDUScreen
 
   # the meter and the MM digits (the test changes majorMode) only
   _redrawGMeter: () ->
-    @accMeter = @_redo @accMeter, => @drawAccMeter(ACC_ARGS...)
-    @majorMode = @_redo @majorMode, => @drawMajorMode()
+    @_part 'accMeter'
+    @_part 'majorMode'
 
   # live-feed alpha tape test
   #
@@ -359,28 +501,28 @@ export class Screen_AE_PFD extends MDUScreen
   enterAlphaTest: () ->
     return if @_apTimer?
     @_ap0 = [@curData.alpha, @curData.mach]
-    @_apT0 = Date.now()
-    @_apTimer = window.setInterval((=> @tickAlphaTest()), ATP_TICK)
+    @_apT0 = simNow()
+    @_apTimer = setInterval(call(@, 'tickAlphaTest'), ATP_TICK)
     @tickAlphaTest()
     console.log "PFD alpha tape test ON"
 
   exitAlphaTest: () ->
     return if not @_apTimer?
-    window.clearInterval(@_apTimer)
+    clearInterval(@_apTimer)
     @_apTimer = null
     [@curData.alpha, @curData.mach] = @_ap0 if @_ap0?
     @_ap0 = null
-    @ami = @_redo @ami, => @drawAMI()
+    @_part 'ami'
     console.log "PFD alpha tape test OFF"
 
   tickAlphaTest: () ->
-    t = (Date.now() - @_apT0) / 1000
+    t = (simNow() - @_apT0) / 1000
     tri = (p) ->
       ph = (t % p) / p
       if ph < 0.5 then 2*ph else 2 - 2*ph
     @curData.alpha = Math.round((-8 + tri(11)*32) * 10) / 10
     @curData.mach = Math.round((0.3 + tri(17)*2.9) * 100) / 100
-    @ami = @_redo @ami, => @drawAMI()
+    @_part 'ami'
 
   # live-feed velocity tape test
   #
@@ -397,22 +539,22 @@ export class Screen_AE_PFD extends MDUScreen
   enterVelTest: () ->
     return if @_vtTimer?
     @_vt0 = [@curData.mach, @curData.vel, @curData.keas]
-    @_vtT0 = Date.now()
-    @_vtTimer = window.setInterval((=> @tickVelTest()), VT_TICK)
+    @_vtT0 = simNow()
+    @_vtTimer = setInterval(call(@, 'tickVelTest'), VT_TICK)
     @tickVelTest()
     console.log "PFD velocity tape test ON"
 
   exitVelTest: () ->
     return if not @_vtTimer?
-    window.clearInterval(@_vtTimer)
+    clearInterval(@_vtTimer)
     @_vtTimer = null
     [@curData.mach, @curData.vel, @curData.keas] = @_vt0 if @_vt0?
     @_vt0 = null
-    @ami = @_redo @ami, => @drawAMI()
+    @_part 'ami'
     console.log "PFD velocity tape test OFF"
 
   tickVelTest: () ->
-    t = (Date.now() - @_vtT0) / 1000
+    t = (simNow() - @_vtT0) / 1000
     tri = (p) ->
       ph = (t % p) / p
       if ph < 0.5 then 2*ph else 2 - 2*ph
@@ -430,7 +572,7 @@ export class Screen_AE_PFD extends MDUScreen
     @curData.mach = Math.round(Math.min(u, 4)*100)/100
     @curData.vel = Math.round(u*1000)
     @curData.keas = Math.round(tri(23)*500)
-    @ami = @_redo @ami, => @drawAMI()
+    @_part 'ami'
 
   data: () ->
     return @curData
@@ -441,36 +583,23 @@ export class Screen_AE_PFD extends MDUScreen
     @T_RPY_1 = [331, 348, 0]
     @T_RPY_2 = [0, 348, 0]
 
-    @T_setRPY([0.5,348.5,0.25])
-    @group = new THREE.Object3D name="AE_PFD" #"
-    # @group.position.y = -0.30
-    # @group.position.z = 0
+    @T_setRPY([0.5,348.5,0.25]) if @dev()
+    @group = new THREE.Object3D name=@screenName #"
 
-    @group.add @drawFCSConfig()
-    @group.add @drawMajorMode()
-    @group.add @drawAMI()
-
-    @avviGrp = @drawAVVI()
-    @group.add @avviGrp
+    for name in @parts()
+      {f, b} = PARTS[name]
+      @[f] = g = @_reading name, (=> b(@))
+      if g?
+        @d.flatten g
+        @group.add g
     @d.dirty = true
 
-    # (velocity readout box below the tape now lives in drawAMI — data-driven)
-    MRN_X = 37.62
-    MRN_Y = 26.88
-    @group.add @d.box MRN_X, MRN_Y+0.95, MRN_X+4.0, MRN_Y+2, @d.c2h.darkGray
-    @group.add @d.str MRN_X+0.15, MRN_Y, "MRN20", @d.c2h.darkGray, 0.85, 0.90, 1.10
-    @group.add @d.strMEDS MRN_X+1.99, MRN_Y+1.16, "2.4", @d.c2h.white, 0.85, 0.70
-
-    @group.add @drawAccMeter(ACC_ARGS...)
-    @group.add @drawADI(24.90,12.0)
-
-    @group.add @drawHSI(25,30,75)
-
-    # #@d.add @d.line [], @material.gray
-    @drawAttAcc()
-    @drawGSI()
-
-    @drawRange()
+  # The ADI ATTITUDE switch position the transfer carries (word 20 bits 1-4,
+  # MEDS_L/R_ATT_SEL_SW): the FSSR maps the switch discrete -1, 0, +1 to 1,
+  # 2, 3 (F.4.128.1.3.2.7) and names the positions "INRTL (inertial), LVLH
+  # (local vertical/local horizontal), and REF (reference)" in panel order
+  # (USA-007587 sect.2.7).  0 is no position.
+  ATT_SEL = {1: "INRTL", 2: "LVLH", 3: "REF"}
 
   drawFCSConfig: () ->
     @fcsConfig = new THREE.Object3D()
@@ -489,52 +618,62 @@ export class Screen_AE_PFD extends MDUScreen
     # selected prior to M =1. For PASS, the following table
     # summarizes this field as well as items 10 and 11.
     #
-    # [JSC-48017/p.279]
+    # [JSC-48017/6-8 item 1]
     #
-    if @data().majorMode in [101, 102, 103,  601]
-      @fcsConfig.add @d.str 2,0.75,"  DAP:", @d.c2h.darkGray, scale=1,advance=.9
-      @fcsConfig.add @d.str 2,1.75,"Throt:", @d.c2h.darkGray, scale=1, advance=.9
-      if @data().fcsConfDAPAuto
-        @fcsConfig.add @d.str 8,0.75,"Auto", @d.c2h.white, scale=1,advance=.9
-      else
-        @fcsConfig.add @d.str 8,0.75," CSS", @d.c2h.white, scale=1,advance=.9
-      if @data().fcsConfThrotAuto
-        @fcsConfig.add @d.str 8,1.75,"Auto", @d.c2h.white, scale=1,advance=.9
-      else
-        @fcsConfig.add @d.str 8,1.75,"MAN", @d.c2h.white, scale=1,advance=.9
-    else if @data().majorMode in [104,105,106]
-      @fcsConfig.add @d.str 2,0.75,"  DAP:", @d.c2h.darkGray, scale=1,advance=.9
-      if @data().fcsConfDAPAuto
-        @fcsConfig.add @d.str 8,0.75,"Auto", @d.c2h.white, scale=1,advance=.9
-      else
-        @fcsConfig.add @d.str 8,0.75,"INRTL", @d.c2h.white, scale=1,advance=.9
-    else if @data().majorMode in [301, 302, 303]
-      @fcsConfig.add @d.str 2,0.75,"  DAP:", @d.c2h.darkGray, scale=1,advance=.9
-      if @data().fcsConfDAPAuto
-        @fcsConfig.add @d.str 8,0.75,"Auto", @d.c2h.white, scale=1,advance=.9
-      else
-        @fcsConfig.add @d.str 8,0.75,"INRTL", @d.c2h.white, scale=1,advance=.9
-    else if @data().majorMode in [304, 305, 602, 603]
-      @fcsConfig.add @d.str 3,0.9,"Pitch:", @d.c2h.darkGray, scale=1,advance=.9
-      @fcsConfig.add @d.str 3,1.9,"  R/Y:", @d.c2h.darkGray, scale=1, advance=.9
-      if @data().fcsConfPitchAuto
-        @fcsConfig.add @d.str 8.5,0.90,"Auto", @d.c2h.white, scale=1,advance=.9
-      else
-        @fcsConfig.add @d.str 8.5,0.90," CSS", @d.c2h.white, scale=1,advance=.9
-      if @data().fcsConfRYAuto
-        @fcsConfig.add @d.str 8.5,1.90,"Auto", @d.c2h.white, scale=1,advance=.9
-      else
-        @fcsConfig.add @d.str 8.5,1.90," CSS", @d.c2h.white, scale=1,advance=.9
+    d = @data()
+    mm = d.majorMode
+    lbl = (x, y, t) => @fcsConfig.add @d.str x, y, t, @d.c2h.darkGray, 1, .9
+    # an indicator whose word the GPC is not marking valid has no field
+    val = (x, y, auto, a, b) =>
+      @fcsConfig.add @d.str x, y, (if auto then a else b), @d.c2h.white, 1, .9 if auto?
+    css = false                 # a CSS or MAN field is showing
+    if mm in [101, 102, 103, 601]
+      lbl 2, 0.75, "  DAP:"
+      val 8, 0.75, d.fcsConfDAPAuto, "Auto", " CSS"
+      css = d.fcsConfDAPAuto == false
+      # word 20 bit 6, MEDS_THROT_RY_AUTO_BLANK: MECO confirmed
+      unless d.fcsConfThrotBlank
+        lbl 2, 1.75, "Throt:"
+        val 8, 1.75, d.fcsConfThrotAuto, "Auto", "MAN"
+        css = css or d.fcsConfThrotAuto == false
+    else if mm in [104, 105, 106, 301, 302, 303]
+      lbl 2, 0.75, "  DAP:"
+      val 8, 0.75, d.fcsConfDAPAuto, "Auto", "INRTL"
+    else if mm in [304, 305, 602, 603]
+      lbl 3, 0.9, "Pitch:"
+      lbl 3, 1.9, "  R/Y:"
+      val 8.5, 0.90, d.fcsConfPitchAuto, "Auto", " CSS"
+      val 8.5, 1.90, d.fcsConfRYAuto, "Auto", " CSS"
+      # "prior to M = 1": entry decelerates through it, so above mach 1
+      css = (d.fcsConfPitchAuto == false or d.fcsConfRYAuto == false) and (d.mach ? 0) > 1
 
-    if @data().fcsConfDAPSel
-      @fcsConfig.add @d.box 2, 0.75, 12.75, 1.75, @d.c2h.yellow
+    @fcsConfig.add @d.box 2, 0.75, 12.75, 1.75, @d.c2h.yellow if css
 
-    @fcsConfig.add @d.str 42,2," SB:", @d.c2h.darkGray, scale=1, advance=.9
-    @fcsConfig.add @d.str 45.78,2," Auto", @d.c2h.white, scale=1, advance=.9
+    # FCS Configuration/ADI Attitude – The field below the major
+    # mode shows the applicable CDR or PLT ADI attitude selected,
+    # i.e. INRTL, LVLH, or REF (MM 101-106 and 601, and 301-303), or
+    # SB mode, i.e. AUTO or MAN (MM 304 and 305, and 602 and 603). A
+    # yellow box is drawn around the indicator if MAN SB is
+    # selected.
+    #
+    # [JSC-48017/6-14 item 10]
+    #
+    if mm in [101, 102, 103, 104, 105, 106, 301, 302, 303, 601]
+      lbl 42, 2, " ATT:"
+      if (att = ATT_SEL[d.attSel])?
+        @fcsConfig.add @d.str 45.78, 2, " #{att}", @d.c2h.white, 1, .9
+    else if mm in [304, 305, 602, 603]
+      lbl 42, 2, " SB:"
+      val 45.78, 2, d.fcsConfSBAuto, " Auto", " MAN"
+      @fcsConfig.add @d.box 45.9, 1.55, 50.4, 2.55, @d.c2h.yellow if d.fcsConfSBAuto == false
 
     return @fcsConfig
 
-  drawMajorMode: () -> 
+  # R for RTLS, T for TAL, AOA for AOA, ATO for ATO, CA for contingency
+  # (JSC-48017/6-14 item 11), keyed by the abort flags of message 1 word 9.
+  ABORT_LTR = {RTLS: "R", TAL: "T", AOA: "AOA", ATO: "ATO", CA: "CA"}
+
+  drawMajorMode: () ->
     @majorMode = new THREE.Object3D()
     # Major Mode – The current major mode is identified in the upper
     # right hand corner of the display. If an abort has been
@@ -542,14 +681,8 @@ export class Screen_AE_PFD extends MDUScreen
     # for RTLS, T for TAL, AOA for AOA, ATO for ATO, and CA for
     # contingency aborts)
     #
-    switch @data().abortMode
-      when "RTLS" then abt = "R"
-      when "TAL" then abt = "T"
-      when "AOA" then abt = "AOA"
-      when "ATO" then abt = "ATO"
-      when "Contingency" then abt = "CA"
-      else abt = ""
-    mmStr = " #{@data().majorMode}#{abt}"
+    abt = ABORT_LTR[@data().abortMode] ? ""
+    mmStr = if @data().majorMode? then " #{@data().majorMode}#{abt}" else ""
 
     @majorMode.add @d.str 42,.95," MM:", @d.c2h.darkGray, scale=1, advance=.9
     @majorMode.add @d.str 45.78,.95,mmStr, @d.c2h.white, scale=1, advance=.9
@@ -591,13 +724,43 @@ export class Screen_AE_PFD extends MDUScreen
       # group.add @d.box x0,11,x0+4.75,12.75, matG
     return group
 
-  # thin (1.5px) background-colour tick stroke, clipped: the clip planes ride
-  # on cloned materials, so the clones are cached per clip rect to bound the
-  # churn from 10Hz test-sweep rebuilds
-  _thinTick: (pts, clip) ->
+  # A tape's marks, trimmed to the tape above the readout box and again to
+  # the tape below it: one geometry under two clip rects.  A mark carries no
+  # side of the box, so the layer stands while the tape scrolls under the
+  # window.
+  #
+  # The box is 1.70 rows and the tallest mark 1.33 (a 1.22-scale meds digit,
+  # 0.409 rows of ink either side of its line, plus the stroke and its
+  # feather), so no mark reaches from one window into the other and each
+  # comes out as it would trimmed to the side it lies on.
+  #
+  # The second set is built after the first, in the same order, so the two
+  # merge as two runs.
+  _clipBoth: (lg, clipTop, clipBot) ->
+    marks = []
+    lg.traverse (o) -> marks.push o if o.isMesh
+    mirror = new THREE.Object3D()
+    for m in marks
+      base = m.material
+      m.material = @d._clipMat(base, clipTop)
+      c = new THREE.Mesh(m.geometry, @d._clipMat(base, clipBot))
+      c.frustumCulled = m.frustumCulled
+      c.renderOrder = m.renderOrder
+      c.position.copy m.position
+      c.quaternion.copy m.quaternion
+      c.scale.copy m.scale
+      mirror.add c
+    lg.add mirror
+    lg
+
+  # thin (1.5px) background-colour tick stroke.  A clip rect rides on a
+  # cloned material, so the clones are cached per rect; a tick with no rect
+  # takes the shared material and `_clipBoth` gives it the two it needs.
+  _thinTick: (pts, clip = null) ->
     @_tickBlkMat ?= makeSDFLineMaterial(THREE, @d.sdfOpt({color: @d.c2h.black, widthPx: 1.5}))
     @_tickClipMats ?= {}
-    m = @_tickClipMats["#{clip.x},#{clip.y},#{clip.z},#{clip.w}"] ?= @d._clipMat(@_tickBlkMat, clip)
+    m = if not clip? then @_tickBlkMat
+    else @_tickClipMats["#{clip.x},#{clip.y},#{clip.z},#{clip.w}"] ?= @d._clipMat(@_tickBlkMat, clip)
     t = new THREE.Mesh(makeSDFLineGeometry(THREE, pts), m)
     t.frustumCulled = false
     t.renderOrder = -1        # tuck tick ends under the frame stroke
@@ -615,7 +778,7 @@ export class Screen_AE_PFD extends MDUScreen
     adv = (opts.advF ? MADV)*lblScale                        # legend advance tracks type size
     rdScale = opts.rdScale ? 1.1                             # centre readout type size
     # meds digit ink metrics, measured from the meds_font.svg glyph geometry
-    # (cell coords relative to the strMEDS origin; drawGlyph places the cell
+    # (cell coords relative to the strMEDS origin; glyphStrokes places the cell
     # at x-1, so ink x = x - 1 + gx*scale, ink y = y + gy*scale):
     GXC = 1.368   # digit ink centre, x
     GXL = 1.009   # digit ink left edge, x
@@ -640,6 +803,14 @@ export class Screen_AE_PFD extends MDUScreen
     # `scale` is ignored wherever a map is supplied.
     map0 = if opts.map? then opts.map(value) else 0
     dpos = (v) => if opts.map? then opts.map(v) - map0 else (v - value)*scale
+    # A tape is a strip longer than its window, and scrolling it is a
+    # translation of the strip.  The marks that go on it are those in a band
+    # around a tape position quantised to TAPE_BAND rows: the strip then
+    # stands until the tape has travelled a band, and the band covers the
+    # window wherever the value sits inside it.  `dq` is a mark's row
+    # measured from that quantised position.
+    posQ = TAPE_BAND * Math.round((if opts.map? then map0 else value*scale) / TAPE_BAND)
+    dq = (v) => (if opts.map? then opts.map(v) else v*scale) - posQ
     # opts.range [vMin, vMax]: bounded unsigned tape (the velocity tape's
     # mach and KEAS faces). The white face spans just the value range —
     # padded ~a label half-height past each end so the end labels sit on
@@ -693,14 +864,13 @@ export class Screen_AE_PFD extends MDUScreen
       if center then cx - (txt.length-1)*adv/2 - (GXC*lblScale - 1)
       else x0 + (opts.lblPad ? 0.41) + 1 - GXL*lblScale
     if opts.marks?
-      # opts.marks(value) -> {faces, labels, ticks}: explicit mark lists for
+      # opts.marks() -> {faces, labels, ticks}: the whole tape's marks, for
       # piecewise tapes (AVVI altitude / altitude-rate). faces [{v0,v1,fill,
       # padLo?,padHi?}] — pad extends the tape's outer ends ~a label half-
       # height so the end labels sit on tape; labels [{v,txt,c}]; ticks
       # [{v,x0,x1,thin?,c}] — thin gets the 1.5px background-colour stroke,
-      # else a standard @d.line in c. Off-window marks are skipped here, so
-      # providers can emit their full grids cheaply.
-      mk = opts.marks(value)
+      # else a standard @d.line in c.  scrollTape takes the band it needs.
+      mk = @_marksOf opts
       fPad = 0.55*lblScale
       # faces are a few clamped quads — cheap, rebuilt every call
       for f in (mk.faces ? [])
@@ -709,37 +879,36 @@ export class Screen_AE_PFD extends MDUScreen
         grp.add @d.box x0, yFT, x0+w, yFB, null, f.fill if yFB > yFT
       # labels + ticks: the expensive glyph/stroke content rides a cached
       # layer (see _tapeLayer) — kept with a margin past the window so a
-      # rebuild happens before anything scrolls on. Each mark's fingerprint
-      # includes its side of the tape centre (its clip rect is baked in).
-      MMARG = 3
-      visLabels = (L for L in (mk.labels ? []) when y0 - 1.5 - MMARG <= cy - dpos(L.v) <= y0 + h + 1.5 + MMARG)
-      visTicks  = (T for T in (mk.ticks ? []) when y0 - 0.5 - MMARG <= cy - dpos(T.v) <= y0 + h + 0.5 + MMARG)
-      fp = ("#{L.v}~#{L.txt}~#{+(cy - dpos(L.v) < cy)}" for L in visLabels).join(',') + '|' +
-           ("#{T.v}~#{T.x0}~#{T.x1}~#{+!!T.thin}~#{+(cy - dpos(T.v) < cy)}" for T in visTicks).join(',')
+      # rebuild happens before anything scrolls on.
+      MMARG = TAPE_BAND + 1.5
+      visLabels = (L for L in (mk.labels ? []) when y0 - MMARG <= cy - dq(L.v) <= y0 + h + MMARG)
+      visTicks  = (T for T in (mk.ticks ? []) when y0 - MMARG <= cy - dq(T.v) <= y0 + h + MMARG)
+      fp = ("#{L.v}~#{L.txt}" for L in visLabels).join(',') + '|' +
+           ("#{T.v}~#{T.x0}~#{T.x1}~#{+!!T.thin}" for T in visTicks).join(',')
       grp.add @_tapeLayer opts.id, fp, value, opts.map, scale, =>
         lg = new THREE.Object3D()
         for L in visLabels
           yV = cy - dpos(L.v)
           # y = yV - GYC*lblScale puts the measured ink centre on the value
-          # line; clips end at the readout box edges so labels slide behind it
-          lg.add @d.strMEDS lblAt(L.txt), yV-GYC*lblScale, L.txt, L.c, lblScale, adv, 1.0, (if yV < cy then clipTop else clipBot)
+          # line; the clips end at the readout box edges so labels slide
+          # behind it
+          lg.add @d.strMEDS lblAt(L.txt), yV-GYC*lblScale, L.txt, L.c, lblScale, adv, 1.0
         for T in visTicks
           yVt = cy - dpos(T.v)
-          tclip = if yVt < cy then clipTop else clipBot
           if T.thin
-            lg.add @_thinTick [[T.x0, yVt], [T.x1, yVt]], tclip
+            lg.add @_thinTick [[T.x0, yVt], [T.x1, yVt]]
           else
-            lg.add @d.line [[T.x0, yVt], [T.x1, yVt]], T.c, 1.0, tclip
-        lg
+            lg.add @d.line [[T.x0, yVt], [T.x1, yVt]], T.c
+        @_clipBoth lg, clipTop, clipBot
     else
-      nEach = Math.ceil((h/2)/(scale*step)) + 1
-      vC = Math.round(value/step)*step
+      nBand = Math.max(1, Math.round(TAPE_BAND/(scale*step)))
+      nEach = Math.ceil((h/2)/(scale*step)) + nBand + 1
+      vC = nBand*step * Math.round(value/(nBand*step))
       eps = step/1000                                        # float-noise guard at the range ends
       inRng = (v) -> not opts.range? or (vMin - eps <= v <= vMax + eps)
       # cached layer (see _tapeLayer): the mark window is anchored on vC, so
-      # the fingerprint is vC plus each mark's side of the tape centre (the
-      # side picks its baked-in clip rect; it flips as value passes a mark)
-      fp = "#{vC}|" + (("#{+(dpos(vC + k*step) > 0)}#{+(dpos(vC + (k+0.5)*step) > 0)}") for k in [-nEach..nEach]).join('')
+      # vC is the fingerprint
+      fp = "#{vC}"
       grp.add @_tapeLayer opts.id, fp, value, opts.map, scale, =>
         lg = new THREE.Object3D()
         for k in [-nEach..nEach]
@@ -754,7 +923,7 @@ export class Screen_AE_PFD extends MDUScreen
             # The clipTop/clipBot windows end at the readout box edges, so a
             # label scrolling toward the box is occluded progressively, like a
             # label printed on a physical tape sliding behind the readout.
-            lg.add @d.strMEDS lblAt(txt), yV-GYC*lblScale, txt, lblClr(V), lblScale, adv, 1.0, (if yV < cy then clipTop else clipBot)
+            lg.add @d.strMEDS lblAt(txt), yV-GYC*lblScale, txt, lblClr(V), lblScale, adv, 1.0
           if tickW > 0                                       # minor tick at the half-step
             Vt = V + step/2 ; yVt = cy - dpos(Vt)
             if inRng(Vt)
@@ -762,13 +931,12 @@ export class Screen_AE_PFD extends MDUScreen
               # tape switches to left-edge ticks above 4.0); null skips the tick
               ext = if opts.tickFn? then opts.tickFn(Vt) else [cx-tickW/2, cx+tickW/2]
               if ext?
-                tclip = if yVt < cy then clipTop else clipBot
                 if opts.range?
                   # black face ticks run thin, like the alpha tape's right lane
-                  lg.add @_thinTick [[ext[0], yVt], [ext[1], yVt]], tclip
+                  lg.add @_thinTick [[ext[0], yVt], [ext[1], yVt]]
                 else
-                  lg.add @d.line [[ext[0], yVt],[ext[1], yVt]], (if signed then lblClr(Vt) else tickColor), 1.0, tclip
-        lg
+                  lg.add @d.line [[ext[0], yVt],[ext[1], yVt]], (if signed then lblClr(Vt) else tickColor)
+        @_clipBoth lg, clipTop, clipBot
     # right-lane unit ticks (opts.rightTicks {step, len}): black on the
     # white (positive) face, white with the dark halo on the grey face;
     # the 0 tick is white and rides OVER the face-boundary rule (drawn
@@ -894,6 +1062,8 @@ export class Screen_AE_PFD extends MDUScreen
   # is given in inches of tape face; the MDU active display area is 6.7 in
   # square and the screen coordinate grid is 52.2425 cols x 38.32 rows (see
   # px/pxy in drawAVVI), so one tape inch maps to:
+  TAPE_BAND = 12                # rows of tape kept past each end of a window,
+                                # which is how far it scrolls between rebuilds
   TAPE_IN_ROWS = 38.32/6.7      # rows per inch (vertical, along the tape)
   TAPE_IN_COLS = 52.2425/6.7    # cols per inch (tick widths)
 
@@ -1055,7 +1225,14 @@ export class Screen_AE_PFD extends MDUScreen
     velLbl = if mm in [103, 104] or (mm == 601 and not @data().ppa) then "M/VI" else "M/VR"
     vx0 = 1.8 ; vw = 4.75 ; vcx = vx0 + vw/2
     vOpts = {center:true, lblScale:1.2, rdScale:1.2, clipOff:AMI_OFF}
-    if swap
+    # an invalid tape is the solid red rectangle, as the AVVI's
+    machOK = @data().machValid ? true
+    keasOK = @data().keasValid ? true
+    alphaOK = @data().alphaValid ? true
+    if swap and not keasOK or not swap and not machOK
+      @ami.add @d.str 2.25,3.24,(if swap then "KEAS" else velLbl), @d.c2h.darkGray, 1, .9
+      @ami.add @_redTape vx0, 4.4, vw, 15.57
+    else if swap
       @ami.add @d.str 2.25,3.24,"KEAS", @d.c2h.darkGray, 1, .9
       @ami.add @scrollTape vx0, 4.4, vw, 15.57, keas, 10, 0.1*TAPE_IN_ROWS, Object.assign(vOpts, {id:'ami-keas', tickW:0.27*TAPE_IN_COLS, range:[0, 500]})
     else
@@ -1076,11 +1253,28 @@ export class Screen_AE_PFD extends MDUScreen
     # the child group backs the AMI nudge out.
     blo = new THREE.Object3D()
     blo.position.set(-AMI_OFF[0], -AMI_OFF[1], 0)
-    bloVal = if swap then mach.toFixed(2) else "#{Math.round(keas)}"
+    bloVal = if swap then (if machOK then mach.toFixed(2) else "") else (if keasOK then "#{Math.round(keas)}" else "")
     blo.add @d.box 1.925,20.911,6.625,22.661, @d.c2h.darkGray
     blo.add @d.str 2.69,23.011, (if swap then velLbl else "KEAS"), @d.c2h.darkGray, 0.9, 0.9
     # value anchor tuned on the 4-char "0.48"; shorter strings centre on it
     blo.add @d.strMEDS 2.41 + (4 - bloVal.length)*0.94/2, 21.43, bloVal, @d.c2h.white, 1.25, 0.94
+    # Beta digital, under the alpha tape: "In MM 102/103 and 601, a beta
+    # value (in degrees) is provided below the alpha tape. 'L' and 'R'
+    # indicate the yaw steering required to null the beta value, and used in
+    # conjunction with the 'E' bearing pointer. ... Both the 'E' pointer and
+    # Beta digital blank at altitude > 200K or MET > 2:30, whichever occurs
+    # first. Resolution of the digital is one decimal place."
+    # (JSC-48017/6-9 item 2; the blanking is the validity of message 1
+    # word 29, MEDS_BETAHVR_VALID.)  Figure 6-8 shows the field as L00.1.
+    # Which sign takes L is fitted: positive sideslip is nulled with right
+    # yaw.
+    if @data().beta?
+      b = Math.max(-99.9, Math.min(99.9, @data().beta))
+      bt = (if b < 0 then "L" else "R") + ("0" + Math.abs(b).toFixed(1))[-4..]
+      blo.add @d.box BETA_X[0], 20.911, BETA_X[1], 22.661, @d.c2h.darkGray
+      bcx = (BETA_X[0] + BETA_X[1])/2
+      blo.add @d.strMEDS bcx - (bt.length-1)*0.94/2 - 0.455, 21.43, bt, @d.c2h.white, 1.25, 0.94
+      blo.add @d.str bcx - 1.585, 23.011, "Beta", @d.c2h.darkGray, 0.9, 0.9
     @ami.add blo
 
     # # ######## 
@@ -1116,10 +1310,16 @@ export class Screen_AE_PFD extends MDUScreen
       aOpts.greenBar = [@_lerpTable(aTbl, mach, 2), @_lerpTable(aTbl, mach, 1)]
     if mach < 3.0
       aOpts.diamond = @_lerpTable(ALPHA_MAXLD, mach, 1)
-    @ami.add @scrollTape 7.4, 4.4, 4.75, 15.57, @data().alpha, 5, 0.685, Object.assign(aOpts, {id:'alpha'})
+    if alphaOK
+      @ami.add @scrollTape 7.4, 4.4, 4.75, 15.57, @data().alpha, 5, 0.685, Object.assign(aOpts, {id:'alpha'})
+    else
+      @ami.add @_redTape 7.4, 4.4, 4.75, 15.57
 
     @ami.position.set(AMI_OFF[0], AMI_OFF[1], 0)   # nudge left tapes right ~2px, down ~5px
     return @ami
+
+  # The beta digital box sits under the alpha tape and spans it.
+  BETA_X = [7.4, 12.15]
 
   makeClipWin: (clipBox) ->
     m = new THREE.MeshBasicMaterial {side:THREE.DoubleSide, wireframe:false, color:@d.c2h.black}
@@ -1174,6 +1374,7 @@ export class Screen_AE_PFD extends MDUScreen
   # transparent pass over scale strokes, labels, and tape frames.
   GA_RIM = 2 * 38.32/1024              # rim thickness, rows (~2px)
   GA_SCL = 1.25                        # overall arrow scale
+  GA_ASP = 38.32/52.2425               # rim aspect for arrows drawn in col/row space
   _greenArrow: (pts, axr=1.0) ->
     # arrows scale about their TIP (pts[1] at every call site), so the
     # point keeps indicating the exact value position as the body grows
@@ -1220,7 +1421,7 @@ export class Screen_AE_PFD extends MDUScreen
         when v >= 5000 then "#{Math.round(v/1000)}K"
         else "#{Math.round(v)}"
     grayLbl = {c: @d.c2h.white, border: @d.c2h.black}
-    (value) =>
+    () =>
       labels = {}
       for s, si in ALT_SEGS
         st = s[3]
@@ -1260,7 +1461,7 @@ export class Screen_AE_PFD extends MDUScreen
     fmtK = (v) ->
       "#{if v < 0 then '-' else ''}#{(Math.abs(v)/1000).toFixed(1).replace('.0', '')}K"
     lclr = (v) => if v > 0 then @d.c2h.black else {c: @d.c2h.white, border: @d.c2h.black}
-    marks = (value) =>
+    marks = () =>
       labels = [] ; ticks = []
       for v in [-980..980] by 20
         labels.push {v, txt: "#{v}", c: lclr(v)}
@@ -1498,8 +1699,8 @@ export class Screen_AE_PFD extends MDUScreen
     # Children of @adiC are authored in a circular frame: origin at the ball
     # centre, BOTH axes in row units, so a radius means the same thing in x
     # and y and circles are round by construction. The group transform then
-    # stretches x by AX = 1.3632 (the true row->col pixel ratio, = drawGlyph
-    # AR 18.789/13.783) times ADI_STRETCH, the slight horizontal stretch the
+    # stretches x by AX = 1.3632 (the true row->col pixel ratio, =
+    # glyphStrokes AR 18.789/13.783) times ADI_STRETCH, the slight horizontal stretch the
     # real MEDS ADI shows against the menu-matched reference overlay.
     # Tune ADI_STRETCH against the F8 overlay; 1.0 = perfect circle.
     ADI_STRETCH = 1.08
@@ -1510,10 +1711,9 @@ export class Screen_AE_PFD extends MDUScreen
     @adiC.position.set(xc, yc, 0)
     @adi.add @adiC
     # text in local coords with unstretched glyph shapes: undo AX on the
-    # glyph geometry (scalex, advance) and on drawGlyph's baked-in x-1
+    # glyph geometry (scalex, advance) and on glyphStrokes' baked-in x-1
     # origin offset, so only the *position* follows the stretch
-    ltxt = (lx,ly,s,color,scale=1.0,advance=0.62,scalex=1.0) =>
-      @d.strMEDS lx+1-1/AX, ly, s, color, scale, advance/AX, scalex/AX
+    ltxt = call(@, '_adiLocalText', AX)
     @adiLtxt = ltxt          # the dynamic overlay redraw reuses this helper
     # Attitude Determination Indicator (ADI) – Simulated enclosed
     # ball and digital readouts. The ball provides three degrees of
@@ -1528,9 +1728,9 @@ export class Screen_AE_PFD extends MDUScreen
     # reference.
     #
     # PASS ADI sequencing is as follows:
-    #       [JSC-48017/p.280]
+    #       [JSC-48017/6-10]
     # BFS ADI sequencing is as follows:
-    #       [JSC-48017/p.282]
+    #       [JSC-48017/6-12]
     #
 
     # ADI Theta Limit Bracket – A green limit bracket available
@@ -1693,32 +1893,15 @@ export class Screen_AE_PFD extends MDUScreen
         ca = Math.cos(deg2rad(a)) ; sa = Math.sin(deg2rad(a))
         errScl.add reorder @d.line [[ERR_R*ca, ERR_R*sa],[ERR_R*ca + 0.28*tkx, ERR_R*sa + 0.28*tky]], mScl
     @adiC.add errScl
-    # TAEM (MM 305/603): the pitch error scale reads in g's. Labels ride
-    # immediately right of the scale, baseline of the upper flush with the
-    # top tick and topline of the lower flush with the bottom tick
-    # (meds glyph ink at scale s spans y-0.08s .. y+0.74s)
-    if @data().majorMode in [305, 603]
-      sy = ERR_R * Math.sin(deg2rad(25))
-      @adiC.add ltxt 7.05, -sy - 0.74*0.8 - 0.05, "1.2g", @d.c2h.magenta, 0.8, 0.7, 1.0
-      @adiC.add ltxt 7.05, sy - 0.08*0.8 + 0.05, "1.2g", @d.c2h.magenta, 0.8, 0.7, 1.0
-    # <--
+    # (the pitch error scale's labels are feed-driven; _drawADIDyn draws them)
 
     # ADI Rate Needles
     #
     # '0' labels: ink centred on the centre tick (ink-centre x ≈ lx + 0.11
     # at this size); top baseline / bottom topline hold a short space off
     # the meter line, right one v-centred on its tick and pushed right
-    @adiC.add ltxt -0.11, -9.88, "0", @d.c2h.darkGray, 0.85
-    @adiC.add ltxt -0.11, 9.37, "0", @d.c2h.darkGray, 0.85
-    @adiC.add ltxt 9.55, -0.28, "0", @d.c2h.darkGray, 0.85
-
-    @adiC.add ltxt -6.42, -9.10, "5", @d.c2h.white, 0.85, 0.62, 1.18
-    @adiC.add ltxt -6.51, 8.48, "5", @d.c2h.white, 0.85, 0.62, 1.18
-    @adiC.add ltxt 8.27, -6.83, "5", @d.c2h.white, 0.85, 0.62, 1.18
-
-    @adiC.add ltxt 6.03, -9.10, "5", @d.c2h.white, 0.85, 0.62, 1.18
-    @adiC.add ltxt 6.06, 8.48, "5", @d.c2h.white, 0.85, 0.62, 1.18
-    @adiC.add ltxt 8.27, 6.30, "5", @d.c2h.white, 0.85, 0.62, 1.18
+    # (the '0' centre marks and the end labels of the three rate scales are
+    # feed-driven; _drawADIDyn draws them)
 
 
     # (rate pointers, error needles, roll bug and the digital readout are
@@ -1748,7 +1931,7 @@ export class Screen_AE_PFD extends MDUScreen
     # Rate scale labels correspond to the setting of the ADI rate
     # switch.
     #
-    # Rate label table: [JSC-48017/p.283]
+    # Rate label table: [JSC-48017/6-13]
     #
     # Rate scales are labeled for all axes and are in deg/sec unless
     # indicated by a suffix. For example, “5K” indicates the rate
@@ -1823,6 +2006,7 @@ export class Screen_AE_PFD extends MDUScreen
     g.name = "adiBall"
     # rotor: everything painted on the ball; updateADI() sets its rotation
     @adiBallRot = new THREE.Object3D()
+    @adiBallRot.userData.flattenApart = true   # updateADI turns it
     @adiBallRot.add @_ballFills()
     @adiBallRot.add @_ballMarkMeshes(@_ballMarks())
     g.add @adiBallRot
@@ -2088,8 +2272,17 @@ export class Screen_AE_PFD extends MDUScreen
     if @adiDynS?
       @adi.remove @adiDynS
       @_disposeGroup @adiDynS
+    # The two overlays this method replaces hold the strokes under them
+    # across a part flatten.  They merge here when they are going onto a
+    # standing display; during the part's build the flatten at the end of it
+    # covers them, in the order the whole part was drawn.
     @adiC.add (@adiDynC = @_drawADIDyn(r, p, y, valid))
     @adi.add (@adiDynS = @drawADIDigitals(r, p, y, valid))
+    @adiDynC.userData.flattenApart = true
+    @adiDynS.userData.flattenApart = true
+    if @adi.parent?
+      @d.flatten @adiDynC
+      @d.flatten @adiDynS
     @d.dirty = true
     return
 
@@ -2107,6 +2300,131 @@ export class Screen_AE_PFD extends MDUScreen
 
   # dynamic overlay in ADI circular space: roll bug, attitude error needles,
   # rate pointers (with their scales); a few dozen meshes, rebuilt per update
+  # Rate Scale Labels and the Pitch Error Scale Label
+  #
+  # "Rate scales are labeled for all axes and are in deg/sec unless
+  # indicated by a suffix. For example, '5K' indicates the rate scale now
+  # serves purpose of being a lateral deviation indicator with max scale
+  # deflection of 5000 feet. Only the pitch error scale is labeled and is
+  # assumed to denote degrees of error except when a suffix is indicated;
+  # i.e., 1.2 G." (JSC-48017/6-13 item 8)
+  #
+  # The six rate labels and the pitch error label come from MEDS transfer
+  # message 1 words 16 to 21; the rate labels are integers of the scale's
+  # units (equation set F.4.103.0-2) and the error label carries the 0.25
+  # LSB of word 21.  A scale term of 0 stows that needle, and its scale
+  # goes unlabelled.
+  #
+  # Word 16 bit 1 says the roll scale reads time to go to the turn on the
+  # HAC, and bit 2 which end of it is zero: "The MEDS must know when this
+  # occurs in order to display the scale label correctly and must also know
+  # which side of the scale represents zero" (STS-83-0020V3-34
+  # F.4.128.1.3.1.7).  A rate scale reads full scale at both ends about a 0
+  # centre; the tgo scale reads 0 at one end and full scale at the other.
+  _rateLbl = (v) ->
+    return "" unless v? and v > 0
+    return "#{v}" if v < 1000
+    k = v/1000
+    (if k == Math.round(k) then "#{k}" else k.toFixed(1)) + "K"
+
+  # 1.25 g prints as "1.2 G ... due to space limitations and truncation"
+  # (JSC-48017/6-13)
+  _errLbl = (v) ->
+    return "" unless v? and v > 0
+    if v == Math.round(v) then "#{v}" else (Math.floor(v*10)/10).toFixed(1)
+
+  _adiLocalText: (ax,lx,ly,s,color,scale=1.0,advance=0.62,scalex=1.0) ->
+    @d.strMEDS lx+1-1/ax, ly, s, color, scale, advance/ax, scalex/ax
+
+  ADI_LBL_ADV = 0.62            # per-character step of the scale labels
+
+  # The legends beside the rate scales, which follow the scale words the
+  # transfer carries and not the attitude.
+  _adiScaleLabels: () -> @_kept 'adiScaleLabels', =>
+    d = @data()
+    g = new THREE.Object3D()
+    sc = d.adiRateScale ? {}
+    ltxt = @adiLtxt
+    # left-anchored, and right-anchored so a wider label grows away from
+    # the scale
+    lt = (x, y, t, color = @d.c2h.white) =>
+      g.add ltxt x, y, t, color, 0.85, ADI_LBL_ADV, 1.18 if t
+    rt = (x, y, t, color = @d.c2h.white) =>
+      lt x - (t.length-1)*ADI_LBL_ADV, y, t, color
+    zero = (x, y) => g.add ltxt x, y, "0", @d.c2h.darkGray, 0.85
+
+    # roll, across the top: tgo puts 0 at one end and the scale at the other
+    roll = _rateLbl(sc.roll)
+    if sc.rollTgo
+      if sc.rollZeroOnRight
+        rt -6.42, -9.10, roll
+        zero 6.03, -9.10
+      else
+        rt -6.42, -9.10, "0"
+        lt 6.03, -9.10, roll
+    else
+      rt -6.42, -9.10, roll
+      zero -0.11, -9.88
+      lt 6.03, -9.10, roll
+    # yaw, across the bottom
+    yaw = _rateLbl(sc.yaw)
+    rt -6.51, 8.48, yaw
+    zero -0.11, 9.37
+    lt 6.06, 8.48, yaw
+    # pitch, up the right side
+    pch = _rateLbl(sc.pitch)
+    lt 8.27, -6.83, pch
+    zero 9.55, -0.28
+    lt 8.27, 6.30, pch
+    # Pitch Scale Labels – Reflects the setting of the ADI ERROR switch and
+    # displayed in degrees. During TAEM (MM 305 and 603) and Nz hold (MM
+    # 602), the Pitch Attitude Error scale is in g's, and indicated by a "g"
+    # next to the scale value. (JSC-48017/6-12 item 7.  Nz hold is where
+    # the target Nz word is valid, MM 602 with IPHASE at least 5.)
+    err = _errLbl(d.adiPchErrScale)
+    if err
+      err += "g" if d.majorMode in [305, 603] or (d.majorMode == 602 and d.targetNZ?)
+      # baseline of the upper label flush with the top tick and topline of
+      # the lower flush with the bottom tick (meds glyph ink at scale s
+      # spans y-0.08s .. y+0.74s)
+      sy = ERR_R * Math.sin(deg2rad(25))
+      g.add ltxt 7.05, -sy - 0.74*0.8 - 0.05, err, @d.c2h.magenta, 0.8, 0.7, 1.0
+      g.add ltxt 7.05, sy - 0.08*0.8 + 0.05, err, @d.c2h.magenta, 0.8, 0.7, 1.0
+    g
+
+  # ADI Theta Limit Bracket – A green limit bracket available while
+  # M < 2 if either 1) air data is inhibited to G&C, 2) no ADTA/probes
+  # are available, or 3) an air data dilemma exists (AD DG flag set to
+  # 0). The upper and lower bracket represent the theta high and low
+  # limits, respectively, as determined by guidance. The bracket is
+  # dynamic and varies with bank angle. The limits are the same as the
+  # theta limit indicators available on the VERT SIT display.
+  #
+  #       [JSC-48017/6-10 item 4]
+  #
+  # Message 1 words 14 and 15 carry sin(THETA_MAX - THETA) and
+  # sin(THETA - THETA_MIN), and the GPC sets their validity for exactly the
+  # conditions above.  A point that many degrees off the ball centre
+  # projects to BALL_R times that sine, so the words place the brackets
+  # directly; they ride the ball, so the group turns with roll.  The
+  # bracket's shape — a bar with ends turned toward the centre — is fitted.
+  THETA_HALF = 1.15             # bracket half length, rows
+  THETA_TICK = 0.42             # turned end
+  _adiThetaBracket: (roll) ->
+    d = @data()
+    g = new THREE.Object3D()
+    # an A/E PFD element; the ORB PFD's five items carry no bracket
+    return g unless @screenName == 'AE_PFD'
+    return g unless d.thetaMaxDelta? and d.thetaMinDelta?
+    bar = (yv, sgn) =>
+      return if Math.abs(yv) > WIN_R
+      g.add @d.line [[-THETA_HALF, yv + sgn*THETA_TICK], [-THETA_HALF, yv],
+                     [ THETA_HALF, yv], [ THETA_HALF, yv + sgn*THETA_TICK]], @d.c2h.green
+    bar -BALL_R * d.thetaMaxDelta, 1
+    bar  BALL_R * d.thetaMinDelta, -1
+    g.rotation.z = deg2rad(-roll)
+    g
+
   _drawADIDyn: (r, p, y, valid=true) ->
     d = @data()
     g = new THREE.Object3D()
@@ -2159,26 +2477,30 @@ export class Screen_AE_PFD extends MDUScreen
       nin = @adiNIN ? 2.16
       ninV = @adiNINv ? 2.0     # bottom needle kisses the vertical arm
       ninT = @adiNINtop ? 2.15  # top arm runs longer; roll needle matches
-      xr = defl(d.adiRolErr)                  # top:    + error -> right
-      g.add nd [xr, -Math.sqrt(ERR_R**2 - xr*xr) + EOUT], [xr, -ninT]
-      yp = -defl(d.adiPchErr)                 # right:  + error -> up
-      g.add nd [Math.sqrt(ERR_R**2 - yp*yp) - EOUT, yp], [nin, yp]
-      xy = defl(d.adiYawErr)                  # bottom: + error -> right
-      g.add nd [xy, Math.sqrt(ERR_R**2 - xy*xy) - EOUT], [xy, ninV]
+      # a needle whose error word is invalid (null) stows
+      if d.adiRolErr?
+        xr = defl(d.adiRolErr)                  # top:    + error -> right
+        g.add nd [xr, -Math.sqrt(ERR_R**2 - xr*xr) + EOUT], [xr, -ninT]
+      if d.adiPchErr?
+        yp = -defl(d.adiPchErr)                 # right:  + error -> up
+        g.add nd [Math.sqrt(ERR_R**2 - yp*yp) - EOUT, yp], [nin, yp]
+      if d.adiYawErr?
+        xy = defl(d.adiYawErr)                  # bottom: + error -> right
+        g.add nd [xy, Math.sqrt(ERR_R**2 - xy*xy) - EOUT], [xy, ninV]
+    g.add @_adiScaleLabels()
+    g.add @_adiThetaBracket(r)
     # rate pointers, -5..+5 onto the fixed scales
     # rate scales always draw; the pointers stow when the data is invalid
     rolV = if valid and d.adiRolRate? then d.adiRolRate + 5 else undefined
     yawV = if valid and d.adiYawRate? then d.adiYawRate + 5 else undefined
     pchV = if valid and d.adiPchRate? then 10 - (d.adiPchRate + 5) else undefined
-    # scales built once, kept alive; only the pointer arrows rebuild
-    if not @_adiRateScales?
+    # the scales stand; only the pointer arrows on them move
+    g.add @_kept 'adiRateScales', =>
       s = new THREE.Object3D()
-      s.userData.keepAlive = true
       s.add @drawHorizGauge undefined, "5", "0", "5", -5.81, 5.88, -9.1, .55, .55, 10, false
       s.add @drawHorizGauge undefined, "5", "0", "5", -5.81, 5.88, 9.15, .55, .55, 10
       s.add @drawVertGauge undefined, "5", "0", "5", -5.95, 5.95, 9.13, .41, .41, 10
-      @_adiRateScales = s
-    g.add @_adiRateScales
+      s
     g.add @drawHorizGauge rolV, "5", "0", "5", -5.81, 5.88, -9.1, .55, .55, 10, false, true
     g.add @drawHorizGauge yawV, "5", "0", "5", -5.81, 5.88, 9.15, .55, .55, 10, true, true
     g.add @drawVertGauge pchV, "5", "0", "5", -5.95, 5.95, 9.13, .41, .41, 10, true, true
@@ -2204,7 +2526,500 @@ export class Screen_AE_PFD extends MDUScreen
     return g
 
 
-  drawHSI: (xc,yc) ->
+  # Glide Slope Indicator (GSI) – Distance of the vehicle above or
+  # below the desired glide slope and is indicated by the deflection
+  # of the pointer. The pointer is a fly-to indicator, so an
+  # increase in glide slope deviation above (below) the desired
+  # slope results in deflection of the pointer downward (upward).
+  # The GSI computation is available above 1500 ft in TAEM MM 305
+  # and 603. The pointer is blanked prior to MM 305 or 603, and the
+  # GS flag is displayed below 1500 ft.
+  #
+  # Range:
+  #       TAEM – -5000 to 5000 ft, 1 dot = 2500 ft
+  #       Approach/Land – -1000 to 1000 ft, 1 dot = 500 ft
+  #
+  #       [JSC-48017/6-16 item 19]
+  #
+  GSI_BOX = [45.43, 20.55, 46.95, 31.31]
+  GSI_DOT = 2.275               # one dot of glide slope deviation, rows
+  drawGSI: () ->
+    g = new THREE.Object3D(name="GSI") #"
+    # available in MM 305 and 603; with no major mode the outline stands, as
+    # it does on the prelaunch A/E PFD ("The OPS 9 A/E PFD contains no
+    # active elements, however outlines for all major display elements are
+    # provided", JSC-48017/6-22).  The region is shared with the four
+    # ascent digitals of items 20 to 23.
+    return g unless @data().majorMode in [305, 603] or not @data().majorMode?
+    [x0, y0, x1, y1] = GSI_BOX
+    cy = (y0 + y1)/2
+    g.add @_kept 'gsiFrame', =>
+      fg = new THREE.Object3D()
+      fg.add @d.box x0, y0, x1, y1, @d.c2h.white
+      fg.add @d.line [[x0, cy], [x1, cy]], @d.c2h.darkGray
+      for k in [-2, -1, 1, 2]
+        fg.add @d.filledArc (x0+x1)/2, cy + k*GSI_DOT, 0.29, 0, 360, @d.c2h.white
+      fg
+    # full scale centred above and below the box: 5K in TAEM, 1K in
+    # approach and land (the inset beside item 19)
+    if (lbl = HSI_GSI_LBL[@data().hsiMode])?
+      # meds glyph ink at scale s runs y-0.08s to y+0.74s, so the upper
+      # label's ink bottom and the lower's ink top clear the box
+      cx = (x0+x1)/2 - (lbl.length-1)*0.45 - 0.36
+      g.add @d.strMEDS cx, y0 - 1.00, lbl, @d.c2h.white, 0.9, 0.9
+      g.add @d.strMEDS cx, y1 + 0.30, lbl, @d.c2h.white, 0.9, 0.9
+    if @data().hsiGsiValid
+      v = Math.max(-2.4, Math.min(2.4, @data().hsiGsi ? 0))
+      yv = cy + v*GSI_DOT
+      g.add @_greenArrow [[x1+0.66, yv-0.452], [x1-0.74, yv], [x1+0.66, yv+0.452]], GA_ASP
+    else if @data().majorMode in [305, 603]
+      g.add @_hsiFlag (x0+x1)/2, cy, "GS"
+    return g
+
+  # Altitude Acceleration – Available in PASS MM 304 and 602. A
+  # pointer slides vertically on a scale in fps2. Maximum range of
+  # the scale is ±10 fps2. A green pointer indicates the current
+  # NAV-derived altitude acceleration value.
+  #
+  # Range:
+  #       Altitude Acceleration – -10 to 10 fps2
+  #
+  #       [JSC-48017/6-16 item 18]
+  #
+  HDD_X    = [48.80, 50.30]     # scale face
+  HDD_ZERO = 26.62              # the zero row
+  HDD_S    = 0.507              # rows per fps2
+  HDD_MAX  = 10
+  HDD_PAD  = 0.35               # face run past the end marks
+  HDD_LBL  = 50.86              # left ink edge of the scale legends
+  GAUGE_DIG = 0.856             # meds digits at the 0.70-row cap these fields use
+  drawAttAcc: () ->
+    g = new THREE.Object3D(name="attAcc") #"
+    # available in MM 304 and 602, plus the prelaunch outline
+    return g unless @data().majorMode in [304, 602] or not @data().majorMode?
+    [x0, x1] = HDD_X
+    yTop = HDD_ZERO - HDD_MAX*HDD_S - HDD_PAD
+    yBot = HDD_ZERO + HDD_MAX*HDD_S + HDD_PAD
+    # title: 'H' overstruck with the DEU upper-double-dot glyph (¨, cell
+    # c135) for the second derivative; the deu glyph cell spans x-0.05..x+0.85
+    for hc in ["H", "¨"]
+      g.add @d.str (x0+x1)/2 - 0.4, 20.05, hc, @d.c2h.darkGray, 1, .9
+    # positive above the zero row on the white face, negative on the grey
+    g.add @d.box x0, yTop, x1, HDD_ZERO, null, @d.c2h.white
+    g.add @d.box x0, HDD_ZERO, x1, yBot, null, @d.c2h.darkGray
+    g.add @d.box x0, yTop, x1, yBot, @d.c2h.white
+    for v in [-HDD_MAX..HDD_MAX] by 2
+      y = HDD_ZERO - v*HDD_S
+      long = v == 0 or Math.abs(v) == HDD_MAX
+      g.add @d.line [[x1, y], [x1 + (if long then 0.44 else 0.25), y]], @d.c2h.white
+      continue unless long
+      s = GAUGE_DIG
+      # left-aligned on the digits, the minus sign outdented one advance
+      g.add @d.strMEDS HDD_LBL + 1 - 1.009*s - (if v < 0 then 0.9 else 0),
+                       y - 0.330*s, "#{v}", @d.c2h.white, s, 0.9
+    if @data().vertAccelValid
+      v = Math.max(-HDD_MAX, Math.min(HDD_MAX, @data().vertAccel ? 0))
+      yv = HDD_ZERO - v*HDD_S
+      g.add @_greenArrow [[x0-0.61, yv-0.42], [x0+0.71, yv], [x0-0.61, yv+0.42]], GA_ASP
+    return g
+
+  # Delta Cross Track digital – ∆ X-Trk is X-Trk minus the radius of
+  # the targeted TAL cross-range circle in nautical miles, showing the
+  # lateral distance the vehicle must steer to meet TAL cross-range
+  # targeting. It is only available for TAL abort ...
+  #
+  # Cross Track digital – X-Trk is the lateral off-set distance from
+  # targeted plane in nautical miles ... The value is positive for
+  # positions north of the target insertion plane, and negative for
+  # positions south of the target plane. X-Trk is available for
+  # nominal uphill, TAL, and ATO powered flight (MM 102 and 103).
+  #
+  # Delta Inclination digital – ∆ Inc is the difference between the
+  # current & targeted inclination, in degrees ...
+  #
+  # Target Inclination digital – Tgt Inc indicates the value of the
+  # targeted inclination in degrees. It is only available for ATO
+  # (MM 103) ...
+  #
+  #       [JSC-48017/6-17 items 20 to 23]
+  #
+  # Each row draws while its word is valid, which carries the availability
+  # above.  Resolutions are the transfer's: cross track a tenth of a mile,
+  # cross track deviation whole miles (F.4.128.1.3.1.16, LSB = 1 NM, where
+  # the p.6-17 inset draws a tenth), delta inclination a hundredth of a
+  # degree, target inclination a tenth.  They share the lower right region
+  # with the GSI and the altitude acceleration face; the major modes do not
+  # overlap.
+  XTRK_LBL = 42.60              # left edge of the labels
+  XTRK_VAL = 50.40              # right edge of the values
+  XTRK_LADV = 0.62
+  XTRK_VADV = 0.80
+  XTRK_ROWS = [24.5, 26.0, 27.5, 29.0]
+  drawXtrk: () ->
+    d = @data()
+    g = new THREE.Object3D(name="xtrk") #"
+    fmt = (v, dp) -> (if v < 0 then "-" else "") + Math.abs(v).toFixed(dp)
+    rows = [
+      ["\u2206 X-Trk", (if d.xtrkDev? then fmt(d.xtrkDev, 0) else null)]
+      ["X-Trk",        (if d.xtrk? then fmt(d.xtrk, 1) else null)]
+      ["\u2206 Inc",    (if d.dIncl? then fmt(d.dIncl, 2) else null)]
+      ["Tgt Inc",      (if d.tgtIncl? then fmt(d.tgtIncl, 1) else null)]]
+    for [lbl, v], i in rows
+      continue unless v?
+      y = XTRK_ROWS[i]
+      g.add @d.strMEDS XTRK_LBL, y, lbl, @d.c2h.darkGray, 0.72, XTRK_LADV
+      g.add @d.strMEDS XTRK_VAL - (v.length-1)*XTRK_VADV - 0.66, y, v, @d.c2h.white, 0.78, XTRK_VADV
+    return g
+
+  # ΔAZ or HAC Turn Angle - As ΔAZ this field displays the angle
+  # between the vehicle flight path and the HAC tangent in degrees.
+  # The outline box will flash red when roll reversal limits are met
+  # or exceeded (10.5° or 17°). During TAEM post-HAC intercept, the
+  # field changes to HAC Turn Angle (HTA).
+  #
+  # Ranges:
+  #       ΔAZ - 0 - 180 degrees
+  #       HTA - 0 -360 degrees
+  #
+  #       [JSC-48017/6-15 item 17]
+  #
+  # "Delta Azimuth - White label, yellow digits" and the label reads AZ
+  # (STS-83-0020V1-34 fig.3.12.2-2 item 23); the box is figure 6-8's.  The
+  # value is message 1 word 23, one degree a count, with the warning flag
+  # beside it; the box is drawn red for the warning where the display
+  # flashes it.  The GPC marks the word valid in MM 305 and 603 only while
+  # IPHASE is below 2, so the HTA relabel has no data to carry.
+  DAZ_BOX = [33.80, 22.30, 38.00, 23.53]
+  DAZ_LBL = 33.50               # right edge of the label
+  drawDAz: () ->
+    g = new THREE.Object3D(name="dAz") #"
+    return g unless @data().dAz?
+    [x0, y0, x1, y1] = DAZ_BOX
+    s = GAUGE_DIG
+    g.add @d.strMEDS DAZ_LBL - 2*0.9, (y0+y1)/2 - 0.330*s, "AZ", @d.c2h.white, s, 0.9
+    g.add @d.box x0, y0, x1, y1, (if @data().dAzWarn then @d.c2h.red else @d.c2h.darkGray)
+    txt = "#{Math.round(@data().dAz)}°"
+    g.add @d.strMEDS x1 - 0.726*s - (txt.length-1)*0.9, (y0+y1)/2 - 0.330*s, txt, @d.c2h.yellow, s, 0.9
+    return g
+
+  # Range to Landing Site - The range to the SPEC 50 primary runway
+  # is displayed in nautical miles. The range label (above the range
+  # value) reflects the SPEC 50 primary runway. Range to the landing
+  # site is displayed in powered flight at TAL MM 103, RTLS MM 601,
+  # and after ECAL/BDA abort selection. In glided flight, the range
+  # to the runway is displayed at MM 304 and 602, and both range to
+  # the runway and HAC center are displayed at MM 305 and 603.
+  #
+  # Range:
+  #       0 - 999.9 nautical miles
+  #
+  #       [JSC-48017/6-15 items 15 and 16]
+  #
+  # "Primary Range - White digits in a white rectangle (invalid indicator -
+  # solid red rectangle)" (STS-83-0020V1-34 fig.3.12.2-2).
+  RNG_X = [38.45, 42.09]
+  drawRange: () ->
+    g = new THREE.Object3D(name="range") #"
+    [x0, x1] = RNG_X
+    # the primary label is the selected landing site (message 1 words 25 to
+    # 27), the secondary HAC-C in the TAEM mode: "In the TAEM mode, a range
+    # box for HAC center (HAC-C) will also appear, showing the straight-line
+    # range from the vehcile to the center of the HAC in nautical miles"
+    # (USA-007587 sect.2.7)
+    secLbl = if @data().hsiMode == HSI_MODE_TAEM then "HAC-C" else "SEC"
+    for [lbl, ly, y0, y1, v, ok] in [
+        [(@data().siteId ? "PRI"), 26.469, 27.22, 28.45, @data().hsiPriRange, @data().hsiPriRangeValid]
+        [secLbl, 29.269, 30.06, 31.30, @data().hsiSecRange, @data().hsiSecRangeValid]]
+      g.add @d.strMEDS 39.30, ly, lbl, @d.c2h.darkGray, 0.868, .95
+      if ok
+        g.add @d.box x0, y0, x1, y1, @d.c2h.darkGray
+        s = GAUGE_DIG ; txt = "#{Math.round(v ? 0)}"
+        g.add @d.strMEDS 41.66 + 1 - 1.726*s - (txt.length-1)*0.9,
+                         (y0+y1)/2 - 0.330*s, txt, @d.c2h.white, s, 0.9
+      else
+        g.add @d.box x0, y0, x1, y1, @d.c2h.red, @d.c2h.red
+    return g
+
+  # HSI geometry, in rows about the compass-card centre; x is stretched by
+  # HSI_ASP (@d.arc's row->col ratio) so a radius means the same in both
+  # axes.  Radii and type sizes are measured off the reference photo.
+  HSI_ASP   = 1.47222
+  HSI_C     = [24.85, 31.12]    # compass-card centre
+  HSI_CASE  = 7.56              # case circle
+  HSI_CARD  = 6.97              # compass card outer edge
+  HSI_FACE  = 4.56              # compass card inner edge
+  HSI_MARK  = 7.98              # outer end of the lubber lines and fixed indices
+  HSI_LBL   = 5.28              # compass label ring
+  HSI_TICK  = [0.80, 0.50]      # 10-degree and 5-degree mark lengths
+  HSI_LTR   = 1.03              # cardinal cap height, rows
+  HSI_DIG   = 0.70              # ten-degree label cap height
+  HSI_GLYPH = 0.818             # meds glyph cap height at scale 1
+  # The instrument face — orbiter symbol, course pointer, deviation bar and
+  # its dots — is centred 0.29 rows above the compass card.
+  HSI_FC    = [24.78, 30.83]
+  HSI_DOT   = 1.52              # one dot of course deviation, rows
+  HSI_DEV   = [2.98, 0.195]     # deviation bar half length and half width
+  # Bearing pointer: the head is a kite astride the card's outer edge, the
+  # tail a pentagon inside the card.  Each entry is [halfWidth, radius].
+  HSI_BHEAD = [[0, 6.37], [0.53, 7.15], [0, 7.59]]
+  HSI_BTAIL = [[0, 5.18], [0.355, 5.32], [0.355, 6.22], [0.18, 6.34]]
+  HSI_BLTR  = [7.05, 5.78]      # radius of the head's letter and the tail's
+  # Course pointer: an arrow with swept barbs, tip outward, and opposite it
+  # the tail — the same shaft with a blunt end (fig.3.12.2-2 items 19, 9).
+  HSI_ARROW = [[0, 5.65], [0.24, 5.10], [0.31, 4.30], [0.87, 3.90], [0.87, 3.66],
+               [0.31, 3.53], [0.22, 3.36]]
+  HSI_CTAIL = [[0.16, 5.65], [0.24, 5.45], [0.24, 3.53], [0.22, 3.36]]
+  # Orbiter symbol, [halfWidth, rows below the face centre].
+  HSI_ORB   = [[0, -1.36], [0.10, -0.90], [0.17, -0.50], [0.24, -0.10],
+               [0.53, 0.24], [0.20, 0.56], [0, 0.72]]
+
+  # The instrument runs under the menu area; everything on it is clipped to
+  # the display above it.
+  HSI_CLIP  = new THREE.Vector4(-1, 53, -2, 32.374)
+  # Stacking on the face and the card.  An SDF stroke's geometry carries
+  # z = 100, in front of every fill, so the fills join the same transparent
+  # pass and the order is renderOrder throughout: dots under the deviation
+  # bar, both under the course pointer and the bearing tags, the tags'
+  # letters over their fill, the orbiter symbol over all of it.
+  HSI_ORD   = {dot: 2, bar: 3, ptr: 4, ltr: 5, orb: 6}
+
+  # r rows out along screen angle `a` (degrees, 0 = +x, y down) and v rows
+  # across it, about centre c
+  _hsiRV: (c, r, v, a) ->
+    t = deg2rad(a) ; cs = Math.cos(t) ; sn = Math.sin(t)
+    [c[0] + (r*cs - v*sn)*HSI_ASP, c[1] + r*sn + v*cs]
+
+  # a [halfWidth, radius] outline mirrored about the pointer axis and
+  # filled as a strip, so the swept shapes fill correctly; `sgn` -1 turns it
+  # through the centre for a pointer's tail
+  _hsiShape: (c, shape, a, sgn, color) ->
+    aa = if sgn < 0 then a + 180 else a
+    verts = [] ; idx = []
+    for [v, r], i in shape
+      p = @_hsiRV(c, r, v, aa) ; q = @_hsiRV(c, r, -v, aa)
+      verts.push p[0], p[1], 0, q[0], q[1], 0
+      idx.push 2*i-2, 2*i-1, 2*i, 2*i-1, 2*i+1, 2*i if i > 0
+    geom = new THREE.BufferGeometry()
+    geom.setAttribute 'position', new THREE.Float32BufferAttribute(verts, 3)
+    geom.setIndex idx
+    mat = new THREE.MeshBasicMaterial({color: color, side: THREE.DoubleSide})
+    mat.clippingPlanes = @d.clipPlanes(HSI_CLIP)
+    mat.transparent = true          # joins the pass the strokes are in
+    new THREE.Mesh(geom, mat)
+
+  # one card string, glyphs centred on radius r at screen angle a and turned
+  # so the type reads outward; `up` -1 turns it to read inward
+  _hsiText: (c, str, r, a, h, color, up = 1) ->
+    g = new THREE.Object3D()
+    rot = deg2rad(a + 90*up)
+    AR = 18.789/13.783                  # pxRow/pxCol, glyphStrokes' rotation aspect
+    adv = 0.654*h                       # glyph pitch along the card, rows
+    [cx, cy] = @_hsiRV(c, r, 0, a)
+    for ch, i in str
+      t = up * (i - (str.length-1)/2)*adv
+      g.add @d.str cx + t*Math.cos(rot)*AR, cy + t*Math.sin(rot), ch, color,
+                   h/HSI_GLYPH, 1.0, 1.0, @d.medsFont, rot, true, HSI_CLIP
+    g
+
+  # black legend on a solid red rectangle (STS-83-0020V1-34 fig.3.12.2-2:
+  # "Bearing Flag - Black 'BRG' on a solid red rectangle")
+  _hsiFlag: (cx, cy, txt) ->
+    g = new THREE.Object3D()
+    adv = 0.95
+    w = adv*txt.length + 0.3
+    fill = @d.box cx-w/2, cy-0.62, cx+w/2, cy+0.62, null, @d.c2h.red, HSI_CLIP
+    fill.traverse (o) ->
+      if o.material?
+        o.material.transparent = true
+        o.renderOrder = HSI_ORD.ptr
+    g.add fill
+    lbl = @d.str cx-(txt.length-1)*adv/2, cy, txt, @d.c2h.black, 0.9, adv, 1.0,
+                 @d.medsFont, 0, true, HSI_CLIP
+    lbl.traverse (o) -> o.renderOrder = HSI_ORD.ltr
+    g.add lbl
+    g
+
+  # case: outer circle, the fixed lubber line at the top, its reciprocal at
+  # the bottom, and the six fixed indices between them
+  # The case ring and its fixed indices, all of it outside the compass card.
+  _hsiCase: () -> @_kept 'hsiCase', =>
+    g = new THREE.Object3D()
+    g.add @_hsiArc HSI_CASE, @d.c2h.darkGray
+    for a in [-90, 90]
+      g.add @d.line [@_hsiRV(HSI_C, HSI_CARD, 0, a), @_hsiRV(HSI_C, HSI_MARK, 0, a)],
+                    @d.c2h.lightGray, 1.0, HSI_CLIP
+    for a in [0, 45, 135, 180, 225, 315]
+      g.add @d.line [@_hsiRV(HSI_C, HSI_CASE, 0, a), @_hsiRV(HSI_C, HSI_MARK, 0, a)],
+                    @d.c2h.lightGray, 1.0, HSI_CLIP
+    g
+
+  # a full circle about the card centre, clipped like the rest
+  _hsiArc: (r, color) ->
+    pts = (@_hsiRV(HSI_C, r, 0, a) for a in [0..360])
+    @d.line pts, color, 1.0, HSI_CLIP
+
+  # The 72 marks of the card, every five degrees, the ten-degree ones long.
+  # The ring is built at heading 0 and turned: mark k sits at 5k - hdg on a
+  # card, so the turn is -hdg, and reverse drawing puts mark k where mark -k
+  # is, the same length either way (72 marks, alternating).
+  #
+  # A turn of the card is a rotation in its circular frame, which the
+  # display's anisotropic x makes a shear on screen: about the card centre
+  # C, with S = diag(HSI_ASP, 1), the map is S R(phi) S^-1.
+  _hsiMarks: (hdg, rev) ->
+    g = @_kept 'hsiMarks', =>
+      ring = new THREE.Object3D()
+      ring.matrixAutoUpdate = false
+      for k in [0...72]
+        a = 5*k - 90
+        len = HSI_TICK[k % 2]
+        ring.add @d.line [@_hsiRV(HSI_C, HSI_CARD, 0, a), @_hsiRV(HSI_C, HSI_CARD-len, 0, a)],
+                         @d.c2h.white, 1.0, HSI_CLIP
+      ring
+    phi = deg2rad(if rev then hdg else -hdg)
+    cs = Math.cos(phi) ; sn = Math.sin(phi)
+    [a11, a12] = [cs, -HSI_ASP*sn]
+    [a21, a22] = [sn/HSI_ASP, cs]
+    [cx, cy] = HSI_C
+    g.matrix.set(a11, a12, 0, cx - (a11*cx + a12*cy),
+                 a21, a22, 0, cy - (a21*cx + a22*cy),
+                 0,   0,   1, 0,
+                 0,   0,   0, 1)
+    g.matrixWorldNeedsUpdate = true
+    g
+
+  # The card's annulus and the two edges of it, which the heading does not
+  # move.
+  _hsiFace: () -> @_kept 'hsiFace', =>
+    g = new THREE.Object3D()
+    fill = new THREE.Mesh(new THREE.RingGeometry(HSI_FACE, HSI_CARD, 120),
+             new THREE.MeshBasicMaterial({side: THREE.DoubleSide, color: @d.c2h.darkGray}))
+    fill.scale.x = HSI_ASP
+    fill.position.set(HSI_C[0], HSI_C[1], 0)
+    fill.material.clippingPlanes = @d.clipPlanes(HSI_CLIP)
+    g.add fill
+    g.add @_hsiArc HSI_CARD, @d.c2h.white
+    g.add @_hsiArc HSI_FACE, @d.c2h.white
+    g
+
+  # compass card at `hdg`: the annulus, marks every 5 degrees (every 10 run
+  # long) and a label every 30
+  _hsiCard: (hdg, rev = false) ->
+    g = new THREE.Object3D()
+    g.add @_hsiFace()
+    # reverse drawing mirrors each card value about the lubber line, so a
+    # value still reads under it when the vehicle is inverted
+    sgn = if rev then -1 else 1
+    g.add @_hsiMarks(hdg, rev)
+    cards = if @data().majorMode in [102, 103] then ['0','9','18','27'] else ['N','E','S','W']
+    for k in [0...12]
+      txt = if k % 3 == 0 then cards[k/3] else "#{3*k}"
+      h = if k % 3 == 0 then HSI_LTR else HSI_DIG
+      g.add @_hsiText HSI_C, txt, HSI_LBL, sgn*(30*k - hdg) - 90, h, @d.c2h.white
+    g
+
+  # HSI mode indicator (message 1 word 13, MEDS_HSI_MODE_LEFT/RIGHT) and what
+  # each mode makes of the instrument, from the HSI Function Matrix
+  # (USA-007587 sect.2.7) and JSC-48017/6-14 item 13:
+  #
+  #   Entry     [H] spherical bearing to the NEP HAC intercept; the CDI is
+  #             pegged at zero and its scale unlabelled; the GSI is blanked
+  #   TAEM      [H] the same, [C] bearing to the HAC centre and the HAC-C
+  #             range box; CDI full scale 10 deg, GSI 5000 ft
+  #   Approach  [R] bearing to the runway touchdown point; CDI 2.5 deg,
+  #             GSI 1000 ft
+  #
+  # The secondary pointer's letter outside TAEM is fitted: the JSC-48017
+  # availability matrix carries the runway pointer on the secondary bearing
+  # through MM 304, 305, 601, 602 and 603, and the function matrix names one
+  # pointer for Entry and for Approach.
+  HSI_MODE_ENTRY = 1
+  HSI_MODE_TAEM = 2
+  HSI_MODE_APPROACH = 3
+  HSI_MODE_LTR =
+    1: {pri: "H", sec: "R"}
+    2: {pri: "H", sec: "C"}
+    3: {pri: "R", sec: "R"}
+  # CDI full scale in degrees for TAEM and Approach (item 14, "the scale and
+  # digital set to 10 (deg) ... at HSI approach and land, the scale and
+  # digital changes to 2.5 (deg)"); the GSI's in feet (item 19).
+  HSI_CDI_DEG = {2: "10", 3: "2.5"}
+  HSI_GSI_LBL = {2: "5K", 3: "1K"}
+
+  # The letters the two bearing pointers carry.  In powered flight the HSI
+  # mode word is not yet valid (it turns on at the first area navigation
+  # pass): the primary is the runway pointer and the secondary the inertial
+  # velocity pointer, and the primary becomes the HAC pointer after the RTLS
+  # powered pitch-around.  With neither a mode nor a major mode the letters
+  # are the P and S of figure 3.12.2-2's legend.
+  _hsiLetters: () ->
+    d = @data()
+    return HSI_MODE_LTR[d.hsiMode] if HSI_MODE_LTR[d.hsiMode]?
+    if d.majorMode in [101, 102, 103, 104]
+      {pri: "R", sec: "I"}
+    else if d.majorMode == 601
+      {pri: (if d.ppa then "H" else "R"), sec: "I"}
+    else
+      {pri: "P", sec: "S"}
+
+  # course pointer, its tail, the four deviation dots across them and the
+  # deviation bar, all on the face centre
+  _hsiCourse: (crs, cdi, cdiValid) ->
+    g = new THREE.Object3D()
+    ca = crs - 90
+    for [shape, sg] in [[HSI_ARROW, 1], [HSI_CTAIL, -1]]
+      arw = @_hsiShape(HSI_FC, shape, ca, sg, @d.c2h.magenta)
+      arw.renderOrder = HSI_ORD.ptr
+      g.add arw
+    for k in [-2, -1, 1, 2]
+      [dx, dy] = @_hsiRV(HSI_FC, 0, k*HSI_DOT, ca)
+      dot = @d.filledArc dx, dy, 0.30, 0, 360, @d.c2h.white
+      dot.material.clippingPlanes = @d.clipPlanes(HSI_CLIP)
+      dot.material.transparent = true
+      dot.renderOrder = HSI_ORD.dot
+      g.add dot
+    lbl = @_hsiCdiScale(ca)
+    if lbl?
+      lbl.traverse (o) -> o.renderOrder = HSI_ORD.ltr
+      g.add lbl
+    if cdiValid
+      v = Math.max(-3, Math.min(3, cdi)) * HSI_DOT
+      [hl, hw] = HSI_DEV
+      bar = @_hsiShape(HSI_FC, [[hw, -hl], [hw, hl]], ca, 1, @d.c2h.magenta)
+      bar.position.set(-Math.sin(deg2rad(ca))*v*HSI_ASP, Math.cos(deg2rad(ca))*v, 0)
+      bar.renderOrder = HSI_ORD.bar
+      g.add bar
+    g
+
+  # Course Deviation Indicator (CDI) - Shows the lateral off-set from the
+  # targeted plane or course in nautical miles. It is auto re-scaled at
+  # 50, 10, & 1 nm and labeled accordingly, with one mile scaling only
+  # occurring after 6+30 MET. ... During entry (MM 304 and 602), the CDI
+  # dots are displayed but without scaling (indicated by the absence of
+  # labels). During TAEM (MM 305 and 603), the CDI represents the angular
+  # displacement from the runway centerline, and the scale and digital set
+  # to 10 (deg). At HSI approach and land, the scale and digital changes
+  # to 2.5 (deg).
+  #
+  #       [JSC-48017/6-15 item 14]
+  #
+  # Powered flight takes the label from message 1 word 22, which the GPC
+  # marks valid in MM 101 to 104; glided flight from the HSI mode.  It sits
+  # beyond the outer dot on the fly-left side of the dot row (figure 6-8).
+  HSI_CDI_LBL = 3.5              # rows along the dot row from the face centre
+  HSI_CDI_ADV = 0.72
+  _hsiCdiScale: (ca) ->
+    d = @data()
+    txt = if d.majorMode in [101, 102, 103, 104]
+      if d.cdiScale? then "#{d.cdiScale}" else null
+    else
+      HSI_CDI_DEG[d.hsiMode]
+    return null unless txt
+    [cx, cy] = @_hsiRV(HSI_FC, 0, -HSI_CDI_LBL, ca)
+    @d.strMEDS cx - (txt.length-1)*HSI_CDI_ADV/2 - 0.36, cy + 0.33, txt,
+               @d.c2h.white, 0.85, HSI_CDI_ADV, 1.0, HSI_CLIP
+
+  drawHSI: () ->
     # Horizontal Situation Indicator (HSI)
     #
     # The compass card replaces N, E, S, and W with 0, 9, 18, and 27
@@ -2229,24 +3044,24 @@ export class Screen_AE_PFD extends MDUScreen
     # target insertion plane course. If variable IY steering is not
     # active, the course arrow remains pegged at 0.
     #
-    # The VREL Bearing Pointer, labeled “E”, indicates the direction
+    # The VREL Bearing Pointer, labeled "E", indicates the direction
     # of the Earth-relative velocity vector relative to the vehicle
     # nose (lubber line) & course (compass card/course arrow). It
     # works in concert with the beta digital readout, and both the
-    # “E” bearing pointer and the beta digital blank on ascent at
+    # "E" bearing pointer and the beta digital blank on ascent at
     # altitude > 200K or MET > 2:30.
     #
     # In MM 102-104 and 601, the Inertial Bearing Pointer, labeled
-    # “I”, indicates the direction of the inertial velocity vector
+    # "I", indicates the direction of the inertial velocity vector
     # relative to nose & course. It is not displayed in glided or
     # orbital flight.
     #
-    # The Runway/HAC Bearing Pointer (labeled “*” in the figure)
-    # indicates “R” for bearing to runway in powered flight and “H”
+    # The Runway/HAC Bearing Pointer (labeled "*" in the figure)
+    # indicates "R" for bearing to runway in powered flight and "H"
     # for bearing to HAC in gliding flight. It appears at RTLS/TAL
     # abort select & entry (MM 304/305 and 602/603).
     #
-    # The HAC Center Bearing Pointer, labeled “C”, indicates bearing
+    # The HAC Center Bearing Pointer, labeled "C", indicates bearing
     # to the HAC center during TAEM (MM 305 and 603).
     #
     # The bearing flag (BRG) is displayed when valid TACAN, GPS, or
@@ -2255,47 +3070,69 @@ export class Screen_AE_PFD extends MDUScreen
     #
     # Ranges:
     #           Compass Card - 0- 360 degrees
+    #
+    #       [JSC-48017/6-14 item 13]
+    #
+    # The course and bearing words carry the vehicle heading already
+    # subtracted, so they are angles on the case: "the software must
+    # subtract (modulo 360) the vehicle's heading from the course. It is
+    # this difference that is represented by the digital input to the HSI
+    # from the DDU" (STS-83-0020V1-34 sect.3.12.2 (3)).
+    d = @data()
+    hsi = new THREE.Object3D(name="HSI") #"
+    # word 9 bit 10 is the HSI heads-down flag (table F.4.128.1-2)
+    rev = d.rollSw and d.majorMode in [101, 102, 103, 104, 601]
+    hsi.add @_hsiCard((if d.hsiHeadingValid then d.hsiHeading ? 0 else 0), rev)
+    hsi.add @_hsiCase()
 
-    hsiGroup = new THREE.Object3D(name="HSI") #"
-    ringGroup = new THREE.Object3D(name="HSI_ring") #"
+    if d.hsiCourseValid
+      hsi.add @_hsiCourse(d.hsiCourse ? 0, d.hsiCdi ? 0, d.hsiCdiValid)
+    unless d.hsiCdiValid
+      hsi.add @_hsiFlag HSI_FC[0], HSI_C[1] - 3.78, "CDI"
 
-    # group = new THREE.Object3D(name="HSI") #" 
-    c = [25,30.75]
+    # primary and secondary bearing pointers, each a head on the card's
+    # outer edge and a tail opposite it, both carrying the letter
+    # The primary and secondary bearings come from the DDU words; the
+    # relative velocity pointer is message 1 word 24, which the GPC drives
+    # in MM 102, 103 and 601 and stops at 200K feet or MET 2:30
+    # (F.4.104, MEDS_BETAHVR_VALID).  Its shape here is the bearing
+    # pointer's and its colour is fitted: figure 6-8 draws it as a larger
+    # solid triangle and no legend gives the colour.
+    ltrs = @_hsiLetters()
+    for [brg, ok, clr, ltr] in [[d.hsiPriBearing, d.hsiPriBearingValid, @d.c2h.green, ltrs.pri]
+                                [d.hsiSecBearing, d.hsiSecBearingValid, @d.c2h.white, ltrs.sec]
+                                [d.hVr, d.hVr?, @d.c2h.lightGray, "E"]]
+      continue unless ok
+      ba = (brg ? 0) - 90
+      g = new THREE.Object3D()
+      for [shape, sg] in [[HSI_BHEAD, 1], [HSI_BTAIL, -1]]
+        tag = @_hsiShape(HSI_C, shape, ba, sg, clr)
+        tag.renderOrder = HSI_ORD.ptr
+        g.add tag
+      for [lr, la, lu] in [[HSI_BLTR[0], ba, 1], [HSI_BLTR[1], ba + 180, -1]]
+        t = @_hsiText HSI_C, ltr, lr, la, 0.62, @d.c2h.black, lu
+        t.traverse (o) -> o.renderOrder = HSI_ORD.ltr
+        g.add t
+      hsi.add g
+    # heading or either bearing (STS-83-0020V1-34 sect.3.12.2 (8)).  The
+    # figure puts the flag off the case, under the menu area; this place on
+    # the face is fitted.  The flag belongs to the modes that drive the
+    # bearings — glided flight, RTLS, and a TAL abort.  The secondary is out
+    # of the test: MM 601 leaves that word alone (F.4.104, the control
+    # word).
+    brgMode = d.majorMode in [304, 305, 601, 602, 603] or not d.majorMode? or
+              (d.majorMode in [103, 104] and d.abortMode == 'TAL')
+    if brgMode and not (d.hsiHeadingValid and d.hsiPriBearingValid)
+      hsi.add @_hsiFlag HSI_C[0] - 3.2*HSI_ASP, HSI_FC[1], "BRG"
 
-    ringGroup.add @d.arc c[0], c[1], 7.3,0,360
-    # ringGroup.add @d.filledArc c[0], c[1], 6.25,170,370,0x333333
-    # ringGroup.add @d.filledArc c[0], c[1], 4.00,160,380,0x000000
-    ringGroup.add @d.arc c[0], c[1], 6.6,0,360, @d.c2h.white
-    ringGroup.add @d.arc c[0], c[1], 4.4,0,360, @d.c2h.white
-    ringGroup.add @d.arcTicks c[0], c[1], 6.6,0,360,5,-.4,@d.c2h.white # 170,360
-    ringGroup.add @d.arcTicks c[0], c[1], 6.6,0,360,10,-.6,@d.c2h.white
-    ringGroup.position.z = -2
-    hsiGroup.add ringGroup
+    # fixed orbiter symbol, over everything else on the face
+    orb = @_hsiShape(HSI_FC, HSI_ORB, 90, 1, @d.c2h.lightGray)
+    orb.renderOrder = HSI_ORD.orb
+    hsi.add orb
 
-    ring = new THREE.RingGeometry(4.4, 6.6, 100)
-    ringMat = new THREE.MeshBasicMaterial {side:THREE.DoubleSide, wireframe:false, color:@d.c2h.darkGray}
-    mRing = new THREE.Mesh(ring, ringMat)
-    mRing.scale.x = 1.47222
-    mRing.position.x = c[0]
-    mRing.position.y = c[1]
-    mRing.position.z = 0
-    hsiGroup.add mRing
+    hsi.position.z = -.001
 
-    # Menu area mask
-    menuMask = new THREE.PlaneGeometry(52, 5)
-    matMenuMask = new THREE.MeshBasicMaterial {side:THREE.DoubleSide, wireframe:false, color:@d.c2h.black}
-    mMenuMask = new THREE.Mesh(menuMask, matMenuMask)
-    mMenuMask.position.x = 25.5
-    mMenuMask.position.y = 34.5
-    # must sit strictly between the HSI lines (~97.999) and the menu content
-    # (~100): SDF lines are transparent (drawn after opaque), so only the
-    # depth test — not opaque draw order — can mask them
-    mMenuMask.position.z = 99
-    hsiGroup.add mMenuMask
-    hsiGroup.position.z = -.001
-    hsiGroup.position.y = 0.374   # shift HSI down ~10px
-
-    return hsiGroup
+    return hsi
 
   # digital attitude readout, R/P/Y order (FDF convention, not the PYR Euler
   # sequence); takes the gimbal-protect-processed values from updateADI()
@@ -2312,16 +3149,6 @@ export class Screen_AE_PFD extends MDUScreen
       group.add @d.strMEDS 37.80,3.7, zpad(wrap(y)), @d.c2h.white, 0.85, .71
     return group
 
-  drawAttAcc: (x0,y0) ->
-
-  drawGSI: (x0,y0) ->
-    @d.add @d.box 45, 20.874, 46.75, 31.374, @d.c2h.darkGray
-
-  drawRange: () ->
-    @d.add @d.strMEDS 39, 26.634, "PRI", @d.c2h.darkGray, scale=1.0, advance=.95
-    @d.add @d.box 38.5, 27.674, 41.75, 28.674, @d.c2h.darkGray
-    @d.add @d.strMEDS 39, 29.374, "SEC", @d.c2h.darkGray, scale=1.0, advance=.95
-    @d.add @d.box 38.5, 30.374, 41.75, 31.424, @d.c2h.darkGray
 
   drawHorizGauge: (value,rangeMin,rangeMid,rangeMax,tickLeft,tickRight,tickBot,sLen,lLen, count,top=true,pointerOnly=false) ->
     gauge = new THREE.Object3D()

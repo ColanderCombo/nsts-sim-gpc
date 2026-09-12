@@ -1,8 +1,8 @@
 
 import {Bus, BusMsg, busConfig} from './../com/bus.civet.jsx'
 import {KYBDMsg, KYBD_MSG_MASK} from 'meds/medsConf'
-import * as DEU from 'meds/deuProto'
-import {IDPSel} from 'meds/idpSel'
+import * as DEU from 'meds/deu/deuProto'
+import {IDPSel} from 'meds/idp/idpSel'
 
 $ = require('jquery')
 
@@ -140,8 +140,9 @@ export class KYBD
     @DPSKeys[ev.keyCode] ? null
 
   # A window's keystrokes go to the IDP commanding its MDU, over the
-  # keyboard the IDP/CRT SEL switches have on that IDP (meds/idpSel).
-  constructor: (@mdu=null, @sel=null) ->
+  # keyboard the IDP/CRT SEL switches have on that IDP (meds/idp/idpSel);
+  # `panel` is the switches, meds/idp/idpDiscretes IDPPanel.
+  constructor: (@mdu=null, @panel=null) ->
     @majorFunc = DEU.MAJOR_FUNC_NAME[DEU.MAJOR_FUNC_DEFAULT]
     @_setupBus()
     $(document).keydown (ev) =>
@@ -185,7 +186,7 @@ export class KYBD
       sw = KYBD.selKeyFor(ev)
       if sw?
         ev.preventDefault()
-        if sw == 'left' then @sel?.toggleLeft() else @sel?.toggleRight()
+        if sw == 'left' then @panel?.toggleLeft() else @panel?.toggleRight()
         return
       k = KYBD.deuKeyFor(ev)
       @keyPress(k) if k?
@@ -201,10 +202,12 @@ export class KYBD
 
   idp: () -> @mdu?.commandingIDP() ? 1
 
-  selState: () -> @sel?.state() ? {left: 1, right: 2}
+  selState: () -> @panel?.positions() ? IDPSel.DEFAULT
 
   # The keyboard switched to the IDP, or null.
-  kybdFor: (idp) -> IDPSel.keyboardFor(idp, @selState())
+  kybdFor: (idp) ->
+    if @panel? then IDPSel.keyboardForLines(idp, @panel.lines(idp)) \
+    else IDPSel.keyboardFor(idp, IDPSel.DEFAULT)
 
   # Send the position on a keyboard bus wired to the IDP, every press, and
   # retitle the MDU.  The MAJ FUNC switch is the IDP's, beside the select

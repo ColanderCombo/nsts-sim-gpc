@@ -1,4 +1,4 @@
-// test_meds_deu.cjs — the DEU / IDP display-keyboard bus protocol.
+// deu.cjs — the DEU / IDP display-keyboard bus protocol.
 //
 // Command encode and decode, the memory-fill message, the poll response and
 // its checksum, and a round trip over a real bus in the framing a GPC's bus
@@ -6,7 +6,7 @@
 // one).
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_deu.cjs
+//   cd ext/sim && node test/meds/deu.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -17,7 +17,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -45,7 +45,7 @@ async function bundle(rel) {
         `deu.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SIM,
-        entryPoints: [path.join(SIM, rel)],
+        entryPoints: [path.join(SIM, 'src', rel)],
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [civetPlugin, coffeePlugin({})],
@@ -66,7 +66,7 @@ function sum16(p) { let s = 0; for (const w of p) s = (s + w) & 0xffff; return s
 const settle = (ms = 120) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-    const DEU = await bundle('meds/deuProto.coffee');
+    const DEU = await bundle('meds/deu/deuProto.coffee');
     const B = await bundle('com/bus.civet');
 
     // the command word
@@ -227,7 +227,7 @@ async function main() {
     // and thrown away.  Typed at human speed, "ITEM 18 EXEC" went out as
     // ITEM / 1 / 8 EXEC over three polls and the monitor ignored all three;
     // only an entry fast enough to land inside one 40 ms poll ever worked.
-    const U = await bundle('meds/deuUnit.coffee');
+    const U = await bundle('meds/deu/deuUnit.coffee');
     const mkUnit = () => new U.DEUUnit({name: 'T', send: () => {}, fill: () => {},
                                         reset: () => {}, log: () => {}});
     const u = mkUnit();
@@ -318,19 +318,77 @@ async function main() {
        '...the entry is not lost, it rides the next poll');
     eq(after[1] & DEU.KEY_COUNT_MASK, 4, '...all four keystrokes of it');
 
-    // A load reports mode status as ONE word -- the header -- so the bits
-    // are spent there too, or a press during a DEU load would be reported
-    // twice.
+    // A unit without its control program reports mode status as ONE word
+    // -- the header -- so the bits are spent there too, or a press during
+    // a DEU load would be reported twice.
     const ul = mkUnit();
-    ul.iplRunning = true;
+    ul.ipled = false;
     ul.pressKey(DEU.KEY.MSG_RESET);
     eq(ul.takeHeader() & DEU.HDR.MSG_RESET, DEU.HDR.MSG_RESET,
        'the mode-status word carries it');
     eq(ul.takeHeader() & DEU.HDR.MSG_RESET, 0, '...and spends it');
 
+    // The load, as the DEU loader in the PASS drives it: a BITE status
+    // request, eight memory-fill blocks of which the last is 250 halfwords
+    // at DEU address 2 carrying the unit's id at 0x1D, a poll, a
+    // critical-format fill, a poll.
+    const sent = [];
+    const un = new U.DEUUnit({name: 'T', ipled: false, send: (w) => sent.push(w),
+                              fill: () => {}, reset: () => {}, log: () => {}});
+    const ask = (func) => {
+        sent.length = 0;
+        un.onCommand(DEU.encodeCommand(func, 0));
+        return sent[0];
+    };
+    const fill = (func, addr, payload) => {
+        un.onCommand(DEU.encodeCommand(func, payload.length + 2));
+        for (const w of [payload.length, addr, ...payload]) un.onData(w);
+    };
+    let r = ask(DEU.FUNC.POLL);
+    eq(r.length, DEU.MODE_STATUS_WORDS, 'unloaded, a poll gets the header alone');
+    eq(r[0] & DEU.HDR.IPL_REQUIRED, DEU.HDR.IPL_REQUIRED, '...asking for a load');
+    r = ask(DEU.FUNC.BITE);
+    eq(r.length, DEU.BITE_WORDS, 'the BITE request is answered in full');
+    eq(r[0] & DEU.HDR.IPL_REQUIRED, DEU.HDR.IPL_REQUIRED, '...the header leads it');
+    eq(r[1] & 0xf000, DEU.BITE1.ALWAYS_ONE | DEU.BITE1.IPL_DONE,
+       '...hardware register 1 follows: IPL performed, no IPL error, no IPL ' +
+       'circuit error, the loader\'s precondition');
+    eq(r[3], DEU.SWSTATUS_HEALTHY, '...then register 2 and the software status');
+    // The eight fill blocks go out under the IPL fill command word
+    // 0x570000, whose function code is the one the header clock also uses;
+    // a headered payload marks these as memory fills.
+    const blocks = [[0x0f49, 508], [0x1145, 508], [0x1341, 508], [0x153d, 508],
+                    [0x1739, 508], [0x1935, 200], [0x1fe4, 1]];
+    for (const [addr, n] of blocks) fill(DEU.FUNC.TIME_FILL, addr, new Array(n).fill(0x5a5a));
+    eq(ask(DEU.FUNC.POLL).length, DEU.MODE_STATUS_WORDS,
+       'seven blocks in, the poll still gets the header alone');
+    const low = new Array(250).fill(0);
+    low[DEU.DEU_ID_ADDR - 2] = 2;
+    fill(DEU.FUNC.TIME_FILL, 0x0002, low);
+    eq(un.ipled, true, 'the 250-halfword block at address 2 completes the load');
+    eq(un.deuId, 2, '...carrying the unit id the loader patched in at 0x1D');
+    r = ask(DEU.FUNC.POLL);
+    eq(r.length, DEU.POLL_WORDS, 'loaded, a poll gets the full response');
+    eq(r[0] & (DEU.HDR.BITE_CRITICAL | DEU.HDR.IPL_REQUIRED), DEU.HDR.BITE_CRITICAL,
+       '...header bits 15-16 read 10: critical BITE present, IPL not required');
+    eq(r[14] & (DEU.SWSTATUS.INITIALIZED | DEU.SWSTATUS.CHECKSUM_ERROR), DEU.SWSTATUS.INITIALIZED,
+       '...initialized, no checksum error');
+    fill(DEU.FUNC.FORMAT_FILL, DEU.ADDR.CRITICAL_FORMAT, new Array(100).fill(0x1234));
+    r = ask(DEU.FUNC.POLL);
+    eq(r[0] & DEU.HDR.BITE_CRITICAL, 0, 'the critical BITE was reported once');
+    eq(r[14] & DEU.SWSTATUS.CHECKSUM_ERROR, 0, '...and the critical formats checksum');
+
+    // The seven-halfword header clock rides the same command word as the IPL
+    // fill, and the loaded unit still reads it as time, not as a fill.
+    const clk = DEU.timeFillWords({mission: 3661, event: 12, conv: 1});
+    un.onCommand(DEU.encodeCommand(DEU.FUNC.TIME_FILL, clk.length));
+    for (const w of clk) un.onData(w);
+    eq(un.time && un.time.conv, 1, 'a seven-word payload updates the clock');
+    ok(un.ipled, '...and does not disturb the loaded state');
+
     // the scratch pad line, per the spec
     //
-    const S = await bundle('meds/deuSPL.coffee');
+    const S = await bundle('meds/deu/deuSPL.coffee');
     const type = (spl, ...names) => {
         for (const n of names) spl.press(typeof n === 'number' ? n : DEU.KEY[n]);
         return spl;
@@ -613,21 +671,11 @@ async function main() {
     }, null);
     await settle(200);                 // let the socket join the group
 
-    const sendCmd = (c24) => {
-        const m = new B.BusMsg(2);
-        m.data16[0] = (c24 >>> 8) & 0xffff;
-        m.data16[1] = (c24 & 0xff) << 8;
-        bus.sendMsg(m);
-    };
+    const sendCmd = (c24) => bus.sendMsg(B.BusMsg.Command(c24));
     // A second endpoint, so the loopback suppression does not eat our own.
     const peer = new B.Bus('DK1', B.busConfig['DK1']);
     await settle(200);
-    const sendFromPeer = (c24) => {
-        const m = new B.BusMsg(2);
-        m.data16[0] = (c24 >>> 8) & 0xffff;
-        m.data16[1] = (c24 & 0xff) << 8;
-        peer.sendMsg(m);
-    };
+    const sendFromPeer = (c24) => peer.sendMsg(B.BusMsg.Command(c24));
     sendFromPeer(DEU.encodeCommand(DEU.FUNC.DISPLAY_FILL, 5));
     for (const w of DEU.fillHeader(0x19ee, 3).concat([0xaaaa, 0xbbbb, 0xcccc])) {
         const m = new B.BusMsg(1);
@@ -665,6 +713,7 @@ async function main() {
     // command -- were separate table entries, so the command was never
     // transmitted and the unit had nothing to answer.
     const { AP101 } = await bundle('gpc/ap101.coffee');
+    const { IOP_SLICE_NS } = await bundle('gpc/cpu.coffee');
     const gpc = new AP101({machine: 'ap101s'});
     for (let a = 0; a < 0x2000; a++) gpc.cpu.mainStorage.setStoreProtect(a, false);
     const iop = gpc.iop;
@@ -692,16 +741,16 @@ async function main() {
     // The display unit: decode, and answer a poll the way an IDP does.
     const unit = new B.Bus('DK1', B.busConfig['DK1']);
     const seen = {cmds: [], data: []};
+    const expectedPoll = DEU.pollResponse({header: DEU.HDR.KYBD_MSG, keys: [0x41]});
     unit.onReceive((_, id, msg) => {
-        if (msg.data16.length >= 2) {
+        if (msg.cmd) {
             const c = DEU.decodeCommand(((msg.data16[0] & 0xffff) << 8) |
                                         ((msg.data16[1] >> 8) & 0xff));
             if (c.iua !== DEU.IUA) return;
             seen.cmds.push(c);
             if (c.func !== DEU.FUNC.POLL) return;
-            const r = DEU.pollResponse({header: DEU.HDR.KYBD_MSG, keys: [0x41]});
-            const m = new B.BusMsg(r.length);
-            for (let i = 0; i < r.length; i++) m.data16[i] = r[i];
+            const m = new B.BusMsg(expectedPoll.length);
+            for (let i = 0; i < expectedPoll.length; i++) m.data16[i] = expectedPoll[i];
             unit.sendMsg(m);
         } else {
             for (let i = 0; i < msg.data16.length; i++) seen.data.push(msg.data16[i]);
@@ -709,11 +758,13 @@ async function main() {
     }, null);
     await settle(250);
 
-    // Step the machine in bursts, letting the datagrams cross between them.
-    // Simulated time stands still, so nothing times out while we wait on the
-    // host's scheduler.
+    // Each IOP slice advances simulated time; it stands still between bursts
+    // while the host delivers datagrams.
     for (let burst = 0; burst < 12; burst++) {
-        for (let i = 0; i < 400; i++) iop.exec();
+        for (let i = 0; i < 400; i++) {
+            gpc.cpu.timeNs += IOP_SLICE_NS;
+            iop.exec();
+        }
         await settle(60);
     }
 
@@ -726,6 +777,10 @@ async function main() {
     eq(seen.data[6], 0x1106, '...all of them');
 
     // The response landed in main storage, in order, and closes.
+    const receivedPoll = Array.from({length: DEU.POLL_WORDS},
+        (_, index) => gpc.cpu.mainStorage.get16(0x1000 + index));
+    eq(receivedPoll.join(','), expectedPoll.join(','),
+       'every poll response word reached storage in order');
     let rsum = 0;
     for (let i = 0; i < DEU.POLL_WORDS; i++)
         rsum = (rsum + gpc.cpu.mainStorage.get16(0x1000 + i)) & 0xffff;

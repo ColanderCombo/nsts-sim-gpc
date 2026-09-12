@@ -56,10 +56,9 @@ export funcCanonical = (func) ->
 # How many halfwords the GPC reads back
 export POLL_WORDS = 16     # header, key count, 10 keys, 3 BITE, checksum
 export BITE_WORDS = 5
-# The same poll command, 0x502000, serves two bus programs: the normal poll
-# reads sixteen halfwords, the mode-status check the DEU loader makes between
-# blocks of a load reads one.  Nothing in the command distinguishes them, so
-# a unit sizes its reply from context -- being loaded is that context.
+# The same poll command, 0x502000, gets two replies keyed on the unit's
+# state: a loaded unit answers the sixteen halfwords above, a unit without
+# its control program answers the header alone, before and during its load.
 export MODE_STATUS_WORDS = 1
 
 # The DEU loader's terminating condition: of its table of fill blocks,
@@ -190,8 +189,8 @@ export HDR =
 
 # "Following the DEU transmission of this response, bits 13, 19, 21, and 23 of
 # the header word are reset" -- MSG RESET, ACK, KYBD MSG and CRITICAL BITE are
-# all self-clearing.  The last two are derived here, so only the first two
-# need taking back; see `DEUUnit.takeHeader`.
+# all self-clearing.  KYBD MSG is derived from the key queue; the other three
+# are latched and taken back by `DEUUnit.takeHeader`.
 export HDR_SELF_CLEARING = HDR.MSG_RESET | HDR.ACK |
                            HDR.KYBD_MSG | HDR.BITE_CRITICAL
 
@@ -444,14 +443,15 @@ export pollResponse = (o = {}) ->
   words[15] = checksum(words[0...15])
   words
 
-# The five-halfword BITE status response: the three hardware registers, the
-# software status word, and the checksum -- the four the self test displays,
-# in the order it displays them.  The poll carries only 1, 2 and the software
-# word; register 3, the display unit's, is read out here.
+# The five-halfword BITE status response: the message header, hardware
+# registers 1 and 2, the software status word and the checksum -- the poll
+# response's header and tail, sent alone.  The GPC receives it into a
+# message-header halfword followed by four status halfwords, and the DEU
+# loader reads hardware register 1 as the halfword after the header.
 export biteResponse = (o = {}) ->
-  words = [(o.bite1 ? BITE1_HEALTHY) & 0xffff,
+  words = [(o.header ? 0) & 0xffff,
+           (o.bite1 ? BITE1_HEALTHY) & 0xffff,
            (o.bite2 ? BITE2_HEALTHY) & 0xffff,
-           (o.bite3 ? BITE3_HEALTHY) & 0xffff,
            (o.swStatus ? SWSTATUS_HEALTHY) & 0xffff, 0]
   words[4] = checksum(words[0...4])
   words

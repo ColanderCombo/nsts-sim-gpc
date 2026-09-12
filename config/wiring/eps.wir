@@ -1,0 +1,345 @@
+-- The dc distribution the DPS hangs on
+--
+-- Three units: panel R1's POWER DISTRIBUTION block, which makes the main,
+-- essential and control busses; the GPC POWER switches of panel O6, which
+-- work three remote power controllers a computer; and the mass memory,
+-- timing and MDM switches and breakers.  Every feed goes out on _POWER
+-- (com/power.coffee), where each unit reads the one it is on.
+--
+-- USA-007587 sect.2.6 for the computers:
+--
+--   "Each GPC has a GENERAL PURPOSE COMPUTER POWER switch on panel O6.
+--    Positioning a switch to ON enables power from three essential buses,
+--    ESS 1BC, 2CA, and 3AB.  The essential bus power controls remote power
+--    controller (RPCs), which permit main bus DC power from the three main
+--    buses (MN A, MN B, and MN C) to power the GPC.  There are three RPCs
+--    for each GPC; thus, any GPC will function normally, even if two main
+--    or essential buses are lost.  Each computer uses 560 watts of power."
+--
+-- Which essential bus works which controller is not in that section; here
+-- they are taken in the order it names them, ESS 1BC to the controller on
+-- MN A.
+--
+-- The same section for the mass memory and the MDMs:
+--
+--   "The MMU 1 switch on panel O14 positioned to ON allows control bus
+--    power to activate an RPC, which allows MNA power to MMU 1.  The MMU 2
+--    switch on panel O15 positioned to ON operates in a similar manner
+--    with MNB power.  An modular memory unit uses 83 watts of power, with
+--    the SSMM consuming 9 of those watts."
+--
+--   "Each MDM is redundantly powered by two main buses.  The power
+--    switches control bus power for activation of a remote power
+--    controller (RPC) for each main power bus to an MDM.  The main buses
+--    power separate power supplies in the MDM.  Loss of either the main
+--    bus or MDM power supply does not cause a loss of function because
+--    each power supply powers both channels in the MDM."
+--
+-- Which two busses reach an MDM is not there, so an MDM carries one feed:
+-- its switch, passing whichever main bus is up.
+--
+-- And for the timing unit: "The MTU is redundantly powered by the ESS 1BC
+-- MTU A and ESS 2CA MTU B circuit breakers on panel O13."
+--
+-- The panels are config/panels/r1.yml, o13.yml, o14.yml, o15.yml and the
+-- three blocks added to o6.yml.
+
+wiring eps_r1 is
+
+  type sw   is (ON, OFF, RESET);
+  type drum is (GRAY, BARBERPOLE);
+
+  port (
+    -- FC/MAIN BUS: the cell onto its main bus, lever locked
+    fcmain_a : in sw bind panel "R1/S10";
+    fcmain_b : in sw bind panel "R1/S11";
+    fcmain_c : in sw bind panel "R1/S12";
+
+    -- MN BUS TIE: the main bus onto the tie bus the other two reach
+    tie_a : in sw bind panel "R1/S13";
+    tie_b : in sw bind panel "R1/S14";
+    tie_c : in sw bind panel "R1/S15";
+
+    -- ESS BUS SOURCE, from the main busses and from the cells
+    essm_1 : in sw bind panel "R1/S4";
+    essm_2 : in sw bind panel "R1/S5";
+    essm_3 : in sw bind panel "R1/S6";
+    essf_1 : in sw bind panel "R1/S7";
+    essf_2 : in sw bind panel "R1/S8";
+    essf_3 : in sw bind panel "R1/S9";
+
+    -- CONTROL BUS PWR
+    cbp_a : in sw bind panel "R1/S1";
+    cbp_b : in sw bind panel "R1/S2";
+    cbp_c : in sw bind panel "R1/S3";
+
+    mna : out real bind power "MNA";
+    mnb : out real bind power "MNB";
+    mnc : out real bind power "MNC";
+
+    ess1bc : out real bind power "ESS1BC";
+    ess2ca : out real bind power "ESS2CA";
+    ess3ab : out real bind power "ESS3AB";
+
+    -- The nine control busses, each fed from the two main busses its name
+    -- gives, through those busses' CONTROL BUS PWR switches.  MEDS reads
+    -- them by these names: meds/medsConf.coffee `powerBus`.
+    cntl_ab1 : out real bind power "CNTL_AB1";
+    cntl_ab2 : out real bind power "CNTL_AB2";
+    cntl_ab3 : out real bind power "CNTL_AB3";
+    cntl_bc1 : out real bind power "CNTL_BC1";
+    cntl_bc2 : out real bind power "CNTL_BC2";
+    cntl_bc3 : out real bind power "CNTL_BC3";
+    cntl_ca1 : out real bind power "CNTL_CA1";
+    cntl_ca2 : out real bind power "CNTL_CA2";
+    cntl_ca3 : out real bind power "CNTL_CA3";
+
+    tb_fca : out drum bind panel "R1/DS1";
+    tb_fcb : out drum bind panel "R1/DS3";
+    tb_fcc : out drum bind panel "R1/DS5";
+    tb_tia : out drum bind panel "R1/DS2";
+    tb_tib : out drum bind panel "R1/DS4";
+    tb_tic : out drum bind panel "R1/DS6"
+  );
+
+  -- A fuel cell at its nominal terminal voltage.  Nothing above the cells
+  -- is modelled: reactants, the cell's load curve and the ac side are
+  -- outside this wiring.
+  constant cell : real := 28.0;
+
+  signal srca, srcb, srcc : real;      -- a cell through its FC/MAIN BUS switch
+  signal tied             : real;      -- the tie bus
+  signal va, vb, vc       : real;      -- the main busses
+  signal ca, cb, cc       : real;      -- each through its CONTROL BUS PWR switch
+  signal cab, cbc, cca    : real;      -- a control bus, from either of its two
+
+begin
+
+  srca <= cell when fcmain_a = ON else 0.0;
+  srcb <= cell when fcmain_b = ON else 0.0;
+  srcc <= cell when fcmain_c = ON else 0.0;
+
+  tied <= srca when (tie_a = ON) and (srca > 0.0)
+     else srcb when (tie_b = ON) and (srcb > 0.0)
+     else srcc when (tie_c = ON) and (srcc > 0.0)
+     else 0.0;
+
+  va <= srca when srca > 0.0 else tied when tie_a = ON else 0.0;
+  vb <= srcb when srcb > 0.0 else tied when tie_b = ON else 0.0;
+  vc <= srcc when srcc > 0.0 else tied when tie_c = ON else 0.0;
+
+  mna <= va;
+  mnb <= vb;
+  mnc <= vc;
+
+  -- An essential bus takes its cell direct, or two main busses through
+  -- the one switch that names them both.
+  ess1bc <= cell when essf_1 = ON
+       else vb  when (essm_1 = ON) and (vb > 0.0)
+       else vc  when essm_1 = ON
+       else 0.0;
+  ess2ca <= cell when essf_2 = ON
+       else vc  when (essm_2 = ON) and (vc > 0.0)
+       else va  when essm_2 = ON
+       else 0.0;
+  ess3ab <= cell when essf_3 = ON
+       else va  when (essm_3 = ON) and (va > 0.0)
+       else vb  when essm_3 = ON
+       else 0.0;
+
+  ca <= va when cbp_a = ON else 0.0;
+  cb <= vb when cbp_b = ON else 0.0;
+  cc <= vc when cbp_c = ON else 0.0;
+
+  cab <= ca when ca > 0.0 else cb;
+  cbc <= cb when cb > 0.0 else cc;
+  cca <= cc when cc > 0.0 else ca;
+
+  cntl_ab1 <= cab;
+  cntl_ab2 <= cab;
+  cntl_ab3 <= cab;
+  cntl_bc1 <= cbc;
+  cntl_bc2 <= cbc;
+  cntl_bc3 <= cbc;
+  cntl_ca1 <= cca;
+  cntl_ca2 <= cca;
+  cntl_ca3 <= cca;
+
+  tb_fca <= GRAY when srca > 0.0 else BARBERPOLE;
+  tb_fcb <= GRAY when srcb > 0.0 else BARBERPOLE;
+  tb_fcc <= GRAY when srcc > 0.0 else BARBERPOLE;
+  tb_tia <= GRAY when tie_a = ON else BARBERPOLE;
+  tb_tib <= GRAY when tie_b = ON else BARBERPOLE;
+  tb_tic <= GRAY when tie_c = ON else BARBERPOLE;
+
+end wiring;
+
+
+-- The five computers: a switch, three essential busses working three
+-- remote power controllers, three main busses through them.
+
+wiring eps_gpc is
+
+  type sw is (ON, OFF);
+
+  port (
+    pwr1 : in sw bind panel "O6/S30";
+    pwr2 : in sw bind panel "O6/S31";
+    pwr3 : in sw bind panel "O6/S32";
+    pwr4 : in sw bind panel "O6/S33";
+    pwr5 : in sw bind panel "O6/S34";
+
+    mna : in real bind power "MNA";
+    mnb : in real bind power "MNB";
+    mnc : in real bind power "MNC";
+
+    ess1 : in real bind power "ESS1BC";
+    ess2 : in real bind power "ESS2CA";
+    ess3 : in real bind power "ESS3AB";
+
+    gpc1_a : out real bind power "GPC1_A";
+    gpc1_b : out real bind power "GPC1_B";
+    gpc1_c : out real bind power "GPC1_C";
+    gpc2_a : out real bind power "GPC2_A";
+    gpc2_b : out real bind power "GPC2_B";
+    gpc2_c : out real bind power "GPC2_C";
+    gpc3_a : out real bind power "GPC3_A";
+    gpc3_b : out real bind power "GPC3_B";
+    gpc3_c : out real bind power "GPC3_C";
+    gpc4_a : out real bind power "GPC4_A";
+    gpc4_b : out real bind power "GPC4_B";
+    gpc4_c : out real bind power "GPC4_C";
+    gpc5_a : out real bind power "GPC5_A";
+    gpc5_b : out real bind power "GPC5_B";
+    gpc5_c : out real bind power "GPC5_C"
+  );
+
+  -- The coil of each controller: the switch on, and the essential bus
+  -- that works it up.
+  signal e1, e2, e3 : logic;
+  signal r1a, r1b, r1c : logic;
+  signal r2a, r2b, r2c : logic;
+  signal r3a, r3b, r3c : logic;
+  signal r4a, r4b, r4c : logic;
+  signal r5a, r5b, r5c : logic;
+
+begin
+
+  e1 <= ess1 > 0.0;
+  e2 <= ess2 > 0.0;
+  e3 <= ess3 > 0.0;
+
+  r1a <= (pwr1 = ON) and e1;
+  r1b <= (pwr1 = ON) and e2;
+  r1c <= (pwr1 = ON) and e3;
+  r2a <= (pwr2 = ON) and e1;
+  r2b <= (pwr2 = ON) and e2;
+  r2c <= (pwr2 = ON) and e3;
+  r3a <= (pwr3 = ON) and e1;
+  r3b <= (pwr3 = ON) and e2;
+  r3c <= (pwr3 = ON) and e3;
+  r4a <= (pwr4 = ON) and e1;
+  r4b <= (pwr4 = ON) and e2;
+  r4c <= (pwr4 = ON) and e3;
+  r5a <= (pwr5 = ON) and e1;
+  r5b <= (pwr5 = ON) and e2;
+  r5c <= (pwr5 = ON) and e3;
+
+  gpc1_a <= mna when r1a else 0.0;
+  gpc1_b <= mnb when r1b else 0.0;
+  gpc1_c <= mnc when r1c else 0.0;
+  gpc2_a <= mna when r2a else 0.0;
+  gpc2_b <= mnb when r2b else 0.0;
+  gpc2_c <= mnc when r2c else 0.0;
+  gpc3_a <= mna when r3a else 0.0;
+  gpc3_b <= mnb when r3b else 0.0;
+  gpc3_c <= mnc when r3c else 0.0;
+  gpc4_a <= mna when r4a else 0.0;
+  gpc4_b <= mnb when r4b else 0.0;
+  gpc4_c <= mnc when r4c else 0.0;
+  gpc5_a <= mna when r5a else 0.0;
+  gpc5_b <= mnb when r5b else 0.0;
+  gpc5_c <= mnc when r5c else 0.0;
+
+end wiring;
+
+
+-- The mass memories, the timing unit and the MDMs
+
+wiring eps_dps is
+
+  type sw is (ON, OFF);
+  type cb is (CLOSED, OPEN);
+
+  port (
+    mmu1sw : in sw bind panel "O14/S13";
+    mmu2sw : in sw bind panel "O15/S12";
+
+    mtua : in cb bind panel "O13/CB4";
+    mtub : in cb bind panel "O13/CB12";
+
+    ff1sw : in sw bind panel "O6/S26";
+    ff2sw : in sw bind panel "O6/S27";
+    ff3sw : in sw bind panel "O6/S28";
+    ff4sw : in sw bind panel "O6/S29";
+    fa1sw : in sw bind panel "O6/S21";
+    fa2sw : in sw bind panel "O6/S22";
+    fa3sw : in sw bind panel "O6/S23";
+    fa4sw : in sw bind panel "O6/S24";
+    pl1sw : in sw bind panel "O6/S52";
+    pl2sw : in sw bind panel "O6/S20";
+
+    mna : in real bind power "MNA";
+    mnb : in real bind power "MNB";
+    mnc : in real bind power "MNC";
+
+    cbp_a : in sw bind panel "R1/S1";
+    cbp_b : in sw bind panel "R1/S2";
+
+    ess1 : in real bind power "ESS1BC";
+    ess2 : in real bind power "ESS2CA";
+
+    mmu1 : out real bind power "MMU1";
+    mmu2 : out real bind power "MMU2";
+
+    mtu_a : out real bind power "MTU_A";
+    mtu_b : out real bind power "MTU_B";
+
+    ff1 : out real bind power "FF1";
+    ff2 : out real bind power "FF2";
+    ff3 : out real bind power "FF3";
+    ff4 : out real bind power "FF4";
+    fa1 : out real bind power "FA1";
+    fa2 : out real bind power "FA2";
+    fa3 : out real bind power "FA3";
+    fa4 : out real bind power "FA4";
+    pf1 : out real bind power "PF1";
+    pf2 : out real bind power "PF2"
+  );
+
+  signal mnbus : real;                 -- whichever main bus is up
+
+begin
+
+  mnbus <= mna when mna > 0.0 else mnb when mnb > 0.0 else mnc when mnc > 0.0 else 0.0;
+
+  -- The switch "allows control bus power to activate an RPC", and the
+  -- control bus that works it is the one its own main bus feeds.
+  mmu1 <= mna when (mmu1sw = ON) and (cbp_a = ON) else 0.0;
+  mmu2 <= mnb when (mmu2sw = ON) and (cbp_b = ON) else 0.0;
+
+  mtu_a <= ess1 when mtua = CLOSED else 0.0;
+  mtu_b <= ess2 when mtub = CLOSED else 0.0;
+
+  ff1 <= mnbus when ff1sw = ON else 0.0;
+  ff2 <= mnbus when ff2sw = ON else 0.0;
+  ff3 <= mnbus when ff3sw = ON else 0.0;
+  ff4 <= mnbus when ff4sw = ON else 0.0;
+  fa1 <= mnbus when fa1sw = ON else 0.0;
+  fa2 <= mnbus when fa2sw = ON else 0.0;
+  fa3 <= mnbus when fa3sw = ON else 0.0;
+  fa4 <= mnbus when fa4sw = ON else 0.0;
+  pf1 <= mnbus when pl1sw = ON else 0.0;
+  pf2 <= mnbus when pl2sw = ON else 0.0;
+
+end wiring;

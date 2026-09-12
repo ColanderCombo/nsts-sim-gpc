@@ -1,14 +1,14 @@
-# import * as fs from 'fs'
+import {call, setInterval, clearInterval, now as simNow} from '../../com/simRuntime.coffee'
 fs = window.fs
 import * as THREE from 'three'
 
-import {Bus, BusMsg} from './../com/bus.civet.jsx'
-import {MDUScreen} from 'meds/mduScreen'
-import {FCW, wordsFromBytes} from 'meds/deuFCW'
-import * as FCWD from 'meds/deuFCW'
-import * as DEU from 'meds/deuProto'
-import {SPL, ERR_TEXT, splFCWs, SPL_ROW} from 'meds/deuSPL'
-import {SelfTest, FRAME_HZ as SelfTestHz} from 'meds/deuSelfTest'
+import {Bus, BusMsg} from './../../com/bus.civet.jsx'
+import {MDUScreen} from 'meds/mdu/mduScreen'
+import {FCW, wordsFromBytes} from 'meds/deu/deuFCW'
+import * as FCWD from 'meds/deu/deuFCW'
+import * as DEU from 'meds/deu/deuProto'
+import {SPL, ERR_TEXT, splFCWs, SPL_ROW} from 'meds/deu/deuSPL'
+import {SelfTest, FRAME_HZ as SelfTestHz} from 'meds/deu/deuSelfTest'
 
 dispose3D= (obj) ->
   if obj.children?
@@ -27,6 +27,7 @@ export class Screen_DPS extends MDUScreen
         idpNo: null
         bigX: false
         pollFail: false
+        vmLoad: false
         syntaxError: false
       }
     @init()
@@ -114,6 +115,13 @@ export class Screen_DPS extends MDUScreen
   BIG_X_BOTTOM = SPL_ROW + 1 - FCWD.glyphCentre()[1]
   BIG_X = [[0, 0, 52, BIG_X_BOTTOM], [52, 0, 0, BIG_X_BOTTOM]]
   POLL_FAIL_AT = [41, SPL_ROW]
+  # "VM LOAD IN PROGRESS" (USA-005350 sect.2.5.9 and 3.7.1: the message
+  # "should appear on the CRT" once the IDP LOAD switch is thrown, and the
+  # DPS display is disabled until the load completes).  Neither document
+  # places or colours it; it is drawn across the middle of the format area
+  # in the message line colour.
+  VM_LOAD_TEXT = "VM LOAD IN PROGRESS"
+  VM_LOAD_AT = [Math.floor((52 - VM_LOAD_TEXT.length) / 2), 13]
 
   # The message line buffer runs to the display header, and the colour runs
   # with it: the walk enters at the buffer, draws it under the first word,
@@ -138,6 +146,16 @@ export class Screen_DPS extends MDUScreen
     @curData.bigX = bigX if @curData?
     return if not @fcw? or not @geo_bigX?
     @geo_bigX = @drawFCWS((if bigX then @_bigXFCWs() else []), @geo_bigX)
+
+  _vmLoadFCWs: () ->
+    [@fcw.colorMode(FAULT_COLOR), @fcw.attrMode({intensity: true})]
+      .concat @makeDFB(VM_LOAD_TEXT, {xy: VM_LOAD_AT})
+
+  setVmLoad: (on_) ->
+    on_ = !!on_
+    @curData.vmLoad = on_ if @curData?
+    return if not @fcw? or not @geo_vmLoad?
+    @geo_vmLoad = @drawFCWS((if on_ then @_vmLoadFCWs() else []), @geo_vmLoad)
 
   # The scratch pad line is reset as POLL FAIL comes up and again as it goes
   # away, JSC-18820/p.199 sect.4.6.61 "DEU Annunciated Messages":
@@ -175,15 +193,25 @@ export class Screen_DPS extends MDUScreen
   FORMAT_BUFFER_WORDS = 3656
   DISPLAY_BUFFER_WORDS = 1527
 
-  # A fill of the unit's display memory: `words` load at `addr`, and the
-  # screen redraws from the refresh entry point afterwards. 
+  # A fill of the unit's display memory: `words` load at `addr`.  A display
+  # arrives as a burst of fills, and what it draws is display memory as it
+  # stands when the burst is in, so the walk from the refresh entry point
+  # runs once a frame.
   applyFill: (addr, words) ->
     @fillSeq = (@fillSeq ? 0) + 1
     for w, i in words
       j = (addr + i) & (@bgFCWS.length - 1)
       @bgFCWS[j] = w & 0xffff
       @fillGen[j] = @fillSeq
-    @refresh()
+    @refreshSoon()
+
+  # The next frame's refresh, if one is not already due.
+  refreshSoon: () ->
+    return if @_refreshPending
+    @_refreshPending = true
+    window.requestAnimationFrame =>
+      @_refreshPending = false
+      @refresh()
 
   # What the last refresh executed, as address ranges, each with the fill
   # that wrote it and how many fills ago that was.  A range written long
@@ -311,6 +339,7 @@ export class Screen_DPS extends MDUScreen
 
     blinkGroup = new THREE.Object3D()
     blinkGroup.userData.deuBlink = true
+    blinkGroup.userData.flattenApart = true   # its `visible` is the blink
     blinkGroup.visible = @_blinkOn ? true
     targetGroup.add blinkGroup
     add = (o) -> (if blink then blinkGroup else targetGroup).add o
@@ -628,6 +657,7 @@ export class Screen_DPS extends MDUScreen
           # `refresh` draws it.  See `loadVdispBackgrounds`.
           opts.vdisp?.push v.vdisp
 
+    @d.flatten targetGroup
     @fmt.add targetGroup
     @d.dirty = true
 
@@ -755,6 +785,8 @@ export class Screen_DPS extends MDUScreen
 
     @geo_pollFail = new THREE.Object3D()
     @fmt.add @geo_pollFail
+    @geo_vmLoad = new THREE.Object3D()
+    @fmt.add @geo_vmLoad
 
     # fresh group: stale refs from a previous build must not be removed from it
     @geo_dps_scratch_err = null
@@ -805,7 +837,7 @@ export class Screen_DPS extends MDUScreen
 
   # SPL: the scratch pad line
   #
-  # The rules live in `meds/deuSPL`
+  # The rules live in `meds/deu/deuSPL`
   # With `--dcp` the IDP's control program composes the line into the message
   # line buffer at 0x19BC and the beam draws it out of display memory like
   # everything else, so this side channel stands down; see meds/deuDCP.
@@ -836,7 +868,7 @@ export class Screen_DPS extends MDUScreen
     @spl ?= new SPL(pollFail: @data().pollFail)
     # The command initiator flashes until the command is complete, and so
     # does ERR.  `splFCWs` is the words that draw it; the rules and the
-    # composition both live in meds/deuSPL.
+    # composition both live in meds/deu/deuSPL.
     @geo_scratchpad = @drawFCWS(splFCWs(@spl, @fcw), @geo_scratchpad)
     @d.dirty = true
 
@@ -931,7 +963,7 @@ export class Screen_DPS extends MDUScreen
   # The DEU stand-alone self test.
   #
   # Built from its specification: see
-  # `meds/deuSelfTest`, which turns STS-83-0020V2-34/sect.4.6.8 and its
+  # `meds/deu/deuSelfTest`, which turns STS-83-0020V2-34/sect.4.6.8 and its
   # Figure 4.6.8-1 into format control words.  The static half loads into the
   # format buffer, where a critical format belongs, and its trailing branch
   # carries the beam into the display buffer, where the animated half is
@@ -949,14 +981,14 @@ export class Screen_DPS extends MDUScreen
     st = @_st.staticWords()
     @setCritFormat(st.concat([@fcw.branch(DEU.ADDR.DISPLAY_HEADER)]))
     @selfTestOn = true
-    @_stFrame0 = Date.now()
+    @_stFrame0 = simNow()
     @tickSelfTest()
-    @_stTimer = window.setInterval((=> @tickSelfTest()), ST_TICK_MS)
+    @_stTimer = setInterval(call(@, 'tickSelfTest'), ST_TICK_MS)
     console.log "DEU self test ON (#{st.length} halfwords of format)"
 
   exitSelfTest: () ->
     return if not @selfTestOn
-    window.clearInterval(@_stTimer) if @_stTimer?
+    clearInterval(@_stTimer) if @_stTimer?
     @_stTimer = null
     @selfTestOn = false
     @setBGDFB(@critFormats[0])
@@ -966,7 +998,7 @@ export class Screen_DPS extends MDUScreen
     if @selfTestOn then @exitSelfTest() else @enterSelfTest()
 
   selfTestFrame: () ->
-    Math.floor((Date.now() - @_stFrame0) * SelfTestHz / 1000)
+    Math.floor((simNow() - @_stFrame0) * SelfTestHz / 1000)
 
   tickSelfTest: () ->
     return if not @selfTestOn

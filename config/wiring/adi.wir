@@ -1,0 +1,66 @@
+-- The commander's flight instrument switches
+--
+-- Panel F6 carries the ADI ATTITUDE, ADI ERROR and ADI RATE switches
+-- (USA-007587 sect.2.6; USA-005350 sect.2.5).  Each is a three-position
+-- rotary, and each position makes one wire to a discrete input of MDM
+-- FF1.  lru/mdm/mdmConfig.coffee FF1 card 4 channel 1 has the bits:
+--
+--     Bit  0: LH ADI ATTITUDE SEL - INERTIAL (1)
+--     Bit  1:                     - LV/LH (1)
+--     Bit  2:                     - REFERENCE (1)
+--     Bit  3:        RATE SCALE - HIGH (1)
+--     Bit  4:                   - MEDIUM (1)
+--     Bit  5:                   - LOW (1)
+--     Bit  6:        ERROR SCALE - HIGH (1)
+--     Bit  7:                    - MEDIUM (1)
+--     Bit  8:                    - LOW (1)
+--
+-- A wafer is powered through the DDU it serves, so the wires go dead
+-- when the DDU loses all three supplies.  FF2 card 6 channel 0 bits 0-2
+-- are RH DDU PWR SPLY A/B/C GOOD, V73X3011X1 to V73X3013X1; the left
+-- DDU's are the same bits of FF1 card 6 channel 0.
+
+wiring adi_left is
+
+  type attitude is (INRTL, LVLH, REF);
+  type scale    is (HIGH, MED, LOW);
+
+  port (
+    att      : in attitude bind panel "F6/S3";
+    err      : in scale    bind panel "F6/S4";
+    rate     : in scale    bind panel "F6/S5";
+
+    pwr_a    : in logic bind mdm "FF1/6/0.0";
+    pwr_b    : in logic bind mdm "FF1/6/0.1";
+    pwr_c    : in logic bind mdm "FF1/6/0.2";
+
+    att_inrtl : out logic bind mdm "FF1/4/1.0";
+    att_lvlh  : out logic bind mdm "FF1/4/1.1";
+    att_ref   : out logic bind mdm "FF1/4/1.2";
+    rate_hi   : out logic bind mdm "FF1/4/1.3";
+    rate_med  : out logic bind mdm "FF1/4/1.4";
+    rate_lo   : out logic bind mdm "FF1/4/1.5";
+    err_hi    : out logic bind mdm "FF1/4/1.6";
+    err_med   : out logic bind mdm "FF1/4/1.7";
+    err_lo    : out logic bind mdm "FF1/4/1.8"
+  );
+
+  signal powered : logic;
+
+begin
+
+  powered <= pwr_a or pwr_b or pwr_c;
+
+  att_inrtl <= powered and att = INRTL;
+  att_lvlh  <= powered and att = LVLH;
+  att_ref   <= powered and att = REF;
+
+  rate_hi   <= powered and rate = HIGH;
+  rate_med  <= powered and rate = MED;
+  rate_lo   <= powered and rate = LOW;
+
+  err_hi    <= powered and err = HIGH;
+  err_med   <= powered and err = MED;
+  err_lo    <= powered and err = LOW;
+
+end wiring;

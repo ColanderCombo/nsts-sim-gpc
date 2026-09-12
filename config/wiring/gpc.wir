@@ -1,0 +1,183 @@
+-- The general purpose computer controls of panel O6
+--
+-- Every position of every switch in the GENERAL PURPOSE COMPUTER block,
+-- and the two talkbacks, against the discrete lines of the five GPCs.
+-- The panel is config/panels/o6.yml; the bits are com/discretes.coffee,
+-- and JSC-11174,Vol.1 dwg 8.1 sheet 1 with JSC-18819 SCP 5.11 say where
+-- each one goes:
+--
+--   MODE                 DI-00 HALT, DI-01 STANDBY, DI-02 RUN
+--   INITIAL PROGRAM LOAD DI-03 IPL
+--   IPL SOURCE           DI-04 MMU 1 and DI-05 MMU 2 of every computer
+--   OUTPUT               through the backup flight controller as I/O
+--                        TERM B, DI-13; BACKUP and TERMINATE reach the
+--                        computer as the same wire
+--   OUTPUT talkback      DO-07 I/O ACTIVE
+--   MODE talkback        DO-31 IPL over DO-09 RUN
+--
+-- GPC POWER carries no discrete: it is the 28 V the switch wafers hang
+-- on, so every wire this unit makes to a computer is broken with its
+-- switch at OFF.
+
+wiring gpc_o6 is
+
+  type power  is (ON, OFF);
+  type mode   is (RUN, STBY, HALT);
+  type output is (BACKUP, NORMAL, TERMINATE);
+  type source is (MMU1, OFF, MMU2);
+  type drum   is (GRAY, BARBERPOLE, IPL, RUN);
+
+  port (
+    src : in source bind panel "O6/S45";
+
+    -- GPC 1
+    pwr1  : in power  bind panel "O6/S30";
+    out1  : in output bind panel "O6/S35";
+    ipl1  : in logic  bind panel "O6/S40";
+    mode1 : in mode   bind panel "O6/S46";
+    active1 : in logic bind discrete "gpc1/OUT/ioactivetb";
+    iplout1 : in logic bind discrete "gpc1/OUT/iplout";
+    ready1  : in logic bind discrete "gpc1/OUT/readytb";
+    halt1   : out logic bind discrete "gpc1/A/halt";
+    stby1   : out logic bind discrete "gpc1/A/standby";
+    run1    : out logic bind discrete "gpc1/A/run";
+    iplin1  : out logic bind discrete "gpc1/A/ipl";
+    termb1  : out logic bind discrete "gpc1/A/iotermb";
+    mm11    : out logic bind discrete "gpc1/A/mm1src";
+    mm21    : out logic bind discrete "gpc1/A/mm2src";
+    outtb1  : out drum bind panel "O6/DS3";
+    modetb1 : out drum bind panel "O6/DS8";
+
+    -- GPC 2
+    pwr2  : in power  bind panel "O6/S31";
+    out2  : in output bind panel "O6/S36";
+    ipl2  : in logic  bind panel "O6/S41";
+    mode2 : in mode   bind panel "O6/S47";
+    active2 : in logic bind discrete "gpc2/OUT/ioactivetb";
+    iplout2 : in logic bind discrete "gpc2/OUT/iplout";
+    ready2  : in logic bind discrete "gpc2/OUT/readytb";
+    halt2   : out logic bind discrete "gpc2/A/halt";
+    stby2   : out logic bind discrete "gpc2/A/standby";
+    run2    : out logic bind discrete "gpc2/A/run";
+    iplin2  : out logic bind discrete "gpc2/A/ipl";
+    termb2  : out logic bind discrete "gpc2/A/iotermb";
+    mm12    : out logic bind discrete "gpc2/A/mm1src";
+    mm22    : out logic bind discrete "gpc2/A/mm2src";
+    outtb2  : out drum bind panel "O6/DS4";
+    modetb2 : out drum bind panel "O6/DS9";
+
+    -- GPC 3
+    pwr3  : in power  bind panel "O6/S32";
+    out3  : in output bind panel "O6/S37";
+    ipl3  : in logic  bind panel "O6/S42";
+    mode3 : in mode   bind panel "O6/S48";
+    active3 : in logic bind discrete "gpc3/OUT/ioactivetb";
+    iplout3 : in logic bind discrete "gpc3/OUT/iplout";
+    ready3  : in logic bind discrete "gpc3/OUT/readytb";
+    halt3   : out logic bind discrete "gpc3/A/halt";
+    stby3   : out logic bind discrete "gpc3/A/standby";
+    run3    : out logic bind discrete "gpc3/A/run";
+    iplin3  : out logic bind discrete "gpc3/A/ipl";
+    termb3  : out logic bind discrete "gpc3/A/iotermb";
+    mm13    : out logic bind discrete "gpc3/A/mm1src";
+    mm23    : out logic bind discrete "gpc3/A/mm2src";
+    outtb3  : out drum bind panel "O6/DS5";
+    modetb3 : out drum bind panel "O6/DS10";
+
+    -- GPC 4
+    pwr4  : in power  bind panel "O6/S33";
+    out4  : in output bind panel "O6/S38";
+    ipl4  : in logic  bind panel "O6/S43";
+    mode4 : in mode   bind panel "O6/S49";
+    active4 : in logic bind discrete "gpc4/OUT/ioactivetb";
+    iplout4 : in logic bind discrete "gpc4/OUT/iplout";
+    ready4  : in logic bind discrete "gpc4/OUT/readytb";
+    halt4   : out logic bind discrete "gpc4/A/halt";
+    stby4   : out logic bind discrete "gpc4/A/standby";
+    run4    : out logic bind discrete "gpc4/A/run";
+    iplin4  : out logic bind discrete "gpc4/A/ipl";
+    termb4  : out logic bind discrete "gpc4/A/iotermb";
+    mm14    : out logic bind discrete "gpc4/A/mm1src";
+    mm24    : out logic bind discrete "gpc4/A/mm2src";
+    outtb4  : out drum bind panel "O6/DS6";
+    modetb4 : out drum bind panel "O6/DS11";
+
+    -- GPC 5
+    pwr5  : in power  bind panel "O6/S34";
+    out5  : in output bind panel "O6/S39";
+    ipl5  : in logic  bind panel "O6/S44";
+    mode5 : in mode   bind panel "O6/S50";
+    active5 : in logic bind discrete "gpc5/OUT/ioactivetb";
+    iplout5 : in logic bind discrete "gpc5/OUT/iplout";
+    ready5  : in logic bind discrete "gpc5/OUT/readytb";
+    halt5   : out logic bind discrete "gpc5/A/halt";
+    stby5   : out logic bind discrete "gpc5/A/standby";
+    run5    : out logic bind discrete "gpc5/A/run";
+    iplin5  : out logic bind discrete "gpc5/A/ipl";
+    termb5  : out logic bind discrete "gpc5/A/iotermb";
+    mm15    : out logic bind discrete "gpc5/A/mm1src";
+    mm25    : out logic bind discrete "gpc5/A/mm2src";
+    outtb5  : out drum bind panel "O6/DS7";
+    modetb5 : out drum bind panel "O6/DS12"
+  );
+
+  signal on1, on2, on3, on4, on5 : logic;
+
+begin
+
+  on1     <= pwr1 = ON;
+  halt1   <= on1 and mode1 = HALT;
+  stby1   <= on1 and mode1 = STBY;
+  run1    <= on1 and mode1 = RUN;
+  iplin1  <= on1 and ipl1;
+  termb1  <= on1 and out1 /= NORMAL;
+  mm11    <= on1 and src = MMU1;
+  mm21    <= on1 and src = MMU2;
+  outtb1  <= GRAY when active1 else BARBERPOLE;
+  modetb1 <= IPL when iplout1 else RUN when ready1 else BARBERPOLE;
+
+  on2     <= pwr2 = ON;
+  halt2   <= on2 and mode2 = HALT;
+  stby2   <= on2 and mode2 = STBY;
+  run2    <= on2 and mode2 = RUN;
+  iplin2  <= on2 and ipl2;
+  termb2  <= on2 and out2 /= NORMAL;
+  mm12    <= on2 and src = MMU1;
+  mm22    <= on2 and src = MMU2;
+  outtb2  <= GRAY when active2 else BARBERPOLE;
+  modetb2 <= IPL when iplout2 else RUN when ready2 else BARBERPOLE;
+
+  on3     <= pwr3 = ON;
+  halt3   <= on3 and mode3 = HALT;
+  stby3   <= on3 and mode3 = STBY;
+  run3    <= on3 and mode3 = RUN;
+  iplin3  <= on3 and ipl3;
+  termb3  <= on3 and out3 /= NORMAL;
+  mm13    <= on3 and src = MMU1;
+  mm23    <= on3 and src = MMU2;
+  outtb3  <= GRAY when active3 else BARBERPOLE;
+  modetb3 <= IPL when iplout3 else RUN when ready3 else BARBERPOLE;
+
+  on4     <= pwr4 = ON;
+  halt4   <= on4 and mode4 = HALT;
+  stby4   <= on4 and mode4 = STBY;
+  run4    <= on4 and mode4 = RUN;
+  iplin4  <= on4 and ipl4;
+  termb4  <= on4 and out4 /= NORMAL;
+  mm14    <= on4 and src = MMU1;
+  mm24    <= on4 and src = MMU2;
+  outtb4  <= GRAY when active4 else BARBERPOLE;
+  modetb4 <= IPL when iplout4 else RUN when ready4 else BARBERPOLE;
+
+  on5     <= pwr5 = ON;
+  halt5   <= on5 and mode5 = HALT;
+  stby5   <= on5 and mode5 = STBY;
+  run5    <= on5 and mode5 = RUN;
+  iplin5  <= on5 and ipl5;
+  termb5  <= on5 and out5 /= NORMAL;
+  mm15    <= on5 and src = MMU1;
+  mm25    <= on5 and src = MMU2;
+  outtb5  <= GRAY when active5 else BARBERPOLE;
+  modetb5 <= IPL when iplout5 else RUN when ready5 else BARBERPOLE;
+
+end wiring;

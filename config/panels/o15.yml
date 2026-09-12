@@ -1,0 +1,24 @@
+# Panel O15 -- the MN B controls the DPS uses
+#
+# USA-007587 Rev.A appendix A "Panel Diagrams", panel O15, which is fed
+# from main bus B.  The number in parentheses beside each control on that
+# drawing is its id here.
+#
+#   DDU LEFT    CB29, 7.5 A       the commander's device driver unit
+#   DDU RIGHT   CB30, 7.5 A       the pilot's
+#   MMU 2       S12, ON over OFF  mass memory unit 2
+#
+# The rest of the panel is not here.  Where these go is wiring/eps.wir.
+panel: O15
+name: MN B power controls
+
+groups:
+  - title: DDU
+    controls: [CB29, CB30]
+  - title: MASS MEMORY
+    controls: [S12]
+
+controls:
+  CB29: {kind: breaker, label: "DDU LEFT", amps: 7.5}
+  CB30: {kind: breaker, label: "DDU RIGHT", amps: 7.5}
+  S12:  {kind: switch, label: "MMU 2", positions: [ON, OFF], at: ON}

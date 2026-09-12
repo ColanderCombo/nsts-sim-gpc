@@ -1,0 +1,29 @@
+# Panel F6 -- the commander's forward flight instruments
+#
+# USA-007587 sect.2.6 and USA-005350 sect.2.5: the ADI ATTITUDE, ADI
+# ERROR and ADI RATE switches beside the commander's attitude director
+# indicator, each a three-position rotary.  Where each position goes is
+# wiring/adi.wir.
+panel: F6
+name: Commander's forward flight instruments
+
+groups:
+  - title: ADI
+    controls: [S3, S4, S5]
+
+controls:
+  S3:
+    kind: rotary
+    label: ADI ATTITUDE
+    positions: [INRTL, LVLH, REF]
+    at: INRTL
+  S4:
+    kind: rotary
+    label: ADI ERROR
+    positions: [HIGH, MED, LOW]
+    at: MED
+  S5:
+    kind: rotary
+    label: ADI RATE
+    positions: [HIGH, MED, LOW]
+    at: MED

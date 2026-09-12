@@ -1,4 +1,4 @@
-// test_meds_fcw.cjs — the DEU Format Control Word codec.
+// fcw.cjs — the DEU Format Control Word codec.
 //
 // Every word here is built from the encoding rules, not lifted from any
 // display: the point is that encode and decode agree with each other and
@@ -7,7 +7,7 @@
 // slope quantisation).
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_fcw.cjs
+//   cd ext/sim && node test/meds/fcw.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -18,14 +18,14 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 async function bundle(rel) {
     const out = path.join(os.tmpdir(),
         `meds.test.${path.basename(rel).replace(/\W/g, '_')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SIM,
-        entryPoints: [path.join(SIM, rel)],
+        entryPoints: [path.join(SIM, 'src', rel)],
         bundle: true, platform: 'node', format: 'cjs', target: 'node20',
         outfile: out,
         plugins: [coffeePlugin({})],
@@ -47,7 +47,7 @@ function eq(a, b, what) {
 function hex(n) { return '0x' + (n & 0xffff).toString(16).padStart(4, '0'); }
 
 async function main() {
-    const M = await bundle('meds/deuFCW.coffee');
+    const M = await bundle('meds/deu/deuFCW.coffee');
     const f = new M.FCW();
 
     // screen geometry

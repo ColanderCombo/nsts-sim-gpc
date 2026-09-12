@@ -1,5 +1,6 @@
+import {now as simNow} from '../../com/simRuntime.coffee'
 import * as THREE from 'three'
-import {MDUScreen} from 'meds/mduScreen'
+import {MDUScreen} from 'meds/mdu/mduScreen'
 import {MEDSConf} from 'meds/medsConf'
 
 export class Screen_MAINT extends MDUScreen
@@ -90,8 +91,6 @@ export class Screen_MAINT extends MDUScreen
 
     xb = @vx xb
     yb = @vy yb
-    #xw = @vx 125.125
-    # yh = @vy 187.6875
     xw = width-1
     yh = height
     lh = yh/(lines-1)*ls

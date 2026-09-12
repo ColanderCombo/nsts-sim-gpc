@@ -4,7 +4,7 @@
 # This is the state machine a DEU / IDP presents to a GPC: 8192 halfwords of
 # display memory, the transfer in progress, the keyboard queue, and the
 # status the GPC polls out of it.  The wire framing and message layouts are
-# in `meds/deuProto.coffee`.
+# in `meds/deu/deuProto.coffee`.
 #
 # ---------------------------------------------------------------------------
 # The behavior of the MCDS/DEU & MEDS/IDP/MDU is specified in a number
@@ -33,8 +33,8 @@
 #   SS-P-002-580       Level B SM CPDS
 # ---------------------------------------------------------------------------
 #
-import * as DEU from 'meds/deuProto'
-import {SPL} from 'meds/deuSPL'
+import * as DEU from 'meds/deu/deuProto'
+import {SPL} from 'meds/deu/deuSPL'
 
 export class DEUUnit
   # `o.send(words)`         put a reply on the display bus
@@ -44,6 +44,9 @@ export class DEUUnit
   # `o.poll()`              the GPC polled; the display's only tick
   # `o.log(text)`           progress, if the caller wants it
   # `o.ipled`               false to ask the GPC for a load (default true)
+  # `o.load(stage)`         'requested' when the IDP LOAD switch asks for one,
+  #                         'started' at the first fill of a load, 'complete'
+  #                         at its last
   constructor: (o = {}) ->
     @send = o.send ? (->)
     @onFill = o.fill ? (->)
@@ -59,7 +62,9 @@ export class DEUUnit
     @spl = new SPL()             # the scratch pad line, and the entry on it
     @majorFunc = o.majorFunc ? DEU.MAJOR_FUNC_DEFAULT
     @ipled = o.ipled ? true
-    @iplRunning = false
+    @onLoad = o.load ? (->)
+    @loading = false             # a load block has arrived since the request
+    @critBitePending = false     # critical BITE present, until a poll reports it
     # MSG RESET and ACK are not keystrokes.  A press latches a header 
     # bit that rides out on the next poll and is cleared once reported.
     @msgResetPending = false
@@ -78,11 +83,10 @@ export class DEUUnit
 
   # DK bus handling
   #
-  # A BCE transmits a command as the 24 command bits left
-  # justified in two halfwords, and a data word as one halfword, so the
-  # datagram length tells them apart
-  recv: (words) ->
-    if words.length >= 2
+  # A command datagram carries the 24 command bits left justified in two
+  # halfwords; any other datagram is data words (com/bus.civet).
+  recv: (words, isCmd) ->
+    if isCmd
       @onCommand ((words[0] & 0xffff) << 8) | ((words[1] >> 8) & 0xff)
     else
       (@onData(w) for w in words)[words.length - 1]
@@ -106,14 +110,18 @@ export class DEUUnit
       when DEU.FUNC.POLL
         @stats.polls++
         @onPoll()
-        if @iplRunning
+        if @ipled
+          @_reply @pollResponse()
+        else
+          # Mode status: the header alone, before and during a load.  The
+          # sixteen-halfword receive the poll program opens times out on
+          # it, and the poll processor reads the IPL request out of the
+          # header the transaction stored.
           @stats.modeStatus++
           @_reply [@takeHeader()]
-        else
-          @_reply @pollResponse()
       when DEU.FUNC.BITE
         @stats.bite++
-        @_reply DEU.biteResponse(@biteState())
+        @_reply DEU.biteResponse(Object.assign({header: @header()}, @biteState()))
       when DEU.FUNC.RESET_SPL
         @stats.resets++
         @keyQueue.length = 0
@@ -140,7 +148,15 @@ export class DEUUnit
       when DEU.FUNC.DUMP
         @_dumpRequest(x.words)
       when DEU.FUNC.TIME_FILL
-        @_timeFill(x.words)
+        # This function code carries the seven-halfword header clock and the
+        # IPL memory-fill blocks (command word 0x570000) alike.  A memory
+        # fill leads with a count and a DEU address; the clock is seven raw
+        # words.  The shape tells them apart.
+        f = DEU.parseFill(x.words)
+        if f? and not f.short and f.count > 0 and f.count + 2 == x.words.length
+          @_fill(x.words, x.func)
+        else
+          @_timeFill(x.words)
       else
         @_fill(x.words, x.func)
 
@@ -160,6 +176,16 @@ export class DEUUnit
 
   # A fill message: a word count, the DEU address it loads at, and the
   # payload.
+  # The IDP LOAD switch: the unit drops what it holds and asks the GPC for
+  # a load in every poll header until a load completes (USA-005350
+  # sect.3.7.1: "it sees the LOAD discrete and performs the LOAD").
+  requestLoad: () ->
+    @ipled = false
+    @loading = false
+    @log "#{@name}: load requested"
+    @onLoad('requested')
+    return
+
   _fill: (words, func) ->
     f = DEU.parseFill(words)
     if not f? or f.short or f.count + 2 != words.length
@@ -167,16 +193,19 @@ export class DEUUnit
       @log "#{@name}: unheadered fill of #{words.length} halfwords, ignored"
       return {kind: 'headerless', words: words}
     @stats.fills++
-    if not @ipled and not @iplRunning
-      @iplRunning = true
+    if not @ipled and not @loading
+      @loading = true
       @log "#{@name}: load started"
-    if @iplRunning and f.count == DEU.LAST_FILL_WORDS
-      @iplRunning = false
+      @onLoad('started')
+    if not @ipled and f.count == DEU.LAST_FILL_WORDS
+      @loading = false
       @ipled = true
+      @critBitePending = true
       @deuId = f.payload[DEU.DEU_ID_ADDR - f.addr] if f.addr <= DEU.DEU_ID_ADDR < f.addr + f.count
       @log "#{@name}: load complete (#{f.count} halfwords at " +
            "0x#{f.addr.toString(16)}), reporting initialized" +
            (if @deuId? then " as unit #{@deuId}" else "")
+      @onLoad('complete')
     for w, i in f.payload
       @mem[(f.addr + i) & (DEU.DEU_MEMORY_WORDS - 1)] = w & 0xffff
     @onFill(f.addr, f.payload)
@@ -198,9 +227,12 @@ export class DEUUnit
 
   # what the GPC polls out of the unit
   #
+  # Hardware register 1 carries IPL_DONE in both states.  The DEU loader
+  # requires bits 2-4 of it to read 100 (IPL performed, no IPL error, no
+  # IPL circuit error) before it sends a block, and the IPL monitor
+  # requires the register non-zero after the load.
   biteState: () ->
-    b1 = DEU.BITE1.ALWAYS_ONE
-    b1 |= DEU.BITE1.IPL_DONE if @ipled
+    b1 = DEU.BITE1.ALWAYS_ONE | DEU.BITE1.IPL_DONE
     b1 |= DEU.BITE1.IPL_ERROR if @iplError
     b1 |= DEU.BITE1.IPL_CIRCUIT_ERROR if @iplCircuitError
     {bite1: b1, swStatus: @swStatus}
@@ -211,6 +243,11 @@ export class DEUUnit
     hdr |= DEU.HDR.IPL_REQUIRED if not @ipled
     hdr |= DEU.HDR.MSG_RESET if @msgResetPending
     hdr |= DEU.HDR.ACK if @ackPending
+    # A completed load leaves INITIALIZED standing in the software status
+    # register, a critical BITE; the header says so once.  The DEU loader
+    # requires bits 15-16 of the header to read 10 on its poll after the
+    # last block.
+    hdr |= DEU.HDR.BITE_CRITICAL if @critBitePending
     # A response carrying MSG RESET or ACK does not carry a keyboard message:
     # when either bit is set the KYBD MSG PRESENT flag is not.  The queued
     # entry is not lost, it waits for the next poll 40 ms later.
@@ -218,14 +255,15 @@ export class DEUUnit
                               not (@msgResetPending or @ackPending)
     hdr
 
-  # The header as transmitted, which is where MSG RESET and ACK are sent.
-  # The monitor acts once per poll that carries one -- it pops one message
-  # off the error list per MSG RESET bit it sees -- so a single press must
-  # be reported exactly once.
+  # The header as transmitted, which is where MSG RESET, ACK and CRITICAL
+  # BITE are sent.  The monitor acts once per poll that carries one -- it
+  # pops one message off the error list per MSG RESET bit it sees -- so
+  # a single press must be reported exactly once.
   takeHeader: () ->
     hdr = @header()
     @msgResetPending = false
     @ackPending = false
+    @critBitePending = false
     hdr
 
   pollResponse: () ->
@@ -248,5 +286,5 @@ export class DEUUnit
       @ackPending = true
       return
     return if @spl.press(code) != 'complete'
-    @keyQueue.push @spl.keys[0...DEU.MAX_KEYS_IPL] if not @spl.err
+    @keyQueue.push @spl.keys[0...DEU.MAX_KEYS] if not @spl.err
     return

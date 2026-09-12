@@ -1,0 +1,125 @@
+# Panel O6 -- the GENERAL PURPOSE COMPUTER block
+#
+# USA-007587 Rev.A appendix A "Panel Diagrams", panel O6: five columns of
+# GPC controls, and the IPL SOURCE rotary beside them.  The number in
+# parentheses beside each control on that drawing is its id here.
+#
+#   POWER                     S30-S34, ON over OFF
+#   OUTPUT talkback           DS3-DS7
+#   OUTPUT                    S35-S39, BACKUP over NORMAL over TERMINATE
+#   INITIAL PROGRAM LOAD      S40-S44, a momentary pushbutton
+#   IPL SOURCE                S45, MMU 1 over OFF over MMU 2
+#   MODE talkback             DS8-DS12
+#   MODE                      S46-S50, RUN over STBY over HALT, lever locked
+#
+# The three blocks below the computers on the same drawing:
+#
+#   MASTER TIMING UNIT        S15, OSC 1 over AUTO over OSC 2
+#   INTEGRATED DISPLAY
+#     PROCESSOR n LOAD        S16-S19, a momentary down
+#   MDM PL1                   S52, ON over OFF
+#   MDM PL2, FLT CRIT AFT     S20, and S21-S24 for FA1 to FA4
+#   MDM PL3, FLT CRIT FWD     S25, and S26-S29 for FF1 to FF4
+#
+# Where each position goes is wiring/gpc.wir and wiring/eps.wir.  The
+# rest of the panel -- the lighting, star tracker, UHF and annunciator
+# blocks -- is not here.
+panel: O6
+name: General purpose computer controls
+
+groups:
+  - title: GPC POWER
+    controls: [S30, S31, S32, S33, S34]
+  - title: OUTPUT
+    controls: [DS3, DS4, DS5, DS6, DS7]
+  - title: BACKUP / NORMAL / TERMINATE
+    controls: [S35, S36, S37, S38, S39]
+  - title: INITIAL PROGRAM LOAD
+    controls: [S40, S41, S42, S43, S44, S45]
+  - title: MODE
+    controls: [DS8, DS9, DS10, DS11, DS12]
+  - title: RUN / STBY / HALT
+    controls: [S46, S47, S48, S49, S50]
+  - title: MASTER TIMING UNIT
+    controls: [S15]
+  - title: INTEGRATED DISPLAY PROCESSOR LOAD
+    controls: [S16, S17, S18, S19]
+  - title: MDM FLT CRIT FWD
+    controls: [S26, S27, S28, S29]
+  - title: MDM FLT CRIT AFT
+    controls: [S21, S22, S23, S24]
+  - title: MDM PAYLOAD
+    controls: [S52, S20, S25]
+
+controls:
+  S30: {kind: switch, label: "1", positions: [ON, OFF], at: ON}
+  S31: {kind: switch, label: "2", positions: [ON, OFF], at: ON}
+  S32: {kind: switch, label: "3", positions: [ON, OFF], at: ON}
+  S33: {kind: switch, label: "4", positions: [ON, OFF], at: ON}
+  S34: {kind: switch, label: "5", positions: [ON, OFF], at: ON}
+
+  # The drum is blank while the GPC drives I/O ACTIVE and barberpole
+  # otherwise (JSC-11174,Vol.1 dwg 8.1 sheet 1: DO-07).
+  DS3: {kind: talkback, label: "1", positions: [GRAY, BARBERPOLE]}
+  DS4: {kind: talkback, label: "2", positions: [GRAY, BARBERPOLE]}
+  DS5: {kind: talkback, label: "3", positions: [GRAY, BARBERPOLE]}
+  DS6: {kind: talkback, label: "4", positions: [GRAY, BARBERPOLE]}
+  DS7: {kind: talkback, label: "5", positions: [GRAY, BARBERPOLE]}
+
+  S35: {kind: switch, label: "1", positions: [BACKUP, NORMAL, TERMINATE], at: NORMAL}
+  S36: {kind: switch, label: "2", positions: [BACKUP, NORMAL, TERMINATE], at: NORMAL}
+  S37: {kind: switch, label: "3", positions: [BACKUP, NORMAL, TERMINATE], at: NORMAL}
+  S38: {kind: switch, label: "4", positions: [BACKUP, NORMAL, TERMINATE], at: NORMAL}
+  S39: {kind: switch, label: "5", positions: [BACKUP, NORMAL, TERMINATE], at: NORMAL}
+
+  # gpc/gpc.coffee IPL_PRESS_MS: the discrete is held 300 ms by a press.
+  S40: {kind: pushbutton, label: "1", hold: 0.3}
+  S41: {kind: pushbutton, label: "2", hold: 0.3}
+  S42: {kind: pushbutton, label: "3", hold: 0.3}
+  S43: {kind: pushbutton, label: "4", hold: 0.3}
+  S44: {kind: pushbutton, label: "5", hold: 0.3}
+
+  S45:
+    kind: rotary
+    label: IPL SOURCE
+    positions: [MMU1, OFF, MMU2]
+    at: OFF
+
+  # IPL over RUN, barberpole with neither: DO-31 and DO-09.
+  DS8:  {kind: talkback, label: "1", positions: [IPL, RUN, BARBERPOLE]}
+  DS9:  {kind: talkback, label: "2", positions: [IPL, RUN, BARBERPOLE]}
+  DS10: {kind: talkback, label: "3", positions: [IPL, RUN, BARBERPOLE]}
+  DS11: {kind: talkback, label: "4", positions: [IPL, RUN, BARBERPOLE]}
+  DS12: {kind: talkback, label: "5", positions: [IPL, RUN, BARBERPOLE]}
+
+  S46: {kind: switch, label: "1", positions: [RUN, STBY, HALT], at: HALT}
+  S47: {kind: switch, label: "2", positions: [RUN, STBY, HALT], at: HALT}
+  S48: {kind: switch, label: "3", positions: [RUN, STBY, HALT], at: HALT}
+  S49: {kind: switch, label: "4", positions: [RUN, STBY, HALT], at: HALT}
+  S50: {kind: switch, label: "5", positions: [RUN, STBY, HALT], at: HALT}
+
+  # The oscillator the unit runs on; at AUTO it changes over itself when
+  # one goes out of tolerance.
+  S15: {kind: rotary, label: "MTU OSC", positions: [OSC1, AUTO, OSC2], at: AUTO}
+
+  # A momentary down: the IDP asks the computers for its load while it is
+  # held (USA-005350 sect.4, p.4-27).
+  S16: {kind: momentary, label: "IDP 1 LOAD", positions: [LOAD, OFF], at: OFF, spring: [LOAD]}
+  S17: {kind: momentary, label: "IDP 2 LOAD", positions: [LOAD, OFF], at: OFF, spring: [LOAD]}
+  S18: {kind: momentary, label: "IDP 3 LOAD", positions: [LOAD, OFF], at: OFF, spring: [LOAD]}
+  S19: {kind: momentary, label: "IDP 4 LOAD", positions: [LOAD, OFF], at: OFF, spring: [LOAD]}
+
+  S26: {kind: switch, label: "FF1", positions: [ON, OFF], at: ON}
+  S27: {kind: switch, label: "FF2", positions: [ON, OFF], at: ON}
+  S28: {kind: switch, label: "FF3", positions: [ON, OFF], at: ON}
+  S29: {kind: switch, label: "FF4", positions: [ON, OFF], at: ON}
+
+  S21: {kind: switch, label: "FA1", positions: [ON, OFF], at: ON}
+  S22: {kind: switch, label: "FA2", positions: [ON, OFF], at: ON}
+  S23: {kind: switch, label: "FA3", positions: [ON, OFF], at: ON}
+  S24: {kind: switch, label: "FA4", positions: [ON, OFF], at: ON}
+
+  # PL3 is unwired and is not used (USA-007587 sect.2.6).
+  S52: {kind: switch, label: "PL1", positions: [ON, OFF], at: ON}
+  S20: {kind: switch, label: "PL2", positions: [ON, OFF], at: ON}
+  S25: {kind: switch, label: "PL3", positions: [ON, OFF], at: ON}

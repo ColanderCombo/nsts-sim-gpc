@@ -1,4 +1,4 @@
-// test_meds_color.cjs — DEU colour, from the FCW3 code to the material the
+// color.cjs — DEU colour, from the FCW3 code to the material the
 // stroke is drawn with.
 //
 // The DEU's normal intensity is 0.72, so every coloured stroke a
@@ -8,7 +8,7 @@
 // draw in different colours.
 //
 // Usage:
-//   cd ext/sim && node test/test_meds_color.cjs
+//   cd ext/sim && node test/meds/color.cjs
 //
 // Exit status is 1 iff any test failed.
 'use strict';
@@ -19,7 +19,7 @@ const fs = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SIM = path.resolve(__dirname, '..');
+const SIM = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -78,8 +78,8 @@ async function main() {
     stubDOM();
     const shim = path.join(os.tmpdir(), `deu.color.shim.${process.pid}.js`);
     fs.writeFileSync(shim,
-        `export * as vd from ${JSON.stringify(path.join(SIM, 'meds/mduVectorDisplay.coffee'))}\n` +
-        `export * as dps from ${JSON.stringify(path.join(SIM, 'meds/mduScreen_DPS.coffee'))}\n`);
+        `export * as vd from ${JSON.stringify(path.join(SIM, 'src/meds/mdu/mduVectorDisplay.coffee'))}\n` +
+        `export * as dps from ${JSON.stringify(path.join(SIM, 'src/meds/mdu/mduScreen_DPS.coffee'))}\n`);
     const m = await bundle(shim);
 
     // The display, far enough constructed to choose materials: the palette,

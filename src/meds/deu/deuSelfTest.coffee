@@ -36,8 +36,8 @@
 # frame.  With the model of the machine right, the specified display
 # falls out of integer arithmetic.
 #
-import {FCW} from 'meds/deuFCW'
-import * as FCWD from 'meds/deuFCW'
+import {FCW} from 'meds/deu/deuFCW'
+import * as FCWD from 'meds/deu/deuFCW'
 
 export FRAME_HZ = 55
 
@@ -163,7 +163,7 @@ export LETTER_SPIN = 7
 export LETTER_ORBIT = 143        # midway between the 127 and 160 circles
 export LETTER_PAIR = 12          # half the separation of the two glyphs
 
-# A character's beam position is the middle of its cell (meds/deuFCW), so
+# A character's beam position is the middle of its cell (meds/deu/deuFCW), so
 # anything meant to be centred on a point -- the two X's on the circles, the
 # four revolving letters, the resolution ticks -- is positioned at that
 # point and nothing is set back.

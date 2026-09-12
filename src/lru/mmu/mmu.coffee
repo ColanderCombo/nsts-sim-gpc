@@ -1,12 +1,7 @@
-#
-#
+import {call, setTimeout, setInterval, setImmediate, clearTimeout, clearInterval, now as simNow} from '../../com/simRuntime.coffee'
 # Mass Memory Unit Implementation
 #
-# The Shuttle Mass Memory Unit (MMU) is nominally a linearly
-# accessible tape drive.  When the GPC was upgraded to the
-# newer CMOS based AP-101S, the MMU was also replaced with a
-# solid-state storage device.  The interface and protocol were
-# unchanged, so this implementation applies to both.
+# The interface applies to both the tape and solid-state units.
 #
 # Commands responded to:
 #
@@ -26,18 +21,16 @@
 #
 # Position after a transfer.  The position word names a GAP, so a read of
 # blocks ending in subfile S leaves the transport reporting subfile S+1 --
-# and when that would be 8, the end-of-file bit instead.  This is what
-# makes a GPC's expected-position check pass or fail, so it is the part of
-# the model worth being exact about.
+# and when that would be 8, the end-of-file bit instead.
 #
 # Errors are latched in the BITE status registers and cleared when the
 # status is read, which is why a GPC asks for status after every single
 # transaction.
 #
 
-import {BusMsg} from './../com/bus.civet.jsx'
-import {DiscreteLines, REG_A, REPUBLISH_MS} from './../com/discretes.coffee'
-import {LRU} from './../com/lru.civet.jsx'
+import {BusMsg, busConfig} from './../../com/bus.civet.jsx'
+import {DiscreteLines, REG_A, REPUBLISH_MS} from './../../com/discretes.coffee'
+import {LRU} from './../../com/lru.civet.jsx'
 import {Volume} from './volume'
 import {IUA, OP, STAT_A, STAT_B, HALFWORDS_PER_BLOCK,
         SUBFILES, BLOCKS_PER_SUBFILE,
@@ -53,25 +46,23 @@ export class MMU extends LRU
     unit = opts.unit ? 1
     bus  = opts.bus  ? UNIT_BUS[unit]
     throw new Error("no bus for mass memory unit #{unit}") unless bus
-    super({id: "MMU#{unit}", busses: [bus]})
+    # "An modular memory unit uses 83 watts of power, with the SSMM
+    # consuming 9 of those watts" (USA-007587 sect.2.6).  wiring/eps.wir
+    # drives MMU1 from MN A and MMU2 from MN B.
+    super({id: "MMU#{unit}", busses: [bus],
+           power: (opts.power ? {feed: "MMU#{unit}", watts: 83}),
+           verbose: opts.verbose, onEvent: opts.onEvent})
     @readyBit = UNIT_READY_BIT[unit]
     @discretes = opts.discretes != false and @readyBit?
 
     @unit         = unit
     @busName      = bus
-    @verbose      = !!opts.verbose
-    @onEvent      = opts.onEvent ? null
+    @saveOnExit   = !!opts.saveOnExit
 
-    # The last few replies this unit put on the bus, for _notePeer.
     @_recentSent  = []
     @_peerSeen    = 0
 
-    # How long the transport takes to answer, and how often a block comes
-    # off the tape.  Seek and access time are not modelled, but the block
-    # period is not free to choose: a bus program that has read part of a
-    # block skips the rest of it by delaying, and the delay it computes
-    # says what the transport's rate is.
-    #
+    # Block period derived from the flight software's skip delay:
     # The count is two per halfword left in the block plus 128 more, over
     # a block of 512 -- and the software's comment calls that 128
     # "one half the MMU block gap in half words".  A delay count of two is
@@ -81,17 +72,10 @@ export class MMU extends LRU
     @replyDelayMs   = opts.replyDelayMs ? 0
     @blockDelayMs   = opts.blockDelayMs ? (768 * 0.033)
 
-    # How long the transport holds READY down for an operation that sends
-    # nothing back.  A model parameter: no seek time is documented here,
-    # and the only bound the software gives is that an operation lasts
-    # long enough to be worth waiting on: it delays 160 ms between an
-    # extended-block command and the read that follows it.
+    # Undocumented seek-time model; bounded by the software's 160 ms delay.
     @positionDelayMs = opts.positionDelayMs ? 50
 
-    # A block that was never written is a hole in the recording, and a
-    # transport that read one would report a data dropout.  Off by
-    # default. Turn it on to find out whether a GPC is
-    # asking for blocks nobody put on the tape.
+    # Report unwritten blocks as data dropouts.
     @faultOnBlank   = !!opts.faultOnBlank
 
     @volume = opts.volume ? new Volume()
@@ -107,11 +91,9 @@ export class MMU extends LRU
       # that starts afterwards does not hold a stale one forever.
       @discLines = new DiscreteLines()
       @_sendReady()
-      @_discTimer = setInterval (=> @_sendReady()), REPUBLISH_MS
+      @_discTimer = setInterval call(@, '_sendReady'), REPUBLISH_MS
       @_discTimer.unref?()
 
-  # state
-  #
 
   reset: () ->
     @position = {track: 0, file: 0, subfile: 0, bof: 1, eof: 0}
@@ -128,11 +110,24 @@ export class MMU extends LRU
     @_pendingWrite = null
     return
 
-  # discretes
-  #
 
   _sendReady: () ->
-    @discLines?.set REG_A, @readyBit, not @busy
+    @discLines?.set REG_A, @readyBit, (@powered() and not @busy)
+    return
+
+
+  # The transport comes up rewound with no latched status, and READY
+  # follows the supply: a computer reads MM1 READY down while the unit is
+  # off.
+  onPowerOn: () ->
+    @reset()
+    @_sendReady()
+    @_log "power on"
+    return
+
+  onPowerOff: () ->
+    @_sendReady()
+    @_log "power off"
     return
 
   _hold: (ms, why) ->
@@ -141,7 +136,7 @@ export class MMU extends LRU
       @busy = true
       @_log "busy (#{why})"
       @_sendReady()
-    @_busyTimer = setTimeout (=> @_release()), ms
+    @_busyTimer = setTimeout call(@, '_release'), ms
     @_busyTimer.unref?()
     return
 
@@ -154,23 +149,16 @@ export class MMU extends LRU
     @_sendReady()
     return
 
-  # An error the GPC will see the next time it asks for status.
   _fault: (reg, bit, why) ->
     if reg == 'A' then @statusA |= bit else @statusB |= bit
     @_log "fault #{reg} 0x#{bit.toString(16)}: #{why}"
     return
 
-  _log: (msg) ->
-    console.log "MMU#{@unit}: #{msg}" if @verbose
-    @onEvent?({unit: @unit, msg})
-    return
-
-  # wire
-  #
   _onBusMessage: (self, busID, msg, remote) ->
+    return unless self.powered()
     words = msg.data16
     return if self._notePeer(words)
-    if words.length >= 2
+    if msg.cmd
       cmd = ((words[0] & 0xffff) << 8) | ((words[1] >> 8) & 0xff)
       self._onCommand(cmd)
     else
@@ -181,7 +169,7 @@ export class MMU extends LRU
   @RECENT_SENT_MAX = 32
 
   _noteSent: (data16) ->
-    @_recentSent.push {words: Array.from(data16), t: Date.now()}
+    @_recentSent.push {words: Array.from(data16), t: simNow()}
     @_recentSent.shift() while @_recentSent.length > MMU.RECENT_SENT_MAX
     return
 
@@ -189,7 +177,7 @@ export class MMU extends LRU
     # Words this unit is expecting are never tested: a GPC writing back
     # a block it has just read would otherwise look like a second unit.
     return false if @_pendingWrite?
-    now = Date.now()
+    now = simNow()
     cutoff = now - MMU.PEER_WINDOW_MS
     @_recentSent = (e for e in @_recentSent when e.t >= cutoff)
     match = null
@@ -251,15 +239,16 @@ export class MMU extends LRU
   _send: (words, delayMs = @replyDelayMs) ->
     msg = new BusMsg(words.length)
     msg.data16[i] = words[i] & 0xffff for i in [0...words.length] by 1
-    emit = () =>
-      @stats.wordsOut += words.length
-      @_noteSent msg.data16
-      @bus[@busName].sendMsg msg
+    emit = call(@, '_emitSend', msg)
     if delayMs > 0 then setTimeout emit, delayMs else setImmediate emit
     return
 
-  # commands
-  #
+  _emitSend: (msg) ->
+    @stats.wordsOut += msg.data16.length
+    @_noteSent msg.data16
+    @bus[@busName].sendMsg msg
+    return
+
 
   _doPosition: (c) ->
     @position = {
@@ -398,6 +387,21 @@ export class MMU extends LRU
       # Block complete, then the search complete word for the next one.
       @_send [packPosition(@position)]
       @_send [packPosition(@position)]
+    return
+
+  describe: () ->
+    ["MMU#{@unit} on #{@busName} (port #{busConfig[@busName].port}), " +
+     "#{@volume.count()} block(s)" +
+     "#{if @volume.path then " from #{@volume.path}" else ' (blank tape)'}"]
+
+  onStop: () ->
+    if @_discTimer?
+      clearInterval @_discTimer
+      @_discTimer = null
+    @discLines?.close()
+    return unless @saveOnExit and @volume.path and @volume.dirty
+    console.log "saving #{@volume.path} (#{@volume.count()} blocks)"
+    @volume.save()
     return
 
   report: () ->
