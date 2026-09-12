@@ -1,3 +1,5 @@
+import {now as simNow} from '../com/simRuntime.coffee'
+import {call, setImmediate} from '../com/simRuntime.coffee'
 #
 # IBM-6246556A/p.1
 #
@@ -142,11 +144,10 @@
 # ____ 01011 0 1000 1010 10000 0000
 #
 
-import {Bus, BusMsg, bceNumToBusConfig} from 'com/bus'
+import {Bus, BusMsg, SEV_VALID, busConfig, bceNumToBusConfig, wallNowUs} from 'com/bus'
 import {BCEInstruction} from 'gpc/iop_bce_instr'
 
 
-# How many words of bus traffic each MIA keeps for the display:
 MIA_LOG_MAX = 64
 
 # One word on a serial bus, in nanoseconds, from the programming note to
@@ -157,13 +158,13 @@ MIA_LOG_MAX = 64
 # past the rest of a mass memory block is a delay of two counts per
 # halfword.
 #
-# A receiver presents halfwords to its BCE at that rate, however fast the
-# host modelling the subsystem answered.  The queue behind the MIA is a
-# socket buffer, so a whole transfer can land in it in one datagram, and
-# software paces itself against the transfer -- a per-block handshake
-# through a status location, say.  Metering here needs no time sync with
-# the sending process.
+# Receivers present queued halfwords at this rate.
 export BUS_WORD_NS = 33000
+export TX_BATCH_MAX = 512
+
+# Maximum age measured on the shared host clock.
+AGE_MAX_US = 50000
+export {SEV_VALID}
 
 export class MIA
   constructor: (@bceNum, @iop) ->
@@ -174,8 +175,6 @@ export class MIA
     @dataOutAvail = false
     @dataOutIsCmd = false
     @reset = false
-    @xmitEna = false
-    @recvEna = false
 
     @dataInBuf = 0
     @dataInAvail = false
@@ -185,24 +184,33 @@ export class MIA
     @miaParity = false
 
     @recvQueue = []
-    # Diagnostic only: how many transmissions this receiver has been handed.
+    # SEV bits parallel recvQueue; 101 is valid.
+    @recvSev = []
+    @lastSev = SEV_VALID
     @deliverCount = 0
-    # How many of the queued words belong to each transmission still
-    # waiting, oldest first: a mass memory block, a display unit's poll
-    # response.  A transmission is a run of words with dead bus either
-    # side of it, and that boundary is where a receiver resynchronises.
+    # Reply holds apply after this bus has answered at least once.
+    @everHeard = false
+    @lastCmdWall = 0
+    @lastCmdNs = 0
+    # Queued-word counts by transmission, oldest first.
     @recvRuns = []
-    # Whether the run at the head has had a word taken from it.  Only a
-    # run already being received loses the words that go by unheard.
+    # Elapsed words are dropped only after reception of a run begins.
     @runStarted = false
-    # Simulated time at or after which the next received word may be
-    # taken; see BUS_WORD_NS.
+    # Simulated deadline for the next word.
     @rxNextNs = 0
+    # A pending datagram carries the first word's clocks.
+    @txPend = []
+    @txPendWallUs = null
+    @txPendSimNs = 0
+    @txFlushArmed = false
 
     @_setupBus()
 
+  # BCE 24 is the instrumentation bus, one per computer: GPC n drives IPn
+  # (com/bus.civet), and a computer with no ID drives IP5.
   _setupBus: () ->
     config = bceNumToBusConfig[@bceNum]
+    config = busConfig["IP#{@iop.gpcId}"] ? config if @bceNum == 24 and @iop?.gpcId
     return unless config
     @busName = config.name
     @busNom = config.nom
@@ -211,27 +219,56 @@ export class MIA
 
   _onRecv: (self, busID, msg, remote) ->
     return unless msg.data16?
-    self.deliver(msg.data16)
+    if msg.cmd
+      self.hearCommand(msg.data16[0])
+      return
+    # Barrier peers already share simulated time, so wall age is ignored.
+    ageUs = 0
+    if msg.wallUs? and not self.iop?.barrier?
+      ageUs = (wallNowUs() - msg.wallUs) | 0
+      ageUs = 0 unless 0 <= ageUs <= AGE_MAX_US
+    self.deliver(msg.data16, {delayUs: msg.delayUs, sev: msg.sev, ageUs: ageUs})
     return
 
-  # One transmission arrives: a run of words with dead bus either side.
-  # The caller may be the bus or a test standing in for a subsystem.
-  deliver: (words) ->
+  # A heard command dates response delay and starts a new transaction.
+  hearCommand: (hw) ->
+    @_log(@rxLog, hw, true)
+    @lastCmdNs = @_nowNs()
+    @everHeard = true
+    stale = @recvQueue.length and not @_receiveUnderway()
+    @iop?.bceEvent?(@bceNum, "command #{hw.toString(16)} heard" +
+                             (if stale then ", #{@recvQueue.length} stale words flushed" else ''))
+    @flushRecv() if stale
+    return
+
+  # One datagram is one transmission.  `delayUs` dates its first word from
+  # the last command; `ageUs` backdates a listening transfer on the shared
+  # host clock.  An active receive retains its word schedule.  `sev` has one
+  # status byte per word and defaults to valid.
+  deliver: (words, opts = {}) ->
     return unless words?.length
-    # Nothing was on the bus, so the first word of this transmission is
-    # due now rather than at some deadline left over from the last one.
-    @rxNextNs = @_nowNs() unless @recvQueue.length
+    listening = @_listening()
+    unless @recvQueue.length or (listening and @_receiveUnderway())
+      @rxNextNs = @_nowNs()
+      @rxNextNs -= (opts.ageUs ? 0) * 1000 if listening
+      if opts.delayUs > 0
+        @rxNextNs = Math.max(@rxNextNs, @lastCmdNs + opts.delayUs * 1000)
     @deliverCount += 1
+    @everHeard = true
     for i in [0...words.length]
       hw = words[i] & 0xffff
       @recvQueue.push(hw)
+      @recvSev.push(if opts.sev? then ((opts.sev[i] ? SEV_VALID) & 7) else SEV_VALID)
       @_log(@rxLog, hw)
     @recvRuns.push(words.length)
+    @iop?.bceEvent?(@bceNum, "#{words.length} words arrive #{opts.ageUs ? 0} us old" +
+                             ", first due #{@dueInUs()} us from now" +
+                             ", #{@recvQueue.length} queued")
     return
 
-  # Push one word onto a traffic ring, stamped with the simulated time the
-  # CPU had reached.  `tap`, when one is attached, sees every word as it is
-  # logged, which is more than the ring holds.
+  dueInUs: () -> Math.round((@rxNextNs - @_nowNs()) / 1000)
+
+  # `tap` sees entries before the diagnostic ring drops old ones.
   _log: (ring, value, isCmd = false) ->
     entry = {
       seq: ring.length + (@_dropped ? 0) + 1
@@ -248,6 +285,8 @@ export class MIA
 
   clearState: () ->
     @recvQueue = []
+    @recvSev = []
+    @lastSev = SEV_VALID
     @recvRuns = []
     @runStarted = false
     @rxNextNs = 0
@@ -260,8 +299,6 @@ export class MIA
     @miaBusy = false
     @miaNoGo = false
     @miaParity = false
-    @xmitEna = false
-    @recvEna = false
     @clearLogs()
     return
 
@@ -273,6 +310,7 @@ export class MIA
 
   flushRecv: () ->
     @recvQueue = []
+    @recvSev = []
     @recvRuns = []
     @runStarted = false
     @rxNextNs = 0
@@ -281,14 +319,23 @@ export class MIA
   _nowNs: () ->
     @iop?.cpu?.timeNs ? 0
 
-  # How many words are left in the transmission at the head.  Words put
-  # straight into the queue with no run behind them (a test, ground
-  # equipment) count as one open run.
+  simStampUs: (ns = @_nowNs()) ->
+    Math.floor(ns / 1000) % 4294967296
+
+  _receiveUnderway: () ->
+    st = @iop?.bce?[@bceNum - 1]?.recv
+    st? and st.gotAny and st.left > 0
+
+  _listening: () ->
+    @iop? and not @iop.xmitEnabled(@bceNum)
+
+  # Directly queued test data forms one open run.
   _runLeft: () ->
     if @recvRuns.length then @recvRuns[0] else @recvQueue.length
 
   _take: () ->
     hw = @recvQueue.shift() & 0xffff
+    @lastSev = @recvSev.shift() ? SEV_VALID
     if @recvRuns.length
       @recvRuns[0] -= 1
       if @recvRuns[0] <= 0
@@ -296,29 +343,8 @@ export class MIA
         @runStarted = false        # the next run starts clean
     hw
 
-  # The words that went by while nobody was listening.
-  #
-  # A bus program skips the rest of a mass memory block by delaying: the
-  # transport streams on and what the receiver does not capture is gone.
-  # The queue here is a socket buffer, which would otherwise hold it all
-  # for the next receive.
-  #
-  # Called where a receive begins.  A receiver is enabled for the length of
-  # a commanded transfer and captures every word of it, so words are lost
-  # only outside one.
-  #
-  # Dropping stops at the end of the transmission being received.  A block
-  # has dead bus either side of it, which is what the delay is sized to
-  # land in -- two counts per halfword left in the block plus half the
-  # block gap, so the receiver comes back mid-gap.  A run nothing has been
-  # taken from yet is untouched, which holds the resynchronisation exact
-  # however the simulated clock and the sender's clock drift.
-  #
-  # One word survives: the MIA's receive buffer holds the last word it
-  # latched, and a bus program that has read part of a block starts its
-  # next sequence with a one-halfword receive that clears it.
-  #
-  # Returns how many words were lost.
+  # Drop elapsed words from the active transmission, retaining the last
+  # latched word.  A transmission not yet started remains queued.
   dropStale: () ->
     return 0 unless @runStarted and @recvQueue.length
     missed = Math.floor((@_nowNs() - @rxNextNs) / BUS_WORD_NS)
@@ -333,22 +359,12 @@ export class MIA
     return false unless @recvQueue.length > 0
     @_nowNs() >= @rxNextNs
 
-  # A receive begins: an idle bus owes the receiver nothing, so the first
-  # word of this transfer is due now rather than at a deadline left over
-  # from the last one.
-  #
-  # The clamp is once per receive.  A BCE's turn comes round once in 33
-  # slices, 16.5 us, and a word is due every 33, so clamping at every word
-  # quantises the schedule to the turn -- a word falling due a little after
-  # a turn waits for the one after that, and the average rate settles at 49
-  # us a word.  Clamping once per receive lets the debt accrue inside the
-  # transfer, so a turn that comes round late takes the two words it is
-  # owed and the average holds at the bus rate.
-  #
-  # dropStale() measures the words that went by unheard as the distance
-  # between this deadline and now, so without the clamp a receive is
-  # charged for the whole of the sender's schedule.
+  # Clamp an idle command-mode bus to the receive start.  A listening bus
+  # keeps the arrival schedule of an unstarted queued transmission.  The
+  # clamp occurs once per receive so 16.5 us BCE turns preserve the 33 us
+  # word rate.
   rxBegin: (nowNs) ->
+    return if @_listening() and @recvQueue.length > 0 and not @runStarted
     @rxNextNs = Math.max(@rxNextNs, nowNs)
     return
 
@@ -360,30 +376,42 @@ export class MIA
 
   xmitWord: (halfword) ->
     return unless @bus
-    msg = new BusMsg(1)
-    msg.data16[0] = halfword & 0xffff
     @_log(@txLog, halfword)
+    # Stamp the first word's wire time before the batch is deferred.
+    unless @txPendWallUs?
+      @txPendWallUs = wallNowUs()
+      @txPendSimNs = @_nowNs()
+      @iop?.bceEvent?(@bceNum, 'transmission begins')
+      # Shared-memory batches flush from the instruction loop.
+      @iop?.noteTxPending?(this) if @bus?.ring?
+    @txPend.push(halfword & 0xffff)
+    if @txPend.length >= TX_BATCH_MAX
+      @flushTx()
+    else unless @txFlushArmed
+      @txFlushArmed = true
+      setImmediate call(@, 'flushTx')
+
+  flushTx: () ->
+    @txFlushArmed = false
+    return unless @bus and @txPend.length
+    msg = new BusMsg(@txPend.length)
+    msg.data16[i] = w for w, i in @txPend
+    msg.wallUs = @txPendWallUs
+    msg.simUs = @simStampUs(@txPendSimNs)
+    @txPend = []
+    @txPendWallUs = null
     @bus.sendMsg(msg)
 
   xmitCmd: (cmd24) ->
     return unless @bus
-    # A command begins a new transaction, so anything still queued from the
-    # last one is stale and must not lead this one.  A subsystem cannot
-    # always know how many words the bus program will read: a display unit
-    # answers a status request with its whole status block, and software
-    # reads either one halfword of it or sixteen from the same command
-    # word.  A leftover word is therefore normal, and the hardware, whose
-    # receiver is inhibited outside a commanded transfer, never captures it.
-    #
-    # Flushed here rather than on receive completion, which would also
-    # discard words that legitimately arrive later in a transfer and
-    # measurably destabilises the mass memory load.  At command time
-    # nothing a transaction needs has been sent yet.
+    # A command starts a transaction after discarding unread prior data.
     @flushRecv() if @recvQueue.length
-    msg = new BusMsg(2)
-    msg.data16[0] = (cmd24 >>> 8) & 0xffff
-    msg.data16[1] = (cmd24 & 0xff) << 8
+    @flushTx()
+    msg = BusMsg.Command(cmd24)
+    msg.simUs = @simStampUs(@_nowNs())
     @_log(@txLog, (cmd24 >>> 8) & 0xffff, true)
+    @lastCmdWall = simNow()
+    @lastCmdNs = @_nowNs()
     @bus.sendMsg(msg)
 
 
@@ -395,5 +423,3 @@ export class BCE
 
     exec: (iop, hw1, hw2) ->
         @instr.exec(iop, hw1, hw2)
-
-

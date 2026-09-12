@@ -2,45 +2,133 @@
 //
 // Space Shuttle DPS bus connected Line Replaceable Unit (LRU)
 //
-{Bus, busConfig} from './bus.civet.jsx'
+// Configuration may name `power` feeds and a `powerRule`; units without
+// feeds remain powered.  `verbose` writes trace lines to stdout and
+// `onEvent` sends them to an embedding caller.
+//
+{Bus, BusMsg, busConfig} from './bus.civet.jsx'
+{PowerSupply} from './power.coffee'
+{SimControl} from './simControl.coffee'
+{setTimeout, setImmediate, call} from './simRuntime.coffee'
+{StateStore} from './stateStore.coffee'
 
 class LRU
   @(@config)
     @id = @config.id
-    @_setupSimControl()
+    @verbose = !!@config.verbose
+    @onEvent = @config.onEvent ?? null
     @_setupBuses()
-    @_scReady()
-    
-  _setupSimControl()
-    config = busConfig['__SIMCONTROL']
-    @simControlBus = new Bus('__SIMCONTROL', config)
-    
-  _recvSimControl(busID, msg, remote)
-    console.log "#{@id}: CONTROL #{busID} recv #{msg}"
-  
-  _scReady()
-    null
-    // Send ready report
-    // @simControlBus.send
-    
+    @_setupPower()
+    @dstore = new StateStore(@)
+    @simControl = new SimControl(@)
+
+  // Register fields for the default state-store adapter.
+  markDstore(kind, fields, target = @)
+    @dstore.mark(kind, fields, target)
+
+  saveDstore(directory)
+    @dstore.save(directory)
+
+  validateDstore(directory)
+    @dstore.validate(directory)
+
+  restoreDstore(directory)
+    @dstore.restore(directory)
+
+  ready()
+    Promise.all(Object.values(@bus).map((bus) => bus.ready)
+                .concat([@power.ready(), @simControl.ready]))
+
+  controlBuses()
+    Object.keys(@controlBusMap()).concat(['_simControl'])
+
+  controlBusMap()
+    buses := {...@bus}
+    if @power.channel?.bus
+      buses._POWER = @power.channel.bus
+    buses
+
+  reportError(error)
+    @simControl.error(error)
+
   _setupBuses()
     @bus = {}
-    @busRecvCB = {}
     for busName in @config.busses
       if busName not of busConfig
         console.log "UNDEFINED BUS: ", busName, busConfig
       else
         @bus[busName] = new Bus(busName,  busConfig[busName])
-    
-    for id, bus of @bus
-      bus.onReceive @recvBus
-      @busRecvCB[id] = undefined
-  
-  recvBus(busID, msg, remote)
-    console.log "RECV", busID, msg, "||", @busRecvCB[busID], "||",  @busRecvCB
-    if @busRecvCB[busID]?
-      @busRecvCB[busID](busID, msg, remote)
-    else
-      console.log "#{@id}: #{busID} recv #{msg}"
-      
+
+  // Replies are deferred until after the command callback returns.
+  send(bus, words, delayMs = 0)
+    return unless bus?
+    msg := new BusMsg(words.length)
+    msg.data16.set(words)
+    emit := call(bus, 'sendMsg', msg)
+    if delayMs > 0 then setTimeout(emit, delayMs) else setImmediate(emit)
+    return
+
+  describe()
+    ["#{@id} on #{Object.keys(@bus).join(' ')}"]
+
+  report()
+    {id: @id, powered: @powered()}
+
+  stop()
+    try
+      @onStop()
+    catch error
+      @reportError(error)
+      return Promise.reject(error)
+    new Promise (resolve, reject) =>
+      globalThis.setTimeout =>
+        try
+          Promise.resolve(@closeBusses()).then(resolve, reject)
+        catch error
+          @reportError(error)
+          reject(error)
+
+  // Flush pending work before the buses close.
+  onStop()
+    null
+
+  closeBusses()
+    Object.values(@bus).forEach((b) => b.close?())
+    @power?.close?()
+    @simControl.close()
+
+  _log(msg)
+    console.log "#{@logName()}: #{msg}" if @verbose
+    @onEvent?({id: @id, msg})
+
+  logName()
+    @id
+
+  _setupPower()
+    @power = new PowerSupply(@id, @config.power, {
+      rule: @config.powerRule
+      onPower: (on_) => @onPower(on_)
+      onVolts: (input) => @onVoltage(input)
+      draw: (input) => @powerDraw(input)
+    })
+    @power.open()
+
+  powered()
+    @power.powered()
+
+  onPower(on_)
+    if on_ then @onPowerOn() else @onPowerOff()
+
+  onPowerOn()
+    null
+
+  onPowerOff()
+    null
+
+  onVoltage(input)
+    null
+
+  powerDraw(input)
+    if input.live() then input.watts else 0
+
 export { LRU }

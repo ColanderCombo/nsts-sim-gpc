@@ -1,12 +1,12 @@
-// test_iplmicro.cjs — the IPL microcode's IOP programs, as asm101 assembled
+// iplmicro.cjs — the IPL microcode's IOP programs, as asm101 assembled
 // and lnk101 located them.
 //
-// The image in gpc/gen/fakeipl.json is planted at its origin and read back
+// The image in gpc/asm/fakeipl.json is planted at its origin and read back
 // as machine words: the MSC program, the two BCE programs, the receive
 // sequence, and the three mass memory command tables the loader fills in
 // from the record address.
 //
-// Usage:  node test/test_iplmicro.cjs
+// Usage:  node test/gpc/iplmicro.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -18,7 +18,7 @@ const fs      = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..');
+const SRC = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -39,7 +39,7 @@ async function bundle(entry) {
         `iplmicro.${path.basename(entry, '.coffee')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SRC,
-        entryPoints: [path.join(SRC, entry)],
+        entryPoints: [path.join(SRC, 'src', entry)],
         bundle:   true,
         platform: 'node',
         format:   'cjs',
@@ -62,7 +62,7 @@ const hex = (v) => '0x' + (v >>> 0).toString(16);
 (async () => {
     const { AP101 }     = await bundle('gpc/ap101.coffee');
     const { IPLLoader } = await bundle('gpc/iplloader.coffee');
-    const IMAGE = require(path.join(SRC, 'gpc/gen/fakeipl.json'));
+    const IMAGE = require(path.join(SRC, 'src/gpc/asm/fakeipl.json'));
 
     const gpc = new AP101({ machine: 'ap101s' });
     const loader = new IPLLoader(gpc);

@@ -780,7 +780,7 @@ export class MSCInstruction
                             t.regProgExcept.set32(pe)
                         bw = bw | acc
                         t.regBusyWait.set32(bw)
-                        t.bceEvent(t.IOP_TRACE_BCE, "@SIO  acc #{(acc >>> 0).toString(16)}") if t.IOP_TRACE_BCE?
+                        t.bceMaskEvent(acc, "@SIO  acc #{(acc >>> 0).toString(16)}")
                         t.incrNIA(1)
                 }
         # EXCHANGE ACC AND X

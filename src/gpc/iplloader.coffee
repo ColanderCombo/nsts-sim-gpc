@@ -27,7 +27,7 @@
 #
 import {IOP_SLICE_NS} from 'gpc/cpu'
 import {RTPacer} from 'gpc/rtpacer'
-import IMAGE from 'gpc/gen/fakeipl.json'
+import IMAGE from 'gpc/asm/fakeipl.json'
 
 # POO 2.5.3.3: the two fill patterns and the address that divides them.
 FILL_LOW   = 0xc9fb

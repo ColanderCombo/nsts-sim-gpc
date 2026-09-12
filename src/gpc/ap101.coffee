@@ -1,25 +1,36 @@
 
 # AP-101 Computer Implementation
 #
-# This class represents the physical GPC: CPU, IOP, and a the connection
-# between the two. 
+# A GPC containing a CPU, IOP, and their memory bus.
 #
 fs = require 'fs'
 path = require 'path'
 import {LRU} from 'com/lru'
 import {CPU, IOP_SLICE_NS} from 'gpc/cpu'
-import {IOP} from 'gpc/iop'
+import {IOP, gpcSelfId} from 'gpc/iop'
 import {MemoryBus} from 'gpc/membus'
 import {MCM} from 'gpc/mcm'
 import {resolveMachine} from 'gpc/machine'
 
 
+# "Positioning a switch to ON enables power from three essential buses,
+# ESS 1BC, 2CA, and 3AB.  The essential bus power controls remote power
+# controller (RPCs), which permit main bus DC power from the three main
+# buses (MN A, MN B, and MN C) to power the GPC.  There are three RPCs for
+# each GPC ... Each computer uses 560 watts of power" (USA-007587
+# sect.2.6).  wiring/eps.wir drives the three feeds; GPC 0, the
+# standalone computer, is on none of them.
+GPC_WATTS = 560
+GPC_SUPPLIES = ['A', 'B', 'C']
+
 export class AP101 extends LRU
   constructor: (CONFIG) ->
+    n = gpcSelfId(CONFIG?.gpc)
     lruConfig = {
-      id: "GPC"
+      id: "GPC#{n}"
       nom: "GPC"
       busses: []
+      power: (if n > 0 then ({name: s, feed: "GPC#{n}_#{s}"} for s in GPC_SUPPLIES) else null)
     }
     super(lruConfig)
     @CONFIG = CONFIG
@@ -30,7 +41,57 @@ export class AP101 extends LRU
     @cpu.iop = @iop
     @cpu.ram = new MemoryBus(@cpu.mainStorage, @iop.mainStorage)
 
+  dstoreBlocks: ->
+    # FCM is the contiguous, big-endian halfword image used by loadFCM.
+    # Direct backing-store copies preserve access counters and protection.
+    blocks = []
+    offset = 0
+    for [name, memory] in [['cpu', @cpu.mainStorage], ['iop', @iop.mainStorage]]
+      continue unless memory.wordCount
+      blocks.push {file: 'memory.fcm', value: memory.rawData, offset}
+      offset += memory.rawData.byteLength
+      blocks.push {file: "#{name}-protection.bin", value: memory.protData, encoding: 'bits'}
+      for field in ['lastRead', 'lastWritten', 'protLastWritten']
+        blocks.push {file: "#{name}-#{field}.bin.gz", value: memory[field].buffer, compression: 'gzip'}
+    blocks
+
+  beforeRestoreDstore: ->
+    @iop.leaveBarrier()
+    return
+
+  afterRestoreDstore: ->
+    # Shared-memory membership belongs to this process, not the saved PID.
+    @iop.leaveBarrier()
+    if @runState?.running and @runState?.realTime
+      offset = @iop.barrierOffsetUs
+      @iop.joinBarrier()
+      if @iop.barrier? and offset?
+        @iop.barrierOffsetUs = @iop.barrier.offsetUs = offset
+        @iop.barrier.publish(@cpu.timeNs)
+    return
+
   Object.defineProperty @prototype, 'ram', get: -> @cpu.ram
+
+  controlBusMap: ->
+    buses = super()
+    for bce in @iop?.bce ? []
+      bus = bce.mia?.bus
+      buses[bus.busID] = bus if bus?
+    bus = @iop?.discreteBus?.bus
+    buses[bus.busID] = bus if bus?
+    for _, other of @iop?.gpcLinks?.others ? {}
+      bus = other.bus?.bus
+      buses[bus.busID] = bus if bus?
+    buses
+
+  onPower: (on_) ->
+    @iop?.setPowered(on_)
+    return
+
+  powerDraw: (input) ->
+    live = (i for i in @power.inputs when i.live())
+    return 0 unless input.live() and live.length
+    GPC_WATTS / live.length
 
   setMachine: (name) ->
     m = resolveMachine(name)

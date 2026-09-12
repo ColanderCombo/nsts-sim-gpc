@@ -1,3 +1,4 @@
+{BusTraffic} from './busTraffic.coffee'
 dgram .= if typeof window != 'undefined' then window.dgram else require('dgram')
 Buffer .= if typeof window != 'undefined' then window.Buffer else globalThis.Buffer
 
@@ -11,12 +12,60 @@ MULTICAST_GROUP := "239.255.1.1"
 parseBasePort := (raw) =>
   port := Number(raw)
   unless Number.isInteger(port) and 1024 <= port <= 65400
-    throw new Error(`base port must be an integer from 1024 to 65400, got '${raw}'`)
+    throw new Error(`invalid base port '${raw}'`)
   port
 
-busSettings := { basePort: DEFAULT_BASE_PORT, iface: DEFAULT_IFACE }
+busSettings := { basePort: DEFAULT_BASE_PORT, iface: DEFAULT_IFACE, shm: '' }
+
+// --bus-shm, or NSTS_BUS_SHM, selects busses for the shared-memory ring:
+//
+//   ic        the inter-computer busses and the GPCs' discrete channels,
+//             the common-set path
+//   headless  every bus but the two the Python members hold
+//   gui       every bus except those read by Python or Electron members
+//   all       every bus opened in this process
+//   off       none, which is the default
+//   a comma-separated list of bus names
+//
+// Every participant on a bus must select the same transport.  The Python
+// IDP and panel members cannot load the addon; Electron renderers cannot
+// create its external ArrayBuffer.  Those members remain on UDP.
+DEFAULT_SHM := 'off'
+PYTHON_BUSSES := ["_idpDiscretes1", "_idpDiscretes2", "_idpDiscretes3",
+                  "_idpDiscretes4", "_PANEL"]
+// Busses read by Electron renderer processes.
+ELECTRON_BUSSES := ["_IDP1", "_IDP2", "_IDP3", "_IDP4",
+                    "_KYBD1", "_KYBD2", "_KYBD3", "_IDPSW"]
+SHM_GROUPS := {
+  ic: ["IC1", "IC2", "IC3", "IC4", "IC5",
+       "_gpcDiscretes0", "_gpcDiscretes1", "_gpcDiscretes2",
+       "_gpcDiscretes3", "_gpcDiscretes4", "_gpcDiscretes5"]
+}
+
+groupNames := (token) =>
+  switch token
+    when 'all' then Object.keys(busConfig)
+    when 'headless'
+      Object.keys(busConfig).filter((n) => not PYTHON_BUSSES.includes(n))
+    when 'gui'
+      Object.keys(busConfig).filter((n) =>
+        not PYTHON_BUSSES.includes(n) and not ELECTRON_BUSSES.includes(n))
+    else SHM_GROUPS[token] ?? [token]
+
+shmNames .= new Set<string>()
+
+setShmNames := (setting) =>
+  spec := String(setting ?? '').trim()
+  names := if spec == 'off' or spec == ''
+    []
+  else
+    spec.split(',').flatMap((t) => groupNames(t.trim()))
+  shmNames.clear()
+  shmNames.add(name) for name of names.filter((name) => name != '_simControl')
+  shmNames
 
 busConfig := {
+  _simControl: {offset: 0, nom: 'Simulation control (JSON UDP)'}
   IC1: { gpcBceNum :  1, offset:  1, nom: "Intercomputer 1" }
   IC2: { gpcBceNum :  2, offset:  2, nom: "Intercomputer 2" }
   IC3: { gpcBceNum :  3, offset:  3, nom: "Intercomputer 3" }
@@ -45,21 +94,58 @@ busConfig := {
   IP3: { gpcBceNum : 24, offset: 26, nom: "IP3", gpc: 3}
   IP4: { gpcBceNum : 24, offset: 27, nom: "IP4", gpc: 4}
   IP5: { gpcBceNum : 24, offset: 28, nom: "IP5", gpc: 5}
+  // The instrumentation busses: each OI MDM has a port on both, PCMMU 1
+  // commands on OI1 and PCMMU 2 on OI2.
+  OI1: { offset: 29, nom: "OI data bus 1, PCMMU 1 to the OI MDMs" }
+  OI2: { offset: 30, nom: "OI data bus 2, PCMMU 2 to the OI MDMs" }
 
   _KYBD1: { offset: 31, nom: "Left keyboard, to IDP 1 and IDP 3" }
   _KYBD2: { offset: 32, nom: "Right keyboard, to IDP 3 and IDP 2" }
   _KYBD3: { offset: 33, nom: "Aft keyboard (R11L), to IDP 4" }
-  _IDPSW: { offset: 34, nom: "IDP/CRT SEL switch positions" }
 
   _IDP1: { offset: 41, nom: "MEDS IDP/MDU 1533B Bus 1" }
   _IDP2: { offset: 42, nom: "MEDS IDP/MDU 1533B Bus 2" }
   _IDP3: { offset: 43, nom: "MEDS IDP/MDU 1533B Bus 3" }
   _IDP4: { offset: 44, nom: "MEDS IDP/MDU 1533B Bus 4" }
 
-  _FF1_mdmIO: { offset: 50, nom: "MDM FF1 I/O" }
+  // The analog inputs of each ADC pair, in the message shape
+  // lru/adc/adcConf.coffee describes; both units of a pair sample the same bus.
+  _ADC1_analogs: { offset: 45, nom: "ADC 1A/1B analog inputs: MPS, OMS and SPI meters" }
+  _ADC2_analogs: { offset: 46, nom: "ADC 2A/2B analog inputs: APU and HYD meters" }
 
-  _NSP1_data: { offset: 60, nom: "NSP1 to PCMMU"}
-  _NSP2_data: { offset: 61, nom: "NSP2 to PCMMU"}
+  // The hardware side of each MDM: the cards' channels, in the message
+  // shape lru/mdm/mdmConf.coffee describes.
+  _FF1_mdmIO: { offset: 100, nom: "MDM FF1 hardware side" }
+  _FF2_mdmIO: { offset: 101, nom: "MDM FF2 hardware side" }
+  _FF3_mdmIO: { offset: 102, nom: "MDM FF3 hardware side" }
+  _FF4_mdmIO: { offset: 103, nom: "MDM FF4 hardware side" }
+  _FA1_mdmIO: { offset: 104, nom: "MDM FA1 hardware side" }
+  _FA2_mdmIO: { offset: 105, nom: "MDM FA2 hardware side" }
+  _FA3_mdmIO: { offset: 106, nom: "MDM FA3 hardware side" }
+  _FA4_mdmIO: { offset: 107, nom: "MDM FA4 hardware side" }
+  _PF1_mdmIO: { offset: 108, nom: "MDM PF1 hardware side" }
+  _PF2_mdmIO: { offset: 109, nom: "MDM PF2 hardware side" }
+  _LF1_mdmIO: { offset: 110, nom: "MDM LF1 hardware side" }
+  _LA1_mdmIO: { offset: 111, nom: "MDM LA1 hardware side" }
+  _LL1_mdmIO: { offset: 112, nom: "MDM LL1 hardware side" }
+  _LL2_mdmIO: { offset: 113, nom: "MDM LL2 hardware side" }
+  _LR1_mdmIO: { offset: 114, nom: "MDM LR1 hardware side" }
+  _LR2_mdmIO: { offset: 115, nom: "MDM LR2 hardware side" }
+  _OF1_mdmIO: { offset: 116, nom: "MDM OF1 hardware side" }
+  _OF2_mdmIO: { offset: 117, nom: "MDM OF2 hardware side" }
+  _OF3_mdmIO: { offset: 118, nom: "MDM OF3 hardware side" }
+  _OF4_mdmIO: { offset: 119, nom: "MDM OF4 hardware side" }
+  _OA1_mdmIO: { offset: 120, nom: "MDM OA1 hardware side" }
+  _OA2_mdmIO: { offset: 121, nom: "MDM OA2 hardware side" }
+  _OA3_mdmIO: { offset: 122, nom: "MDM OA3 hardware side" }
+
+  // The PCMMU's two telemetry streams, heard by both NSPs, in the datagram
+  // shape lru/pcmmu/pcmmuConf.coffee describes.
+  _PCMMU_HDR: { offset: 60, nom: "PCMMU 128 kbps telemetry to NSP 1 and 2"}
+  _PCMMU_LDR: { offset: 61, nom: "PCMMU 64 kbps telemetry to NSP 1 and 2"}
+  // The transponder's bit stream to the NSPs, in the datagram shape
+  // lru/nsp/nspConf.coffee describes.
+  _SBAND_FWD: { offset: 62, nom: "S-band forward link to NSP1 and NSP2"}
 
   _GSE_PCMMU_T0: { offset: 70, nom: "PCMMU to GSE via T-0 umbilical"}
 
@@ -70,9 +156,24 @@ busConfig := {
   _gpcDiscretes4: { offset: 84, nom: "GPC 4 discretes", gpc: 4 }
   _gpcDiscretes5: { offset: 85, nom: "GPC 5 discretes", gpc: 5 }
 
+  // The IDP's discrete lines, in the message shape com/discretes.coffee
+  // describes; the bits are meds/idp/idpDiscretes.coffee.
+  _idpDiscretes1: { offset: 86, nom: "IDP 1 discretes" }
+  _idpDiscretes2: { offset: 87, nom: "IDP 2 discretes" }
+  _idpDiscretes3: { offset: 88, nom: "IDP 3 discretes" }
+  _idpDiscretes4: { offset: 89, nom: "IDP 4 discretes" }
+
   _LPS_FR1_CDBFR: { offset: 90, nom: "LPS FR1 CDBFR"}
 
-  __SIMCONTROL: { offset: 99, nom:'Simulation Control'}
+  // The crew panels' controls and indicators, in the message shape
+  // panel/panelBus.coffee describes: one bus for every panel, a message
+  // keyed by panel and control.
+  _PANEL: { offset: 130, nom: "Panel controls and indicators" }
+
+  // The dc distribution: each feed's volts and the watts every unit takes
+  // from it, in the message shape com/power.coffee describes.
+  _POWER: { offset: 131, nom: "Power feeds and the loads on them" }
+
 
 }
 
@@ -82,10 +183,11 @@ for [name,config] of Object.entries(busConfig)
   if config.gpcBceNum?
     bceNumToBusConfig[config.gpcBceNum] = config
 
-// A value given here wins over the environment, which wins over the default.
-configureBus := ({basePort, iface} = {}) =>
+configureBus := ({basePort, iface, shm} = {}) =>
   busSettings.basePort = parseBasePort(basePort ?? process.env.NSTS_BASE_PORT ?? DEFAULT_BASE_PORT)
   busSettings.iface = iface ?? process.env.NSTS_BUS_IFACE ?? DEFAULT_IFACE
+  busSettings.shm = shm ?? process.env.NSTS_BUS_SHM ?? DEFAULT_SHM
+  setShmNames(busSettings.shm)
   for [name,config] of Object.entries(busConfig)
     config.port = busSettings.basePort + config.offset
   busSettings
@@ -97,19 +199,77 @@ catch e
   process.exit(2)
 
 
+busshm .= null
+shmRefused .= false
+loadBusShm := =>
+  return busshm if busshm?
+  return null if shmRefused
+  if typeof window != 'undefined'
+    shmRefused = true
+    return null
+  try
+    busshm = require('./busshm')
+  catch e
+    console.error(`bus: shared memory unavailable, ${e.message}`)
+    shmRefused = true
+    shmNames.clear()
+  busshm
+
+openShmRing := (busID) =>
+  return null unless shmNames.has(busID)
+  mod := loadBusShm()
+  unless mod?
+    console.error(`bus: ${busID} shared memory unavailable; using UDP`)
+    return null
+  mod.openRing(busSettings.basePort, busConfig[busID].offset)
+
+
+// A datagram on any bus: a header, then the words as big-endian
+// halfwords.
+//
+//   byte 0      header length in bytes; 0 reads as 2
+//   byte 1      bit 0 set when the words are a command: the 24 command
+//               bits left justified in two halfwords.  Clear for data
+//               words, which a sender puts in one datagram a transmission
+//               (gpc/iop_bce.coffee MIA.flushTx).  Bit 1 set when bytes
+//               4-7 carry the sender's clock, bit 2 when bytes 8-11 carry
+//               its simulated clock as well.
+//   bytes 2-3   simulated microseconds from the last command word to the
+//               first word of this transmission, big-endian
+//   bytes 4-7   the sender's wall clock in microseconds modulo 2^32 when
+//               it sent, big-endian
+//   bytes 8-11  the sender's simulated clock in microseconds modulo
+//               2^32, big-endian, present when bit 2 of byte 1 is set
+//   bytes 12..  one byte a word, the word's SEV bits -- S in bit 2, E in
+//               bit 1, V in bit 0 -- present only when a word carries
+//               other than 101, the valid pattern.  They follow whichever
+//               of the two clocks the header carries, and a header with
+//               neither carries them from byte 4.
 class BusMsg
   length16: number = 0
   rawData : Buffer
   data16 : Uint16Array = null
   data8 : Uint8Array = null
   inNetworkOrder: bool = false
-  sendBuffer : Buffer
+  delayUs : number = 0
+  sev : any = null
+  cmd : bool = false
+  wallUs : number = null       // sender wall-clock microseconds
+  simUs : number = null        // sender simulated-clock microseconds
 
   @(@length16)
     @rawData = Buffer.alloc(@length16*2)
     @data16 = new Uint16Array(@rawData.buffer, @rawData.byteOffset, @rawData.byteLength/2)
     @data8 = new Uint8Array(@rawData.buffer, @rawData.byteOffset, @rawData.byteLength)
     @inNetworkOrder = false
+
+  // A command word as it goes on the wire.
+  @Command(cmd24)
+    msg := new BusMsg(2)
+    msg.data16[0] = (cmd24 >>> 8) & 0xffff
+    msg.data16[1] = (cmd24 & 0xff) << 8
+    msg.cmd = true
+    return msg
 
   @FromNetBuf(buf)
     msg := new BusMsg(Math.ceil(buf.length/2))
@@ -124,7 +284,7 @@ class BusMsg
       @inNetworkOrder = true
 
   cvtToLoc()
-    if @inNetworkOrder 
+    if @inNetworkOrder
       @rawData.swap16()
       @inNetworkOrder = false
 
@@ -134,41 +294,63 @@ class BusMsg
       retBuf.swap16()
     return retBuf
 
+SEV_VALID := 0b101
+HEADER_MIN := 2
+HEADER_STAMPED := 8
+HEADER_SIM := 12
+
+// A host-wide monotonic clock in microseconds modulo 2^32.
+WRAP_US := 4294967296n
+wallNowUs := => Number(nowMicros() % WRAP_US) >>> 0
+
+{dispatch, frozen, nowMicros, call, registerExternal, registerType} from './simRuntime.coffee'
+
 class Bus
   busID : string = ''
   busDesc : string = ''
-  isShuttleBus : boolean = false
-  iua : number = 0
-  sendBuffer : typeof Buffer = Buffer
   server : any = null
   recvCB : any = null
+  monitor : any = null
   cbObj : object = null
   selfEcho : any[] = []
+  ring : any = null
+  // Resolves once the socket is bound and in the multicast group, so a
+  // datagram sent after it reaches the other members.
+  ready : Promise<void>
 
-  @(@busID, @busDesc, @isShuttleBus=false, @iua=0x00)
-    @sendBuffer = Buffer.alloc(16)
+  @(@busID, @busDesc)
     @selfEcho = []
-    @_startMulticast()
+    @_unregisterCheckpoint = registerExternal("bus:#{@busID}", @)
+    @ring = openShmRing(@busID)
+    if @ring?
+      // A slot is read where it lies and reused by a later lap, so the
+      // handler takes what it keeps out of the view it is given.
+      @ring.onData = (buf) => @_recvMessage(buf, null)
+      @ready = Promise.resolve()
+    else
+      @_startMulticast()
 
-  // The interface the busses live on: loopback, every LRU being a process
-  // on this machine, or a local address for a bus across a real network.
-  // The join names it; joining without one delivers every datagram twice on
-  // macOS, and the self-echo filter below drops only one copy.
+  // An explicit interface prevents duplicate multicast delivery on macOS.
   _startMulticast()
     @server = dgram.createSocket({type:"udp4", reuseAddr:true})
-    @server.bind @busDesc.port, () =>
-      @server.setBroadcast(true)
-      @server.setMulticastLoopback(true)
-      @server.setMulticastTTL(128)
-      @server.setMulticastInterface(busSettings.iface)
-      @server.addMembership(MULTICAST_GROUP, busSettings.iface)
-      // an arrow: dgram calls the handler with the socket as `this`
-      @server.on('message', (message, remote) => @_recvMessage(message, remote))
-    // Don't let this socket prevent process exit
+    @ready = new Promise (resolve) =>
+      @server.bind @busDesc.port, () =>
+        @server.setBroadcast(true)
+        @server.setMulticastLoopback(true)
+        @server.setMulticastTTL(128)
+        @server.setMulticastInterface(busSettings.iface)
+        @server.addMembership(MULTICAST_GROUP, busSettings.iface)
+        // Preserve the Bus receiver; dgram supplies the socket as `this`.
+        @server.on('message', (message, remote) => @_recvMessage(message, remote))
+        resolve()
     @server.unref()
 
   onReceive(@recvCB, @cbObj)
     return
+
+  traffic()
+    @monitor ??= new BusTraffic()
+    @monitor.snapshot()
 
   @SELF_ECHO_MAX = 1024
 
@@ -185,38 +367,86 @@ class Bus
     return
 
   _recvMessage(message, remote)
+    if frozen()
+      copy := Buffer.from(message)
+      dispatch(call(@, '_recvMessage', copy, remote))
+      return
     return if @_isSelfEcho(message)
-    if @isShuttleBus
-      if message[0] != @iua
-        return
-      message = message.slice(2)
-    msg .= BusMsg.FromNetBuf(message)
+    hlen .= message[0] or HEADER_MIN
+    hlen = HEADER_MIN if hlen < HEADER_MIN
+    return if hlen > message.length
+    @monitor?.note('rx', message)
+    msg .= BusMsg.FromNetBuf(message.subarray(hlen))
+    msg.delayUs = if hlen >= 4 then message.readUInt16BE(2) else 0
+    msg.cmd = (message[1] & 1) == 1
+    stamped := (message[1] & 2) == 2 and hlen >= HEADER_STAMPED
+    msg.wallUs = message.readUInt32BE(4) if stamped
+    simStamped := (message[1] & 4) == 4 and hlen >= HEADER_SIM
+    msg.simUs = message.readUInt32BE(8) if simStamped
+    sevStart := if simStamped then HEADER_SIM else if stamped then HEADER_STAMPED else 4
+    if hlen > sevStart
+      msg.sev = Array.from(message.subarray(sevStart, hlen))
     if @recvCB
       @recvCB(@cbObj,@busID, msg, remote)
     else
       console.log "RECV UNHANDLED", @busID, message
 
   send(data,len=undefined)
-    return unless @server?
+    if frozen()
+      copy := Buffer.from(data.subarray(0, len ?? data.length))
+      dispatch(call(@, 'send', copy, copy.length))
+      return
     len ?= data.length
+    if @ring?
+      @monitor?.note('tx', data, len)
+      @ring.push data, len
+      return
+    return unless @server?
+    @monitor?.note('tx', data, len)
     @_noteSent data, len
     @server.send data, 0, len, @busDesc.port, MULTICAST_GROUP
 
+  prepareCheckpoint()
+    @ring?.drain()
+
+  checkpointTransport()
+    @selfEcho.map((buf) => Buffer.from(buf))
+
+  restoreTransport(saved)
+    @ring?.resetCursor()
+    @selfEcho = saved.map((buf) => Buffer.from(buf))
+
   close()
+    @_unregisterCheckpoint?()
+    @ring?.close()
+    @ring = null
     @server?.close()
     @server = null
 
   sendMsg(msg)
     body := msg.getBytes()
-    unless @isShuttleBus
-      @send body, body.length
-      return
-    // dgram.send() does not copy: the buffer must be left 
-    // alone until the datagram has actually gone out:
-    buf := Buffer.alloc(body.length + 2)
-    buf[0] = @iua
-    body.copy(buf, 2)
+    n := msg.length16
+    sev := msg.sev
+    flagged := sev? and sev.some((b) => (b & 7) != SEV_VALID)
+    base := if msg.simUs? then HEADER_SIM else HEADER_STAMPED
+    hlen := if flagged then base + n else base
+    // dgram.send() retains the buffer until transmission completes.
+    buf := Buffer.alloc(hlen + body.length)
+    buf[0] = hlen
+    buf[1] = (if msg.cmd then 1 else 0) | 2 | (if msg.simUs? then 4 else 0)
+    buf.writeUInt16BE(Math.min(0xffff, Math.max(0, Math.round(msg.delayUs))), 2)
+    buf.writeUInt32BE(msg.wallUs ?? wallNowUs(), 4)
+    buf.writeUInt32BE(msg.simUs >>> 0, 8) if msg.simUs?
+    if flagged
+      for i of [0...n]
+        buf[base + i] = (sev[i] ?? SEV_VALID) & 7
+    body.copy(buf, hlen)
     @send buf, buf.length
 
-export { Bus, BusMsg, busConfig, bceNumToBusConfig, configureBus, busSettings,
-         parseBasePort, DEFAULT_BASE_PORT, DEFAULT_IFACE };
+pollShmRings := => busshm?.pollRings() ?? 0
+shmStats := => busshm?.stats() ?? null
+
+export { Bus, BusMsg, SEV_VALID, busConfig, bceNumToBusConfig, configureBus, busSettings, wallNowUs,
+         parseBasePort, DEFAULT_BASE_PORT, DEFAULT_IFACE, pollShmRings, shmStats, shmNames };
+
+registerType(BusMsg)

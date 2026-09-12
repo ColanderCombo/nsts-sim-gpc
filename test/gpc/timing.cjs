@@ -1,8 +1,8 @@
-// test_timing.cjs — AP-101S instruction execution times (IBM-85-C67-001
+// timing.cjs — AP-101S instruction execution times (IBM-85-C67-001
 // sect.17): xts addressing-mode case selection, xtbs branch taken/not-taken,
 // e()-computed overrides, and the 1-MHz interval timers.
 //
-// Usage:  node test/test_timing.cjs
+// Usage:  node test/gpc/timing.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -13,7 +13,7 @@ const os      = require('os');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..', 'gpc');
+const SRC = path.resolve(__dirname, '..', '..', 'src', 'gpc');
 
 async function bundle(entry) {
     const out = path.join(os.tmpdir(),

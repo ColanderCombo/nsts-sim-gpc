@@ -1,3 +1,4 @@
+import {now as simNow} from '../com/simRuntime.coffee'
 import {RAM,Register,RegisterFile,ProgramStatusWord} from 'gpc/regmem'
 import {PackedBits} from 'gpc/util'
 
@@ -6,9 +7,13 @@ import {DiscreteBus, applyDiscrete, bitMask, resolveGpcId,
         REQUEST as DISC_REQUEST, VALUE as DISC_VALUE,
         REG_A as DISC_REG_A, REG_B as DISC_REG_B,
         REG_OUT as DISC_REG_OUT} from 'com/discretes'
+import {GpcLinks} from 'gpc/gpclinks'
 import {MSC} from 'gpc/iop_msc'
-import {BCE} from 'gpc/iop_bce'
+import {BCE, SEV_VALID} from 'gpc/iop_bce'
+import {BCEReceive} from 'gpc/iop_receive'
 import {MCM} from 'gpc/mcm'
+import {pollShmRings} from 'com/bus'
+import {Barrier} from 'com/simbarrier'
 
 # The per-processor status registers
 #
@@ -155,9 +160,8 @@ MIA_READ_MASK  = 0xffffff00    # channels 1-24 in channel numbering
 #             IS ON.
 #       8-31  unused, undefined
 #
-# The lines come from boxes outside this one and arrive as set/reset of a
-# bit mask on the discrete bus (com/discretes.coffee).  A bit nobody
-# drives holds the placeholder default below: 
+# External lines arrive as SET/RESET masks on the discrete bus.  GpcLinks
+# drives bits 8-11 and 20-31 from the other computers.
 #   GPC 0, IPL source MM1, MM1 ready, display CRT 1.
 #
 DISCRETE_IN_A_DEFAULT = 0x0b000000    # bit 4 = MM1 is the IPL source,
@@ -167,9 +171,27 @@ DISCRETE_IN_B_DEFAULT = 0x01000000    # bits 6-7 = CRT 1
 GPC_ID_MASK = 0xe0000000
 GPC_ID_SHIFT = 29
 
-gpcSelfId = (n) -> if n? then resolveGpcId(n) else 0
+export gpcSelfId = (n) -> if n? then resolveGpcId(n) else 0
 
 MM_READY_BIT = {1: 6, 2: 7}           # discrete input A
+
+# During sync activity, the run loop services host I/O every HOT_TURN_NS.
+# Activity is a nonzero, non-null sync code or DIA_BURST register-A reads
+# spaced within DIA_BURST_NS.  A polling burst remains hot for HOT_TAIL_NS
+# and at most HOT_POLL_MAX_NS.
+HOT_TAIL_NS = 200000
+HOT_TURN_NS = 100000
+HOT_POLL_MAX_NS = 400000000
+DIA_BURST = 3
+DIA_BURST_NS = 50000
+
+# Shared-memory rings are polled and flushed from the instruction loop.
+SHM_POLL_NS = 20000
+TX_FLUSH_NS = 20000
+
+# Instruction-loop barrier interval.
+BARRIER_NS = 10000
+SYNC_OUT_MASK = 0x00000888          # DO-20, 24, 28: SELF SYNC 1, 2, 3
 
 # GPC mode toggle: HALT, STANDBY and RUN (DI-0, DI-1, DI-2) 
 #   HALT going high holds the machine in reset
@@ -211,6 +233,13 @@ RECV_TRACE = do ->
   v = process?.env?.NSTS_RECV_TRACE
   return false unless v
   if /^\d+$/.test(v) and +v > 1 then +v else true
+
+# GPC_IOP_BCE accepts one processor, a comma list, or `all`.
+TRACE_BCES = do ->
+  v = process?.env?.GPC_IOP_BCE
+  return null unless v? and v != ''
+  return 'all' if v.toLowerCase() in ['all', '*']
+  new Set(+n for n in v.split(/[\s,]+/) when /^\d+$/.test(n))
 
 # NSTS_BUS_TIMEOUT_TRACE prints every BCE receive time out with how long it
 # waited on both clocks, simulated and wall.
@@ -262,6 +291,10 @@ IOP_FAULT_MAX = do ->
 # unit's poll, so an ordinary poll times out several times a minute and each
 # one is an I/O error the hardware would not raise.
 # NSTS_RECV_TIMEOUT_FLOOR_MS sets a floor for comparison.
+REPLY_CMD_WINDOW_MS = 50
+# BCEs whose pending replies hold simulated time.
+STALL_BCES = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+
 RECV_TIMEOUT_FLOOR_NS = do ->
   v = process?.env?.NSTS_RECV_TIMEOUT_FLOOR_MS
   return 0 unless v?
@@ -382,6 +415,20 @@ export class IOP
     @mainStorage = new MCM(opts.iopWords ? 24*1024)
 
     @msc = new MSC()
+    # Set before the BCEs are built: BCE 24's bus is this computer's IP bus.
+    @gpcId = gpcSelfId(gpcId)
+    @powered = true
+    @ioTurnWanted = false
+    @lastTurnNs = 0
+    @lastShmPollNs = 0
+    @lastBarrierNs = 0
+    @barrier = null
+    @barrierOffsetUs = null
+    @barrierHeld = false
+    @txPending = []
+    @lastDiaReadNs = -1e12
+    @diaBurst = 0
+    @pollStartNs = 0
     @bce = (new BCE(x, @) for x in [1..24])
 
     @curPE = 0  # MSC = 0, BCE = 1-24
@@ -435,7 +482,6 @@ export class IOP
     @regDiscreteInB = new Register("discreteInB", 32)
     @discDriven = {}
     @xmitInhibit = 0
-    @gpcId = gpcSelfId(gpcId)
     @discDriven[DISC_REG_A] = 0
     @discDriven[DISC_REG_B] = 0
     @resetDiscreteInputs()
@@ -472,6 +518,8 @@ export class IOP
     # See RECV_TIMEOUT_FLOOR_NS.  A property rather than a constant so a
     # harness with everything in one process can turn it off.
     @recvTimeoutFloorNs = RECV_TIMEOUT_FLOOR_NS
+    # BCEs with a receive begun and no word taken yet; see replyOwedSince.
+    @recvPending = 0
 
     # State of an MSC Repeat instruction in progress -- see mscRepeat.
     @mscRepeatPC = null
@@ -585,18 +633,31 @@ export class IOP
       bce = @bce[page - 1]
       bce.exec(@, hw1, hw2)
 
-  # A focused trace of everything that touches one BCE's state, in order:
-  # who halted or enabled it, who loaded its program counter, who started it.
-  # `GPC_IOP_BCE=<n>`; off entirely when the variable is absent.
-  IOP_TRACE_BCE: (if process?.env?.GPC_IOP_BCE? then parseInt(process.env.GPC_IOP_BCE, 10) else null)
+  # Per-BCE state and traffic trace.
+  IOP_TRACE_BCE: TRACE_BCES
+
+  bceTraced: (bceNum) ->
+    @IOP_TRACE_BCE? and (@IOP_TRACE_BCE == 'all' or @IOP_TRACE_BCE.has(bceNum))
+
+  bceMaskEvent: (mask, what) ->
+    return unless @IOP_TRACE_BCE?
+    @bceEvent(p, what) for p in [1..24] when (mask & @procBit(p)) != 0
+    return
 
   bceEvent: (bceNum, what) ->
-    return unless @IOP_TRACE_BCE? and bceNum == @IOP_TRACE_BCE
+    return unless @bceTraced(bceNum)
     pc = (@ls.at(bceNum, 0, 2)?.get32() ? 0) & LS_WORD_MASK
     en = @procGet(@regProcEnable, bceNum)
     bw = @procGet(@regBusyWait, bceNum)
-    console.log "BCE#{bceNum} #{(@cpu.timeNs / 1e6).toFixed(3)} ms  #{what}" +
-                "   [en=#{en} busy=#{bw} pc=#{pc.toString(16)}]"
+    @trace("BCE#{bceNum} #{(@cpu.timeNs / 1e6).toFixed(3)} ms  #{what}" +
+           "   [en=#{en} busy=#{bw} pc=#{pc.toString(16)}]", {bce: bceNum, what})
+
+  # A debug session replaces stderr with its timestamped event sink.
+  onTrace: null
+
+  trace: (text, fields = {}) ->
+    if @onTrace? then @onTrace(text, fields) else process.stderr.write(text + "\n")
+    return
 
   # The MSC's BCE register-load instructions require their BCE to be in the
   # WAIT state and enabled; a busy or halted one is a program exception, and
@@ -644,6 +705,7 @@ export class IOP
   # it advances.  Called once per CPU instruction
   execRM: () ->
     @tickWatchdog()
+    @tickLinks()
 
 
   curBCE: () ->
@@ -667,71 +729,95 @@ export class IOP
   bceReceive: (addr, count) ->
     bce = @curBCE()
     return true unless bce?
-    p = @curPE
     pc = @ls.PC().get32() & LS_WORD_MASK
-    st = bce.recv
-    unless st? and st.pc == pc
-      # A receive begins here.  Whatever went by on the bus since the last
-      # word was taken is gone -- that is how a bus program skips the rest
-      # of a mass memory block, by delaying past it.
-      dropped = bce.mia.dropStale()
-      @onDropStale?(p, pc, dropped) if dropped
-      bce.mia.rxBegin(@cpu?.timeNs ? 0)
-      st = bce.recv = {pc: pc, addr: addr & LS_WORD_MASK, left: count,
-                       sinceNs: @cpu?.timeNs ? 0, gotAny: false,
-                       deliverAt: bce.mia.deliverCount,
-                       turnsAt: @cpu?.ioTurns ? 0,
-                       sinceWall: if TIMEOUT_TRACE then Date.now() else 0}
+    receive = bce.recv
+    unless receive? and receive.pc == pc
+      receive = @_startBCEReceive(bce, pc, addr, count)
+    return false unless @_advanceBCEReceive(bce, receive)
+    return @_completeBCEReceive(bce, receive) if receive.complete()
+    @_waitBCEReceive(bce, receive)
 
-    while st.left > 0 and bce.mia.dataAvailable()
+  _startBCEReceive: (bce, pc, addr, count) ->
+    processor = @curPE
+    dropped = bce.mia.dropStale()
+    @onDropStale?(processor, pc, dropped) if dropped
+    bce.mia.rxBegin(@cpu?.timeNs ? 0)
+    @_releaseBCEReceive(bce)
+    receive = bce.recv = new BCEReceive({
+      pc: pc, addr: addr, count: count, nowNs: @cpu?.timeNs ? 0
+      deliverAt: bce.mia.deliverCount, turnsAt: @cpu?.ioTurns ? 0
+      startWall: simNow(), sinceWall: if TIMEOUT_TRACE then simNow() else 0
+    })
+    @recvPending += 1
+    @bceEvent(processor, "receive of #{count} words begins, #{bce.mia.recvQueue.length} queued" +
+                 ", first due #{bce.mia.dueInUs()} us from now" +
+                 (if dropped then ", #{dropped} stale words dropped" else ''))
+    receive
+
+  _advanceBCEReceive: (bce, receive) ->
+    processor = @curPE
+    pc = receive.pc
+    while receive.left > 0 and bce.mia.dataAvailable()
       data = bce.mia.getData()
+      sev = bce.mia.lastSev
+      if sev != SEV_VALID
+        # POO sect.3.4.4 and 3.4.6: an input word whose SEV bits are other
+        # than 101 is not accepted, and "the BCE will error terminate
+        # regardless of its mode", ORing into the high half of its status
+        # register "the SEV bits from the input with the S and V bits
+        # inverted" and the interface unit address.  JSC-18819 Rev.F's
+        # error table places them: bit 5 S reset, bit 6 E set, bit 7 V
+        # reset, bits 8-12 the IUA.
+        iua = @ls.IUAR().get32() & 0x1f
+        @ls.setBST((@ls.getBST() | (((sev ^ SEV_VALID) & 7) << 24) | (iua << 19)) >>> 0)
+        if TIMEOUT_TRACE
+          @trace("BCE#{processor} RECV SEV #{sev.toString(2).padStart(3, '0')} " +
+                 "pc=#{pc.toString(16)} left=#{receive.left} iua=#{iua}", {bce: processor})
+        @bceErrorTerminate(processor)
+        return false
       @ls.setD(data)
-      ok = @writeMain16(st.addr, data)
-      if RECV_TRACE == true or RECV_TRACE == p
-        process.stderr.write "RECV BCE#{p} #{st.addr.toString(16)} <- " +
-          "#{data.toString(16).padStart(4,'0')}#{if ok then '' else '  REJECTED'}\n"
-      st.addr = (st.addr + 1) & LS_WORD_MASK
-      st.left -= 1
-      st.gotAny = true
-      st.sinceNs = @cpu?.timeNs ? 0
-      st.sinceWall = Date.now() if TIMEOUT_TRACE
+      ok = @writeMain16(receive.addr, data)
+      if RECV_TRACE == true or RECV_TRACE == processor
+        @trace("RECV BCE#{processor} #{receive.addr.toString(16)} <- " +
+               "#{data.toString(16).padStart(4,'0')}#{if ok then '' else '  REJECTED'}", {bce: processor})
+      @recvPending -= 1 unless receive.gotAny
+      receive.advance(@cpu?.timeNs ? 0,
+                 if TIMEOUT_TRACE then simNow() else receive.sinceWall)
+    true
 
-    if st.left == 0
-      bce.recv = null
-      # A real receiver is inhibited except while a commanded transfer is
-      # running, so surplus words a subsystem put on the bus would not be
-      # captured, and keeping them makes them the leading words of the next
-      # transaction.  They are kept: flushing here breaks the mass
-      # memory path, where a block arrives as one datagram of 512
-      # halfwords and a bus program that took a block in more than one
-      # receive would lose the rest of it.
-      #
-      return true
+  _completeBCEReceive: (bce, receive) ->
+    processor = @curPE
+    @bceEvent(processor, "receive complete in " +
+                 "#{(((@cpu?.timeNs ? 0) - receive.beganNs) / 1e6).toFixed(3)} ms")
+    @_releaseBCEReceive(bce)
+    # Hardware captures bus words during a commanded transfer. The MIA queue
+    # retains unconsumed datagram words across receive instructions: a mass
+    # memory block arrives as one datagram of 512 halfwords.
+    return true
 
-    # Where a receive's time went, for GPC_IOP_BCE.  A turn that found
-    # nothing on the bus is starved: the subsystem's process has not
-    # answered yet, which is the host's speed showing through.  One that
-    # found words but took none, or took its one word and still has more
-    # to go, is paced by the bus rate.  The two count separately because a
-    # long transfer's time can go either way.
-    if @IOP_TRACE_BCE? and p == @IOP_TRACE_BCE
+  _waitBCEReceive: (bce, receive) ->
+    processor = @curPE
+    pc = receive.pc
+    # GPC_IOP_BCE counts waiting turns by the queue state: an empty queue
+    # is starved; queued words awaiting their wire time are paced.
+    if @bceTraced(processor)
       if bce.mia.recvQueue.length == 0
         bce.starveTurns = (bce.starveTurns ? 0) + 1
       else
         bce.pacedTurns = (bce.pacedTurns ? 0) + 1
 
-    if ((@cpu?.timeNs ? 0) - st.sinceNs) >= @recvTimeoutNs(p)
+    if receive.timedOut(@cpu?.timeNs ? 0, @recvTimeoutNs(processor))
       if TIMEOUT_TRACE
-        simMs = ((@cpu?.timeNs ? 0) - st.sinceNs) / 1e6
-        wallMs = Date.now() - st.sinceWall
-        process.stderr.write "BCE#{p} RECV TIMEOUT pc=#{pc.toString(16)} " +
-          "left=#{st.left} gotAny=#{st.gotAny} " +
-          "sim=#{simMs.toFixed(2)}ms wall=#{wallMs}ms " +
-          "delivered=#{bce.mia.deliverCount - (st.deliverAt ? 0)} " +
-          "turns=#{(@cpu?.ioTurns ? 0) - (st.turnsAt ? 0)} " +
-          "queued=#{bce.mia.recvQueue.length} " +
-          "mto=#{(@recvTimeoutNs(p)/1e6).toFixed(2)}ms\n"
-      @bceErrorTerminate(p)
+        simMs = ((@cpu?.timeNs ? 0) - receive.sinceNs) / 1e6
+        wallMs = simNow() - receive.sinceWall
+        @trace("BCE#{processor} RECV TIMEOUT pc=#{pc.toString(16)} " +
+               "left=#{receive.left} gotAny=#{receive.gotAny} " +
+               "sim=#{simMs.toFixed(2)}ms wall=#{wallMs}ms " +
+               "delivered=#{bce.mia.deliverCount - (receive.deliverAt ? 0)} " +
+               "turns=#{(@cpu?.ioTurns ? 0) - (receive.turnsAt ? 0)} " +
+               "queued=#{bce.mia.recvQueue.length} " +
+               "mto=#{(@recvTimeoutNs(processor)/1e6).toFixed(2)}ms", {bce: processor})
+      @bceErrorTerminate(processor)
     return false
 
   # A delay instruction holds the BCE at the instruction for 
@@ -781,7 +867,7 @@ export class IOP
   clearBCETransfer: (p) ->
     bce = @bce[p - 1]
     return unless bce?
-    bce.recv = null if bce.recv?
+    @_releaseBCEReceive(bce)
     bce.mia.flushRecv() if bce.mia?.recvQueue?.length
     return
 
@@ -797,6 +883,35 @@ export class IOP
     @execProcessors()
     return
 
+  _releaseBCEReceive: (bce) ->
+    st = bce.recv
+    return unless st?
+    @recvPending -= 1 unless st.gotAny
+    bce.recv = null
+    return
+
+  # Oldest wall time at which an answered bus began owing its first word.
+  # Command and receive may occur in either order; the later starts the hold.
+  # A receive more than REPLY_CMD_WINDOW_MS after its command is unrelated.
+  replyOwedSince: () ->
+    return null unless @recvPending > 0
+    since = null
+    for bce in @bce
+      continue unless bce.bceNum in STALL_BCES
+      st = bce.recv
+      continue unless st? and not st.gotAny
+      mia = bce.mia
+      continue unless mia?.everHeard and mia.recvQueue.length == 0
+      cmdWall = mia.lastCmdWall
+      if cmdWall >= st.startWall
+        t = cmdWall
+      else if st.startWall - cmdWall < REPLY_CMD_WINDOW_MS
+        t = st.startWall
+      else
+        continue
+      since = t if not since? or t < since
+    since
+
   # The maximum time out register in nanoseconds.  "The resolution of this
   # timeout count is 16.5 microseconds", over "0 and 2047 ... 0 to 33.78
   # millisec" immediate or "0 and 262143, or 0 to 4.325 sec" from storage.
@@ -806,9 +921,25 @@ export class IOP
   # nothing about the gap between word two and word three.  Something must
   # bound that as well,so the same register stands in for it, measured
   # from the last word that arrived.
+  #
+  # The configured floor applies only after the bus has answered.
   recvTimeoutNs: (p) ->
     mto = (@ls.at(p, 1, 3)?.get32() ? 0) & LS_WORD_MASK
-    Math.max(mto * MTO_TICK_NS, @recvTimeoutFloorNs)
+    ns = mto * MTO_TICK_NS
+    return ns unless @bce[p - 1]?.mia?.everHeard
+    Math.max(ns, @recvTimeoutFloorNs)
+
+  # POO III-20: release from halt "continues for several BCE microcycles
+  # (about 100 usec.) as the BCE resets its internal registers and prepares
+  # to enter the Wait state".  The MIA buffer is retained.
+  bceHalt: (p) ->
+    bce = @bce[p - 1]
+    return unless bce?
+    @_releaseBCEReceive(bce)
+    bce.delay = null
+    @dmaQueue = @dmaQueue.filter (r) -> r.bce != bce
+    @procSet(@regBusyWait, p, 0)
+    return
 
   # An error termination: the BCE stops where it is.  Its program
   # exception bit goes to 0 (NO-GO in STAT1), it leaves the busy state, 
@@ -822,7 +953,7 @@ export class IOP
     @procSet(@regIndicator, p, 1)
     bce = @bce[p - 1]
     return unless bce?
-    bce.recv = null
+    @_releaseBCEReceive(bce)
     bce.mia?.flushRecv()
     @dmaQueue = @dmaQueue.filter (r) -> r.bce != bce
     return
@@ -1032,9 +1163,11 @@ export class IOP
     driven = @discDriven?[reg] ? 0
     (((dflt & ~driven) | (register.get32() & driven)) >>> 0)
 
-  # The channel is this machine's: busConfig._gpcDiscretes<GPC ID>.
   _setupDiscreteBus: () ->
     @discreteBus = new DiscreteBus @gpcId, (m) => @recvDiscrete(m)
+    @gpcLinks = new GpcLinks @gpcId,
+      ((bit, on_) => @setDiscreteInput(DISC_REG_A, bit, on_)),
+      (=> if @cpu? then @cpu.timeNs / 1000 else null)
     return
 
   # One message off the discrete bus.  A set/reset of an input is applied,
@@ -1087,6 +1220,23 @@ export class IOP
     @cpu.systemReset()
     return
 
+  # Loss of power halts processors, disables MIAs, lowers outputs, and holds reset.
+  setPowered: (on_) ->
+    on_ = !!on_
+    return if @powered == on_
+    @powered = on_
+    unless on_
+      before = @regDiscreteOut.get32() >>> 0
+      @regProcEnable.set32(0x00000000)
+      @regXmitEna.set32(0x00000000)
+      @regRecvEna.set32(0x00000000)
+      @regDiscreteOut.set32(0x00000000)
+      @publishDiscreteOut(before)
+      @cpu?.resetHeld = true
+      return
+    if (@regDiscreteInA.get32() & bitMask(DISC_HALT)) != 0 then @enterHalt() else @leaveHalt()
+    return
+
   # The IPL button, pressed at HALT.  The load is a run of bus
   # transactions that advances as the host event loop comes round, so the
   # front end performs it through this hook.
@@ -1131,20 +1281,115 @@ export class IOP
       when DISC_REG_B   then @regDiscreteInB.get32()
       when DISC_REG_OUT then @regDiscreteOut.get32()
       else                   @regDiscreteInA.get32()
-    @discreteBus?.report(reg, value >>> 0)
+    @discreteBus?.report(reg, value >>> 0, @discreteStamp())
     return
 
-  # A write to the discrete output register goes out on the bus the way a
-  # device's write to an input line comes in.  Takes the value the
-  # register held before the command ran; only what changed is published.
+  discreteStamp: () ->
+    if @cpu? then (Math.floor(@cpu.timeNs / 1000) >>> 0) else null
+
+  # Publish changed output bits with the CPU clock.
   publishDiscreteOut: (before) ->
     now = @regDiscreteOut.get32() >>> 0
     changed = ((before >>> 0) ^ now) >>> 0
     return unless changed
     on_ = (changed & now) >>> 0
     off_ = (changed & ~now) >>> 0
-    @discreteBus?.publish(DISC_SET, DISC_REG_OUT, on_) if on_
-    @discreteBus?.publish(DISC_RESET, DISC_REG_OUT, off_) if off_
+    stamp = @discreteStamp()
+    @discreteBus?.publish(DISC_SET, DISC_REG_OUT, on_, stamp) if on_
+    @discreteBus?.publish(DISC_RESET, DISC_REG_OUT, off_, stamp) if off_
+    @wantIoTurn()
+    return
+
+  # Service transports, the barrier, and hot I/O turns from the instruction loop.
+  tickLinks: () ->
+    return unless @cpu?
+    now = @cpu.timeNs
+    if (now - @lastShmPollNs) >= SHM_POLL_NS or now < @lastShmPollNs
+      @lastShmPollNs = now
+      pollShmRings()
+    @flushPendingTx(now) if @txPending.length
+    @gpcLinks?.deliver(now / 1000)
+    if @barrier? and ((now - @lastBarrierNs) >= BARRIER_NS or now < @lastBarrierNs)
+      @lastBarrierNs = now
+      @wantIoTurn() if @barrierStep(now)
+    @wantIoTurn() if (now - @lastTurnNs) >= HOT_TURN_NS and @isHot()
+    return
+
+  joinBarrier: () ->
+    b = @barrier ? new Barrier(@gpcId)
+    @barrier = if b.join(@cpu?.timeNs ? 0) then b else null
+    @barrierOffsetUs = @barrier?.offsetUs ? null
+    @barrierHeld = false
+    @barrier?
+
+  leaveBarrier: () ->
+    @barrier?.leave()
+    @barrierHeld = false
+    return
+
+  barrierStep: (nowNs = @cpu?.timeNs ? 0) ->
+    return false unless @barrier?
+    @barrierHeld = @barrier.step(nowNs)
+    pollShmRings() if @barrierHeld
+    @barrierHeld
+
+  barrierAllowanceNs: () ->
+    return Infinity unless @barrier?
+    @barrier.allowanceNs(@cpu?.timeNs ? 0)
+
+  noteTxPending: (mia) ->
+    @txPending.push(mia) unless mia in @txPending
+    return
+
+  flushPendingTx: (nowNs) ->
+    keep = []
+    for mia in @txPending
+      continue unless mia.txPend.length
+      if (nowNs - mia.txPendSimNs) >= TX_FLUSH_NS
+        mia.flushTx()
+      else
+        keep.push(mia)
+    @txPending = keep
+    return
+
+  isHot: () ->
+    return false unless @cpu?
+    code = (@regDiscreteOut.get32() & SYNC_OUT_MASK) >>> 0
+    (code != SYNC_OUT_MASK and code != 0) or @isPolling() or @isHearing()
+
+  # True while an enabled listening BCE runs a bus program.
+  isHearing: () ->
+    for bce in @bce
+      p = bce.bceNum
+      continue if @xmitEnabled(p)
+      return true if @procGet(@regProcEnable, p) == 1 and @procGet(@regBusyWait, p) == 1
+    false
+
+  isPolling: () ->
+    @cpu? and @diaBurst >= DIA_BURST and (@cpu.timeNs - @lastDiaReadNs) < HOT_TAIL_NS and
+      (@cpu.timeNs - @pollStartNs) < HOT_POLL_MAX_NS
+
+  isSearching: () ->
+    @isPolling() and (@regDiscreteOut.get32() & SYNC_OUT_MASK) == 0
+
+  noteDiaRead: () ->
+    return unless @cpu?
+    now = @cpu.timeNs
+    if (now - @lastDiaReadNs) < DIA_BURST_NS
+      @diaBurst += 1
+    else
+      @diaBurst = 1
+      @pollStartNs = now
+    @lastDiaReadNs = now
+    return
+
+  wantIoTurn: () ->
+    @ioTurnWanted = true
+    return
+
+  ioTurnTaken: (nowNs) ->
+    @ioTurnWanted = false
+    @lastTurnNs = nowNs
     return
 
   # Drive one discrete input directly, as a device on the bus would.  For
@@ -1324,7 +1569,7 @@ export class IOP
     # everything in flight goes, including any half-finished receive.
     for b in @bce
       b.mia.clearState()
-      b.recv = null
+      @_releaseBCEReceive(b)
     return
 
   # LOAD GO/NO-GO TIMER (PCO 88040000) and its test form.  The data word's
@@ -1550,11 +1795,12 @@ export class IOP
         # accompanied by the HALT command word."  STAT5 is an enable
         # register, so halting is clearing the named bits.
         @regProcEnable.set32((@regProcEnable.get32() & ~data) >>> 0)
-        @bceEvent(@IOP_TRACE_BCE, "CPU: CONFIGURE HALT   mask #{(data >>> 0).toString(16)}") if @IOP_TRACE_BCE?
+        @bceHalt(p) for p in [1..24] when (data & @procBit(p)) != 0
+        @bceMaskEvent(data, "CPU: CONFIGURE HALT   mask #{(data >>> 0).toString(16)}")
       when 0x87200000 # CONFIGURE PROCESSORS ENABLE
         # And "1 = ENABLE if accompanied by the ENABLE command word".
         @regProcEnable.set32((@regProcEnable.get32() | data) >>> 0)
-        @bceEvent(@IOP_TRACE_BCE, "CPU: CONFIGURE ENABLE mask #{(data >>> 0).toString(16)}") if @IOP_TRACE_BCE?
+        @bceMaskEvent(data, "CPU: CONFIGURE ENABLE mask #{(data >>> 0).toString(16)}")
       when 0x84400000 # MASTER RESET
         # The master reset table (POO Appendix I): STAT1 = GO, STAT4 =
         # WAIT, STAT5 = HALT for the MSC and every BCE, transmitters and
@@ -1664,6 +1910,8 @@ export class IOP
       when 0x08140000 # READ RM STATUS REGISTERS
         @regCCData.set32(@rmStatus())
       when 0x08180000 # READ DISCRETE INPUT A (1-32)
+        @noteDiaRead()
+        @tickLinks()
         r1 = @regDiscreteInA.get32()
         @regCCData.set32(r1)
       when 0x081c0000 # READ DISCRETE INPUTS B (33-40)
@@ -1685,7 +1933,7 @@ export class IOP
         bank = (dataSelect >>> 3) & 0x3
         word = (dataSelect) & 0x7
         reg = @ls.at(region, bank, word)
-        if @IOP_TRACE_BCE? and region == @IOP_TRACE_BCE and isOutput
+        if isOutput and @bceTraced(region)
           @bceEvent(region, "CPU: LOAD LOCAL STORE bank #{bank} word #{word} " +
                             "= #{(data & 0x3ffff).toString(16)}")
         if reg?
@@ -1714,4 +1962,3 @@ export class IOP
     # and now, whatever it was addressed to.
     @signalDataFlowParity(INTB_DEV_OUT) if hbusPoisoned
     return
-

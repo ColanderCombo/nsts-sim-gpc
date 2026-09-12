@@ -1,7 +1,7 @@
-// test_iop_decode.cjs — decode round-trip for the IOP (MSC + BCE) instruction
+// iop_decode.cjs — decode round-trip for the IOP (MSC + BCE) instruction
 // tables.  
 //
-// Usage:  node test/test_iop_decode.cjs
+// Usage:  node test/gpc/iop_decode.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -12,7 +12,7 @@ const os      = require('os');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..', 'gpc');
+const SRC = path.resolve(__dirname, '..', '..', 'src', 'gpc');
 
 async function bundle(entry) {
     const out = path.join(os.tmpdir(),
