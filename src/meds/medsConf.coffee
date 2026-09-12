@@ -1,6 +1,7 @@
 
 # The IDP -> MDU messages.  Word 0 is the tag; the tags are 0xFF00 and up so
-# they cannot collide with a format control word
+# they cannot collide with a format control word, and sit above every 1553B
+# word the ADCs exchange with the IDP on the same bus (lru/adc/adcConf).
 #
 export MDUMsg = {
   FILL:      0xff00     # a display-memory fill: DEU address, then the words
@@ -9,10 +10,15 @@ export MDUMsg = {
   POLL:      0xff04     # a GPC polled this unit
   REFRESH:   0xff05     # where the DEU's symbol generator starts a refresh
   OTP:       0xff06     # the operational test program's page is up (or down)
-  LOCAL_FILL:0xff07     # ...and a fill the DEU wrote ITSELF: the scratch pad
-                        # line and the test page.  Drawn like a FILL and
-                        # counted like nothing -- the big "X" watches for
-                        # display update FROM A GPC, and this is not it
+  LOCAL_FILL:0xff07     # scratch pad and test page fill; leaves the GPC
+                        # display-update timer unchanged
+  ADC:       0xff08     # a frame from one of the IDP's ADCs: the pair, its
+                        # validity, the BITE summary and the 32 samples
+                        # (meds/idp/idpAdc)
+  FC:        0xff09     # a DDU write or MEDS transfer heard on an FC bus: the
+                        # bus, the IUA, the message and its words (meds/idp/idpFc)
+  LOAD:      0xff0a     # the IDP's load state: 1 from the IDP LOAD switch until
+                        # the GPC's load completes, 0 loaded (meds/idp/idp)
   HEARTBEAT: 0xffff     # the IDP is alive
 }
 
@@ -41,6 +47,7 @@ export MEDSConf = {
       dataBus: {P:"IDP1", S:null}
       powerBus: ["AB1", "MNA"]
       lightDimBus: "L/C"
+      station: 'L'
       busAddr: 0x16
     }
     CRT2: {
@@ -49,6 +56,7 @@ export MEDSConf = {
       dataBus: {P:"IDP2", S:null}
       powerBus: ["BC2", "MNB"]
       lightDimBus: "L/C"
+      station: 'R'
       busAddr: 0x07
     }
     CRT3: {
@@ -57,6 +65,7 @@ export MEDSConf = {
       dataBus: {P:"IDP3", S:null}
       powerBus: ["CA1", "MNC"]
       lightDimBus: "L/C"
+      station: 'L'
       busAddr: 0x15
     }
     CRT4: {
@@ -65,6 +74,7 @@ export MEDSConf = {
       dataBus: {P:"IDP4", S:null}
       powerBus: ["CA2", "MNC"]
       lightDimBus: "MS"
+      station: 'A'
       busAddr: 0x19
     }
     CDR1: {
@@ -73,6 +83,7 @@ export MEDSConf = {
       dataBus: {P:"IDP3", S:"IDP1"}
       powerBus: ["MNC"]
       lightDimBus: "L/C"
+      station: 'L'
       busAddr: 0x1A
     }
     CDR2: {
@@ -81,6 +92,7 @@ export MEDSConf = {
       dataBus: {P:"IDP1", S:"IDP2"}
       powerBus: ["MNB"]
       lightDimBus: "L/C"
+      station: 'L'
       busAddr: 0x0B
     }
     PLT1: {
@@ -89,6 +101,7 @@ export MEDSConf = {
       dataBus: {P:"IDP2", S:"IDP1"}
       powerBus: ["MNA"]
       lightDimBus: "RT"
+      station: 'R'
       busAddr: 0x1C
     }
     PLT2: {
@@ -97,6 +110,7 @@ export MEDSConf = {
       dataBus: {P:"IDP3", S:"IDP2"}
       powerBus: ["MNC"]
       lightDimBus: "RT"
+      station: 'R'
       busAddr: 0x0D
     }
     MFD1: {
@@ -105,6 +119,7 @@ export MEDSConf = {
       dataBus: {P:"IDP2", S:"IDP3"}
       powerBus: ["MNB"]
       lightDimBus: "L/C"
+      station: 'L'
       busAddr: 0x0E
     }
     MFD2: {
@@ -113,6 +128,7 @@ export MEDSConf = {
       dataBus: {P:"IDP1", S:"IDP3"}
       powerBus: ["MNA"]
       lightDimBus: "L/C"
+      station: 'R'
       busAddr: 0x13
     }
     AFD1: {
@@ -121,13 +137,14 @@ export MEDSConf = {
       dataBus: {P:"IDP4", S:"IDP2"}
       powerBus: ["MNC"]
       lightDimBus: "MS"
+      station: 'A'
       busAddr: 0x10
     }
   }
   idps: {
     IDP1: {
       lruID: 0x00
-      busses: ['_IDP1', 'FC1', 'FC2', 'FC3', 'FC4', 'DK1','_KYBD1','_IDPSW']
+      busses: ['_IDP1', 'FC1', 'FC2', 'FC3', 'FC4', 'DK1','_KYBD1']
       powerBus: ["AB1","MNA"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK1"
@@ -136,7 +153,7 @@ export MEDSConf = {
     }
     IDP2: {
       lruID: 0x00
-      busses: ['_IDP2', 'FC1', 'FC2', 'FC3', 'FC4', 'DK2','_KYBD2','_IDPSW']
+      busses: ['_IDP2', 'FC1', 'FC2', 'FC3', 'FC4', 'DK2','_KYBD2']
       powerBus: ["CA1","MNC"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK2"
@@ -145,7 +162,7 @@ export MEDSConf = {
     }
     IDP3: {
       lruID: 0x00
-      busses: ['_IDP3', 'FC1', 'FC2', 'FC3', 'FC4', 'DK3','_KYBD1','_KYBD2','_IDPSW']
+      busses: ['_IDP3', 'FC1', 'FC2', 'FC3', 'FC4', 'DK3','_KYBD1','_KYBD2']
       powerBus: ["BC2","MNB"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK3"
@@ -154,7 +171,7 @@ export MEDSConf = {
     }
     IDP4: {
       lruID: 0x00
-      busses: ['_IDP4', 'FC1', 'FC2', 'FC3', 'FC4', 'DK4','_KYBD3','_IDPSW']
+      busses: ['_IDP4', 'FC1', 'FC2', 'FC3', 'FC4', 'DK4','_KYBD3']
       powerBus: ["CA2","MNC"]
       fcBus: ["FC1","FC2","FC3","FC4"]
       dkBus: "DK4"
@@ -197,3 +214,5 @@ export MEDSConf = {
     }
   }
 }
+export powerFeedsOf = (names) ->
+  ({name: n, feed: (if /^MN[ABC]$/.test(n) then n else "CNTL_#{n}")} for n in (names ? []))

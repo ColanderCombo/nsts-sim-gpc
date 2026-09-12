@@ -1,7 +1,7 @@
 # NativeAddons.cmake -- the two Node-API addons
 #
 # Built into ${CMAKE_BINARY_DIR}/native.  A bundle in ${NSTS_DIST} finds
-# them there as __dirname/../native (com/busshm.coffee, native/rtpolicy.js);
+# them there as __dirname/../native (com/busshm.coffee, native/rtpolicy.coffee);
 # without them --sched has no effect and every bus is UDP.
 
 set(NSTS_NATIVE_DIR "${CMAKE_BINARY_DIR}/native")

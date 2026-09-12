@@ -30,18 +30,28 @@ if process.platform == 'linux'
 // process.exit from their own action handlers.
 // ----------------------------------------------------------------
 import {Command} from 'commander'
-{addCommand: addRunCmd}    from '../../gpc/cmd_run.coffee'
-{addCommand: addDebugCmd}  from '../../gpc/cmd_debug.coffee'
-{addCommand: addDumpCmd}   from '../../gpc/cmd_dump.coffee'
-{addCommand: addDisasmCmd} from '../../gpc/cmd_disasm.coffee'
-{addGUIOptions, guiCliOpts as buildGuiOpts, startGUISession} from '../../gpc/guibackend.coffee'
+{addCommand: addRunCmd}    from '../../gpc/cmd/cmd_run.coffee'
+{addCommand: addDbgCmd}    from '../../gpc/cmd/cmd_dbgclient.coffee'
+{addCommand: addDumpCmd}   from '../../gpc/cmd/cmd_dump.coffee'
+{addCommand: addDisasmCmd} from '../../gpc/cmd/cmd_disasm.coffee'
+{addGUIOptions, guiCliOpts as buildGuiOpts, startGUISession} from '../../gpc/gui/guibackend.coffee'
 {addBusOptions} from '../../com/busCli.coffee'
 {busSettings} from '../../com/bus.civet.jsx'
+
+// Locate config/ from either a build tree or packaged app.
+findTop := () : string ->
+  for up of ['../../', '../../../', '../../../../']
+    cand := path.join(__dirname, up)
+    return cand if fs.existsSync(path.join(cand, 'config', 'meds.json'))
+  path.join(__dirname, '../../')
+
+// CONFIG consumers require a trailing separator.
+TOP := path.join(process.env.NSTS_TOP ?? findTop(), path.sep)
 
 guiRequested .= false
 guiCliOpts   .= null
 // The debugger session lives in this process unless `gpc gui` already
-// started one and passed its endpoint.  See gpc/guibackend.
+// started one and passed its endpoint.  See gpc/gui/guibackend.
 guiFcmPath   .= null
 guiOpts      .= null
 guiBackend   .= null
@@ -54,7 +64,6 @@ addLocalGuiCmd := (program: any) : void =>
     .description('Electron GUI debugger')
     .argument('[fcm-file]', 'FCM memory image to load (optional; GUI can also load later)')
   addGUIOptions(cmd)
-  addBusOptions(cmd)
   cmd.action (fcmPath: string, o: any) : void =>
     guiCliOpts = buildGuiOpts(fcmPath, o)
     guiFcmPath = fcmPath
@@ -64,7 +73,7 @@ addLocalGuiCmd := (program: any) : void =>
 addLocalMedsCmd := (program: any) : void =>
   cmd := program.command('meds')
     .description('MEDS glass cockpit — launch MDU display / IDP LRUs')
-    .argument('[lrus...]', 'LRU names from config/meds.json (e.g. crt1 idp1 cdr1); default: the config "start" list')
+    .argument('[lrus...]', 'MDU names from config/meds.json (e.g. crt1 cdr1); default: the config "start" list')
     .option('--config <file>', 'alternate LRU config JSON (default: config/meds.json)')
     .option('--display <name>', 'initial display for launched MDUs (DPS, AE_PFD, HYD_APU, OMS_MPS, SPI, ...)')
     .option('--menu <name>', 'initial MDU menu (MAIN, FLT_INST, ...)')
@@ -86,11 +95,12 @@ addLocalMedsCmd := (program: any) : void =>
 
 dispatchCli := (userArgs: string[]) : void ->
   program := new Command()
+    .enablePositionalOptions()
     .name('gpc')
     .description('AP-101 GPC Simulator')
     .version('1.0.0')
   addRunCmd(program)
-  addDebugCmd(program)
+  addDbgCmd(program)
   addLocalGuiCmd(program)
   addDumpCmd(program)
   addDisasmCmd(program)
@@ -103,6 +113,8 @@ webPreferences := {
   preload: path.join(__dirname, 'preload.js')
   nodeIntegration: true
   contextIsolation: false
+  // Keep MDU watchdogs live in covered or minimized windows.
+  backgroundThrottling: false
 }
 
 // IPC used by the <cde-window> chrome in every renderer, GPC GUI and
@@ -153,7 +165,7 @@ createWindow := async () : Promise<void> =>
   // Send the config to the renderer once its document has loaded.
   // The renderer (DebugGUI) reads NSTS_TOP and config.{cliOpts,fcmFile,symbolsFile}.
   config := {
-    NSTS_TOP: path.join(__dirname, '../../')
+    NSTS_TOP: TOP
     config: {
       cliOpts:     guiCliOpts
       fcmFile:     guiCliOpts?.fcmPath
@@ -171,7 +183,7 @@ createWindow := async () : Promise<void> =>
       setTimeout (() =>
         win.webContents.executeJavaScript(process.env.NSTS_EXEC)
           .then (v) => console.log "[gpc] NSTS_EXEC ->", v
-          .catch (e) => console.error "[gpc] NSTS_EXEC failed:", e
+          .catch (e) => console.error "[gpc] NSTS_EXEC failed: #{e.message}"
       ), 2000
 
   rendererIndex := path.join(__dirname, '../renderer/index.html')
@@ -216,9 +228,8 @@ startGui := () : void =>
 // ----------------------------------------------------------------
 // MEDS runner — multi-window LRU launcher (`meds` subcommand)
 //
-// Each windowed LRU (an MDU display) gets a frameless BrowserWindow
-// running the LRU-mode renderer; headless "shared" LRUs (IDPs) ride in
-// the first windowed LRU's renderer.
+// Each MDU display gets a frameless BrowserWindow running the LRU-mode
+// renderer.  The IDPs are processes of their own (meds/idp, idp).
 // ----------------------------------------------------------------
 
 class MedsRunner
@@ -244,20 +255,20 @@ class MedsRunner
     return target
 
   loadConfig(): any
-    configPath := @opts.configFile ?? path.join(__dirname, '../../config/meds.json')
+    configPath := @opts.configFile ?? path.join(TOP, 'config/meds.json')
     c := JSON.parse fs.readFileSync(configPath, 'utf8')
 
     // Optional override config via NSTS_SIM_CONFIG env var, deep-merged
     overridePath := process.env.NSTS_SIM_CONFIG
     if overridePath
       try
-        overrideFile := if path.isAbsolute(overridePath) then overridePath else path.join(__dirname, '../../', overridePath)
+        overrideFile := if path.isAbsolute(overridePath) then overridePath else path.join(TOP, overridePath)
         @deepMerge(c, JSON.parse(fs.readFileSync(overrideFile, 'utf8')))
         console.log `[meds] loaded config override from ${overridePath}`
       catch e
-        console.error `[meds] failed to load config override: ${overridePath}`, e
+        console.error `[meds] config override failed: ${overridePath}: ${e.message}`
 
-    c.NSTS_TOP = path.join(__dirname, '../../')
+    c.NSTS_TOP = TOP
     // the renderers open the busses
     c.bus = {basePort: busSettings.basePort, iface: busSettings.iface}
 
@@ -270,11 +281,9 @@ class MedsRunner
     if @opts.lrus?.length > 0
       c.start = @opts.lrus.map((n: string) => n.toLowerCase())
 
-    available := Object.keys(c.lrus ?? {}).filter((n: string) => n != 'shared')
     unknown := (c.start ?? []).filter((n: string) => n not in (c.lrus ?? {}))
     if unknown.length > 0
       console.error `meds: unknown LRU name(s): ${unknown.join(', ')}`
-      console.error `available: ${available.join(', ')}`
       process.exit(2)
 
     // An MDU is square, so one dimension does it.  DISPLAY size only: the
@@ -283,13 +292,13 @@ class MedsRunner
     if @opts.size?
       size = Number(@opts.size)
       if not Number.isFinite(size) or size <= 0
-        console.error `meds: --size wants a positive pixel count, got '${@opts.size}'`
+        console.error `meds: invalid --size '${@opts.size}'`
         process.exit(2)
 
     // CLI --display/--menu/--size apply to every launched MDU
     for name of c.start
       lruConf := c.lrus[name]
-      if lruConf.module == 'meds/mdu'
+      if lruConf.module == 'meds/mdu/mdu'
         lruConf.init ?= {}
         lruConf.init.display = @opts.display if @opts.display
         lruConf.init.menu = @opts.menu if @opts.menu
@@ -353,12 +362,22 @@ class MedsRunner
       newWindow.showInactive()      // in case 'ready-to-show' never fired
       // dev/test hook: NSTS_EXEC runs in each LRU window once the LRUs are
       // up (2s after load) — e.g. driving a screen's test modes headlessly:
-      //   NSTS_EXEC="window.lrus.cdr1.screens.AE_PFD.enterTapeTest()" MEDS.sh --dev cdr1
+      //   NSTS_EXEC="window.lrus.cdr1.screens.AE_PFD.enterTapeTest()" meds --dev cdr1
       if process.env.NSTS_EXEC
         execJS := () =>
           newWindow.webContents.executeJavaScript(process.env.NSTS_EXEC)
-            .catch (e) => console.error "[meds] NSTS_EXEC failed:", e
+            .catch (e) => console.error "[meds] NSTS_EXEC failed: #{e.message}"
         setTimeout(execJS, 2000)
+      // Capture each LRU once when NSTS_SCREENSHOT names a directory.
+      if process.env.NSTS_SCREENSHOT
+        shot := () =>
+          newWindow.webContents.capturePage()
+            .then (img) =>
+              file := path.join(process.env.NSTS_SCREENSHOT, `${lruName}.png`)
+              fs.writeFileSync(file, img.toPNG())
+              console.log `[meds] screenshot ${file}`
+            .catch (e) => console.error "[meds] NSTS_SCREENSHOT failed: #{e.message}"
+        setTimeout(shot, Number(process.env.NSTS_SCREENSHOT_MS ?? 6000))
     rendererIndex := path.join(__dirname, '../renderer/index.html')
     if fs.existsSync rendererIndex
       await newWindow.webContents.loadFile rendererIndex
@@ -383,32 +402,16 @@ class MedsRunner
           if d != 0
             win.setBounds({x: b.x + d, y: b.y, width: b.width - d, height: b.height})
 
-    // Collect shared (headless) LRUs from the start list
-    sharedLRUs .= @CONFIG.start.filter((x: string): boolean => @CONFIG.lrus[x]?.shared)
-    windowed := @CONFIG.start.filter((x: string): boolean => not @CONFIG.lrus[x]?.shared)
-    // A start list of only headless LRUs (e.g. `meds idp1`) still needs
-    // one host window for the renderer context
-    startSharedWindow .= @CONFIG.startSharedWindow or (windowed.length == 0 and sharedLRUs.length > 0)
-    if startSharedWindow
-      await @startLRU(@CONFIG, 'shared', sharedLRUs)
-      sharedLRUs = []
-    for startName of windowed
-      // Bundle shared LRUs into the first windowed LRU's renderer
-      thisStart .= [startName]
-      if sharedLRUs.length > 0
-        thisStart = thisStart.concat(sharedLRUs)
-        sharedLRUs = []
-      @windows[startName] = await @startLRU(@CONFIG, startName, thisStart)
+    for startName of @CONFIG.start
+      @windows[startName] = await @startLRU(@CONFIG, startName, [startName])
 
   start(): void
     @CONFIG = @loadConfig()
 
     if @opts.list
-      names := Object.keys(@CONFIG.lrus).filter((n: string) => n != 'shared')
-      for name of names
+      for name of Object.keys(@CONFIG.lrus)
         lruConf := @CONFIG.lrus[name]
-        kind := if lruConf.shared then 'headless' else `window ${lruConf.window?.width}x${lruConf.window?.height}`
-        console.log `${name.padEnd(8)} ${(lruConf.config?.lru ?? '').padEnd(6)} ${lruConf.module}  (${kind})`
+        console.log `${name.padEnd(8)} ${(lruConf.config?.lru ?? '').padEnd(6)} ${lruConf.module}  (window ${lruConf.window?.width}x${lruConf.window?.height})`
       process.exit(0)
 
     Menu.setApplicationMenu(null)
@@ -448,7 +451,7 @@ main := () : void ->
   execName := path.basename(process.execPath).toLowerCase().replace(/\.exe$/, '')
   if execName == 'meds' and userArgs[0] != 'meds'
     userArgs.unshift('meds')
-  // The outer `gpc gui` wrapper (gpc/cmd_gui.coffee) spawns us with a
+  // The outer `gpc gui` wrapper (gpc/cmd/cmd_gui.coffee) spawns us with a
   // pre-resolved `--cli-opts=<base64-json>` blob so absolute paths survive
   // the exec.  Short-circuit the commander dispatch in that case — the
   // blob already represents a fully-parsed `gui` invocation.

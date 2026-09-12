@@ -192,6 +192,7 @@ class Lru:
     order: int = 0
     depends: List[str] = field(default_factory=list)
     autostart: bool = True
+    debug_port: Optional[int] = None            # a gpc dbg-serve socket
 
     @property
     def command_line(self) -> str:
@@ -200,6 +201,9 @@ class Lru:
     @property
     def signal(self) -> int:
         return getattr(signalmod, "SIG" + self.stop_signal)
+
+
+DEFAULT_CONCURRENCY = 4
 
 
 @dataclass
@@ -211,6 +215,7 @@ class SimConfig:
     paths: Dict[str, Path]
     lrus: List[Lru]
     log_dir: Optional[Path] = None
+    concurrency: int = DEFAULT_CONCURRENCY
 
     def get(self, key: str) -> Optional[Lru]:
         for lru in self.lrus:
@@ -236,6 +241,7 @@ DEFAULTS: Dict[str, Any] = {
     "startDelay": 0.0,
     "readyTimeout": 20.0,
     "logLines": 5000,
+    "debugPort": None,
     "health": {"type": "process"},
 }
 
@@ -247,6 +253,7 @@ _POLICY = {
     "maxRestarts": "max_restarts", "stopSignal": "stop_signal",
     "stopTimeout": "stop_timeout", "startDelay": "start_delay",
     "readyTimeout": "ready_timeout", "logLines": "log_lines",
+    "debugPort": "debug_port",
 }
 
 
@@ -309,6 +316,11 @@ def load(sim_file: Path, run_file: Path) -> SimConfig:
     listed = run_doc.get("autostart")
     if listed is not None and not isinstance(listed, list):
         raise ConfigError("runConfig.yml: autostart: must be a list of LRU names")
+
+    concurrency = DEFAULT_CONCURRENCY
+    for label, doc in (("sim.yml", sim_doc), ("runConfig.yml", run_doc)):
+        if "concurrency" in doc:
+            concurrency = _count(doc["concurrency"], label + ": concurrency")
 
     lrus: List[Lru] = []
     for position, (key, raw) in enumerate(instances.items()):
@@ -377,6 +389,8 @@ def load(sim_file: Path, run_file: Path) -> SimConfig:
             order=int(merged.get("order", (position + 1) * 10)),
             depends=[str(d) for d in (merged.get("depends") or [])],
             autostart=bool(merged.get("autostart", True)),
+            debug_port=(int(merged["debugPort"]) if merged.get("debugPort") not in (None, "")
+                        else None),
         )
         if listed is not None:
             lru.autostart = key in listed
@@ -402,4 +416,12 @@ def load(sim_file: Path, run_file: Path) -> SimConfig:
         paths=paths,
         lrus=lrus,
         log_dir=paths.get("logs"),
+        concurrency=concurrency,
     )
+
+
+def _count(value: Any, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError("%s: expected a whole number of 1 or more, got %r"
+                          % (where, value))
+    return value

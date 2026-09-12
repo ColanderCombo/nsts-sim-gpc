@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -69,6 +70,8 @@ class ManagedProcess:
         self.health = "unknown"          # unknown | up | down
         self.health_note = ""
         self.built = False
+        self.control_environment = {}
+        self.launch_id = None
 
         self._proc: Optional[subprocess.Popen] = None
         self._log: Deque[LogLine] = deque(maxlen=max(200, lru.log_lines))
@@ -143,7 +146,10 @@ class ManagedProcess:
     def _environment(self) -> dict:
         env = dict(os.environ)
         env.update(self.lru.env)
+        env.update(self.control_environment)
         env["NSTS_SIM_LRU"] = self.lru.key
+        if self.launch_id:
+            env["NSTS_SIM_LAUNCH"] = self.launch_id
         # A model written in Python block-buffers its output down a pipe.
         env.setdefault("PYTHONUNBUFFERED", "1")
         return env
@@ -191,6 +197,7 @@ class ManagedProcess:
         self.health = "unknown"
         self.health_note = ""
         self.note("start: " + self.lru.command_line)
+        self.launch_id = uuid.uuid4().hex
 
         stdout, keep = self._open_output()
         try:

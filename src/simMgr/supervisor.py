@@ -4,6 +4,9 @@ The supervisor owns one ManagedProcess per LRU and two threads: a worker
 that performs the things that take time (a build, an ordered start, a
 terminate), and a monitor that reaps children and runs the health probes.
 Nothing in the user interface blocks on either.
+
+Autostart follows configuration order and the concurrency limit. Shared build
+commands run once per session.
 """
 
 from __future__ import annotations
@@ -24,11 +27,15 @@ class Supervisor:
     def __init__(self, config: SimConfig, build: bool = True):
         self.config = config
         self.build_enabled = build
+        self.control_environment = {}
+        self.simulation_frozen = False
+        self.on_error = None
         self.procs: Dict[str, ManagedProcess] = {}
         self.stale: set = set()          # spec changed under a running LRU
         self.activity = ""               # what the worker is doing
         self.message = ""                # the last thing worth saying
         self._held: set = set()          # stopped by hand; policy leaves them alone
+        self._built: set = set()         # (cwd, build argv) run this session
         self._probe: Dict[str, Probe] = {}
         self._fault: Dict[str, FaultWatch] = {}
         self._retry_at: Dict[str, float] = {}
@@ -58,6 +65,11 @@ class Supervisor:
     def say(self, text: str) -> None:
         self.message = text
 
+    def report_error(self, text: str) -> None:
+        self.say(text)
+        if self.on_error is not None:
+            self.on_error(text)
+
     def start_threads(self) -> None:
         self._worker = threading.Thread(target=self._run_worker, name="sim-worker",
                                         daemon=True)
@@ -79,10 +91,7 @@ class Supervisor:
         self._tasks.put((label, fn))
 
     def _drain(self) -> None:
-        """Abandon whatever was queued.
-
-        A start still waiting its turn at a terminate does not run.
-        """
+        """Discard queued work so a pending start cannot follow termination."""
         while True:
             try:
                 task = self._tasks.get_nowait()
@@ -102,7 +111,7 @@ class Supervisor:
             try:
                 fn()
             except Exception as exc:                  # a task must not kill the thread
-                self.say("%s: %s" % (label, exc))
+                self.report_error("%s: %s" % (label, exc))
             finally:
                 self.activity = ""
                 self._cancel.clear()
@@ -114,48 +123,58 @@ class Supervisor:
 
     def start(self, key: str) -> None:
         """Start one LRU, building it first if it has a build command."""
-        proc = self.procs[key]
-        if proc.state in LIVE:
-            self.say("%s is already running" % key)
-            return
         self._retry_at.pop(key, None)
         self._held.discard(key)
-        self._submit("starting %s" % key, lambda: self._start_now(proc))
+        self._submit("starting %s" % key, lambda: self._start_now(self.procs[key]))
 
     def _start_now(self, proc: ManagedProcess) -> bool:
+        if self.simulation_frozen:
+            self.say("RUN the simulation before starting LRUs")
+            return False
+        if proc.alive:
+            self.say("%s is already running" % proc.lru.key)
+            return True
+        proc.control_environment = self.control_environment
         self._probe[proc.lru.key].reset()
         self._fault[proc.lru.key].reset()
-        if not self.build_enabled:
+        build = (proc.lru.cwd, tuple(proc.lru.build))
+        if not self.build_enabled or build in self._built:
             proc.built = True
         ok = proc.start()
+        if proc.built and proc.lru.build:
+            self._built.add(build)
         self.say("%s: %s" % (proc.lru.key, "started" if ok else "would not start"))
         return ok
 
     def stop(self, key: str) -> None:
-        proc = self.procs[key]
         self._held.add(key)
-        if proc.state not in LIVE:
-            proc.forget()
-            return
         self._retry_at.pop(key, None)
-        self._submit("stopping %s" % key, lambda: self._stop_now(proc))
+        self._submit("stopping %s" % key, lambda: self._stop_now(self.procs[key]))
 
     def _stop_now(self, proc: ManagedProcess) -> None:
+        if not proc.alive:
+            proc.forget()
+            return
         proc.stop()
         self._await_gone(proc)
 
     def kill(self, key: str) -> None:
-        proc = self.procs[key]
         self._held.add(key)
         self._retry_at.pop(key, None)
-        self._submit("killing %s" % key, lambda: (proc.kill(), self._await_gone(proc)))
+
+        def work() -> None:
+            proc = self.procs[key]
+            proc.kill()
+            self._await_gone(proc)
+
+        self._submit("killing %s" % key, work)
 
     def restart(self, key: str) -> None:
-        proc = self.procs[key]
         self._retry_at.pop(key, None)
         self._held.discard(key)
 
         def work() -> None:
+            proc = self.procs[key]
             if proc.state in LIVE:
                 proc.stop()
                 self._await_gone(proc)
@@ -164,14 +183,14 @@ class Supervisor:
 
         self._submit("restarting %s" % key, work)
 
-    def autostart(self) -> None:
+    def autostart(self, keys=None) -> None:
         """Start everything the run configuration asks for, in its order."""
         self._cancel.clear()
         self._held.clear()
-        self._submit("autostart", self._autostart_now)
+        self._submit("autostart", lambda: self._autostart_now(keys))
 
-    def _autostart_now(self) -> None:
-        wanted = [lru for lru in self.config.lrus if lru.autostart]
+    def _autostart_now(self, keys=None) -> None:
+        wanted = [lru for lru in self.config.lrus if (lru.autostart if keys is None else lru.key in keys)]
         if not wanted:
             self.say("no LRU in this configuration is set to autostart")
             return
@@ -182,7 +201,7 @@ class Supervisor:
             proc = self.procs[lru.key]
             if proc.state in LIVE:
                 continue
-            if not self._await_depends(lru):
+            if not self._await_depends(lru) or not self._await_slot(lru):
                 continue
             self.activity = "autostart: %s" % lru.key
             if not self._start_now(proc):
@@ -210,6 +229,18 @@ class Supervisor:
             else:
                 self.say("%s: %s never came up -- starting anyway" % (lru.key, dep))
         return True
+
+    def _await_slot(self, lru: Lru) -> bool:
+        """Hold a start while `concurrency` LRUs are between spawn and a verdict."""
+        while not self._cancel.is_set():
+            with self._lock:
+                coming = sum(1 for p in self.procs.values()
+                             if p.state in (State.BUILDING, State.STARTING))
+            if coming < self.config.concurrency:
+                return True
+            self.activity = "%s: waiting, %d starting" % (lru.key, coming)
+            self._wait(0.1)
+        return False
 
     def terminate(self) -> None:
         """Stop everything, youngest first."""
@@ -253,11 +284,7 @@ class Supervisor:
         self._submit("restart all", work)
 
     def reload(self) -> str:
-        """Re-read the configuration files.
-
-        A running LRU keeps the definition it was started with, and is
-        marked as no longer matching what is on disk.
-        """
+        """Reload configuration; mark running LRUs whose definitions changed stale."""
         fresh = load(self.config.sim_file, self.config.run_file)
         running = {k for k, p in self.procs.items() if p.state in LIVE}
         procs, probes, faults, stale = {}, {}, {}, set()
@@ -285,6 +312,7 @@ class Supervisor:
             self.config = fresh
             self.procs, self._probe, self._fault = procs, probes, faults
             self.stale = stale
+            self._built.clear()
         note = "reloaded %s" % fresh.run_file.name
         if stale:
             note += " -- restart to apply: %s" % ", ".join(sorted(stale))
@@ -299,7 +327,7 @@ class Supervisor:
             try:
                 self.tick()
             except Exception as exc:
-                self.say("monitor: %s" % exc)
+                self.report_error("monitor: %s" % exc)
 
     def tick(self) -> None:
         now = time.time()
@@ -351,7 +379,7 @@ class Supervisor:
 
     def _maybe_restart(self, proc: ManagedProcess, now: float) -> None:
         lru = proc.lru
-        if lru.restart == "never" or lru.key in self._held:
+        if self.simulation_frozen or lru.restart == "never" or lru.key in self._held:
             return
         if proc.state is State.FAILED:
             pass

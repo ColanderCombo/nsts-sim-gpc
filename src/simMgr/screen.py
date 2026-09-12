@@ -1,9 +1,4 @@
-"""Drawing primitives for the curses interface.
-
-curses raises on a write that runs past the edge of the window, and the
-edge moves whenever the terminal is resized, so every write in this
-program goes through Screen.put, which clips.
-"""
+"""Drawing primitives for the curses interface."""
 
 from __future__ import annotations
 
@@ -25,6 +20,7 @@ _PALETTE = [
     ("key", curses.COLOR_YELLOW, 0),
     ("note", curses.COLOR_BLUE, curses.A_BOLD),
     ("value", -1, 0),
+    ("bus_global", curses.COLOR_CYAN, curses.A_DIM),
 ]
 
 
@@ -39,6 +35,8 @@ class Glyphs:
         self.ascii = ascii_only
         self.up = "^" if ascii_only else "↑"
         self.down = "v" if ascii_only else "↓"
+        self.left = "<" if ascii_only else "←"
+        self.right = ">" if ascii_only else "→"
         self.sel = ">" if ascii_only else "▸"
         self.hline = "-" if ascii_only else "─"
         self.vline = "|" if ascii_only else "│"
@@ -68,6 +66,30 @@ class Screen:
                 except curses.error:
                     pass
             self._attr[name] = extra if name != "dim" else curses.A_DIM
+        self._attr["dark"] = curses.A_DIM
+        self._attr["gray"] = self._attr["dim"]
+        if self._colour and curses.COLORS >= 256:
+            try:
+                curses.init_pair(len(_PALETTE) + 1, 240, -1)
+                self._attr["dark"] = curses.color_pair(len(_PALETTE) + 1)
+                curses.init_pair(len(_PALETTE) + 2, 244, -1)
+                self._attr["gray"] = curses.color_pair(len(_PALETTE) + 2)
+            except curses.error:
+                pass
+
+        for index, (name, foreground, extra) in enumerate((
+                ("popup", curses.COLOR_WHITE, 0),
+                ("popup_title", curses.COLOR_CYAN, curses.A_BOLD),
+                ("popup_dim", 244 if self._colour and curses.COLORS >= 256 else curses.COLOR_WHITE, curses.A_DIM),
+                ("popup_selected", curses.COLOR_YELLOW, curses.A_BOLD)),
+                start=len(_PALETTE) + 3):
+            self._attr[name] = extra
+            if self._colour:
+                try:
+                    curses.init_pair(index, foreground, curses.COLOR_BLACK)
+                    self._attr[name] |= curses.color_pair(index)
+                except curses.error:
+                    pass
 
     # ----------------------------------------------------------- geometry
 
@@ -118,14 +140,14 @@ class Screen:
         self.put(y, 0, char * self.w, attr)
 
     def rule(self, y: int, title: str = "", attr: Optional[int] = None,
-             right: str = "") -> None:
+             right: str = "", width: Optional[int] = None) -> None:
         attr = self.attr("dim") if attr is None else attr
-        line = self.g.hline * self.w
-        self.put(y, 0, line, attr)
+        width = self.w if width is None else min(width, self.w)
+        self.put(y, 0, self.g.hline * width, attr)
         if title:
             self.put(y, 2, " %s " % title, self.attr("hdr"))
         if right:
-            self.put(y, max(0, self.w - len(right) - 3), " %s " % right, attr)
+            self.put(y, max(0, width - len(right) - 3), " %s " % right, attr)
 
     def clip(self, text: str, width: int) -> str:
         if width <= 0:
@@ -133,6 +155,41 @@ class Screen:
         if len(text) <= width:
             return text
         return text[:max(0, width - 1)] + self.g.ell
+
+
+class ScreenRegion(Screen):
+    """A clipped drawing surface with coordinates relative to its parent."""
+
+    def __init__(self, parent, top, left, height, width):
+        self.parent = parent
+        self.top, self.left = top, left
+        self.height = max(0, min(height, parent.h - top))
+        self.width = max(0, min(width, parent.w - left))
+        self.g = parent.g
+
+    @property
+    def h(self):
+        return self.height
+
+    @property
+    def w(self):
+        return self.width
+
+    def attr(self, *args, **kwargs):
+        return self.parent.attr(*args, **kwargs)
+
+    def put(self, y, x, text, attr=0, width=None):
+        if y < 0 or y >= self.h or x >= self.w:
+            return x
+        if x < 0:
+            text, x = text[-x:], 0
+        room = self.w - x
+        if width is not None:
+            room = min(room, width)
+        if room <= 0:
+            return x
+        end = self.parent.put(self.top + y, self.left + x, text[:room], attr)
+        return end - self.left
 
 
 def fmt_duration(seconds: Optional[float]) -> str:
@@ -147,11 +204,7 @@ def fmt_duration(seconds: Optional[float]) -> str:
 
 
 class Buttons:
-    """A row of labelled fields, one of which is selected.
-
-    Used for the global commands under the LRU table and for the process
-    controls on the detail page.
-    """
+    """A row of labelled fields, one of which is selected."""
 
     def __init__(self, labels: Tuple[str, ...]):
         self.labels = list(labels)

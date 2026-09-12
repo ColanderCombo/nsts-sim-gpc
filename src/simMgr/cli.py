@@ -1,23 +1,44 @@
-"""The `sim` command."""
+"""The `sim` command.
+
+Start, watch and stop the processes that make up a simulated orbiter:
+    sim start                   a headless master
+    sim mgr                     attach a terminal frontend
+    sim run [lru...]             a master that starts LRUs immediately
+    sim list                    discover running simulations
+    sim catalog                 the LRUs in this configuration
+    sim config                  the configuration as sim resolved it
+    sim doctor                  every simulator process on this machine
+
+With no command, sim runs mgr.
+"""
 
 from __future__ import annotations
 
-import argparse
 import os
+import json
 import shlex
 import signal
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
+
+import typer
 
 from . import __version__
+from . import doctor
 from .config import DEFAULT_BASE_PORT, ConfigError, SimConfig, load
 from .process import LIVE, State
 from .supervisor import Supervisor
+from .master import Master
+from .remote import Client, RemoteSupervisor, discover
+from .controlbus import interface
+from .startup import StartupRestore
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent                              # the simulator tree
+ROOT = HERE.parent.parent                       # the simulator tree
 
 
 def default_sim_file() -> Path:
@@ -28,58 +49,79 @@ def default_run_file() -> Path:
     return Path(os.environ.get("NSTS_SIM_RUNCONFIG") or ROOT / "config" / "runConfig.yml")
 
 
-def base_port(text: str) -> int:
+def base_port(value) -> int:
     try:
-        port = int(text, 10)
-    except ValueError:
+        port = int(value, 10) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError):
         port = -1
     if not 1024 <= port <= 65400:
-        raise argparse.ArgumentTypeError(
-            "base port must be an integer from 1024 to 65400, got '%s'" % text)
+        raise typer.BadParameter(
+            "base port must be an integer from 1024 to 65400, got '%s'" % value)
     return port
 
 
 def settle_base_port(given: Optional[int]) -> int:
-    if given is None:
-        given = base_port(os.environ.get("NSTS_BASE_PORT") or str(DEFAULT_BASE_PORT))
+    given = base_port(given if given is not None
+                      else os.environ.get("NSTS_BASE_PORT") or DEFAULT_BASE_PORT)
     os.environ["NSTS_BASE_PORT"] = str(given)
     return given
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="sim",
-        description="Start, watch and stop the processes that make up a "
-                    "simulated orbiter.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="With no command, sim opens the terminal interface.")
-    parser.add_argument("-c", "--config", type=Path, default=None, metavar="FILE",
-                        help="the LRU catalog (default: config/sim.yml)")
-    parser.add_argument("-r", "--run-config", type=Path, default=None, metavar="FILE",
-                        help="the configuration to manage (default: config/runConfig.yml)")
-    parser.add_argument("--no-build", action="store_true",
-                        help="do not run any LRU's build command before starting it")
-    parser.add_argument("--ascii", action="store_true",
-                        help="draw with ASCII instead of line and arrow characters")
-    parser.add_argument("--base-port", type=base_port, default=None, metavar="N",
-                        help="base of the bus port block every LRU is given "
-                             "(default: NSTS_BASE_PORT, or %d)" % DEFAULT_BASE_PORT)
-    parser.add_argument("--version", action="version", version="sim " + __version__)
+app = typer.Typer(add_completion=False, invoke_without_command=True,
+                  help=__doc__.splitlines()[0])
 
-    subs = parser.add_subparsers(dest="command")
-    subs.add_parser("tui", help="the terminal interface (the default)")
-    run = subs.add_parser("run", help="start the configuration without a "
-                                      "terminal interface and follow its output")
-    run.add_argument("lru", nargs="*", help="start only these LRUs")
-    subs.add_parser("list", help="the LRUs in this configuration")
-    subs.add_parser("config", help="the configuration as sim resolved it")
-    return parser
+ConfigOpt = Annotated[Optional[Path], typer.Option(
+    "--config", "-c", metavar="FILE",
+    help="the LRU catalog (default: config/sim.yml)")]
+RunConfigOpt = Annotated[Optional[Path], typer.Option(
+    "--run-config", "-r", metavar="FILE",
+    help="the configuration to manage (default: config/runConfig.yml)")]
+NoBuildOpt = Annotated[bool, typer.Option(
+    "--no-build", help="do not run any LRU's build command before starting it")]
+AsciiOpt = Annotated[bool, typer.Option(
+    "--ascii", help="draw with ASCII instead of line and arrow characters")]
+BasePortOpt = Annotated[Optional[int], typer.Option(
+    "--base-port", metavar="N",
+    help="base of the bus port block every LRU is given "
+         "(default: NSTS_BASE_PORT, or %d)" % DEFAULT_BASE_PORT)]
 
 
-def resolve(args) -> SimConfig:
-    sim_file = args.config or default_sim_file()
-    run_file = args.run_config or default_run_file()
-    return load(sim_file, run_file)
+def _version(show: bool) -> None:
+    if show:
+        print("sim " + __version__)
+        raise typer.Exit()
+
+
+# The options are the command's, not a subcommand's, and the state they
+# settle is read by whichever subcommand runs.  `mgr` runs when none does.
+@app.callback()
+def cli(ctx: typer.Context,
+        config: ConfigOpt = None,
+        run_config: RunConfigOpt = None,
+        no_build: NoBuildOpt = False,
+        ascii_only: AsciiOpt = False,
+        base_port_: BasePortOpt = None,
+        host: Annotated[Optional[str], typer.Option(
+            "--host", help="master address (default: NSTS_BUS_IFACE, or loopback)")] = None,
+        version: Annotated[bool, typer.Option(
+            "--version", callback=_version, is_eager=True,
+            help="print the version and exit")] = False) -> None:
+    settle_base_port(base_port_)
+    ctx.obj = {"config": config, "run_config": run_config,
+               "build": not no_build, "ascii": ascii_only, "host": host or interface(),
+               "attach": host is not None or base_port_ is not None}
+    if ctx.invoked_subcommand is None:
+        mgr(ctx)
+
+
+def resolve(ctx: typer.Context) -> SimConfig:
+    """The catalog and the configuration, or a message and exit status 2."""
+    try:
+        return load(ctx.obj["config"] or default_sim_file(),
+                    ctx.obj["run_config"] or default_run_file())
+    except ConfigError as exc:
+        print("sim: %s" % exc, file=sys.stderr)
+        raise typer.Exit(2)
 
 
 # ------------------------------------------------------------------ reports
@@ -101,6 +143,7 @@ def cmd_config(config: SimConfig) -> int:
     print("catalog:   %s" % config.sim_file)
     print("configured %s" % config.run_file)
     print("base port: %s" % os.environ["NSTS_BASE_PORT"])
+    print("concurrency: %d" % config.concurrency)
     print("paths:")
     for name, path in sorted(config.paths.items()):
         print("  %-10s %s" % (name + ":", path))
@@ -124,6 +167,8 @@ def cmd_config(config: SimConfig) -> int:
               % (lru.health.describe(), lru.health.grace, lru.ready_timeout))
         if lru.health.fault:
             print("    fault:     /%s/" % lru.health.fault)
+        if lru.debug_port:
+            print("    debug:     port %d" % lru.debug_port)
         print("    order:     %d%s%s" % (
             lru.order,
             "  depends " + ",".join(lru.depends) if lru.depends else "",
@@ -135,14 +180,30 @@ def cmd_config(config: SimConfig) -> int:
 
 # ------------------------------------------------------------------ running
 
-def cmd_run(config: SimConfig, wanted: List[str], build: bool) -> int:
-    """The same supervisor with the terminal in place of the interface."""
+def cmd_run(config: SimConfig, wanted: List[str], build: bool, autostart=True,
+            restore=None, resume=False) -> int:
+    """Run the master until a termination signal, following child output."""
     sup = Supervisor(config, build=build)
+    if (restore is not None and wanted) or (resume and restore is None):
+        print('sim: --restore cannot select individual LRUs; --resume requires --restore', file=sys.stderr)
+        return 2
     unknown = [k for k in wanted if k not in sup.procs]
     if unknown:
         print("sim: not in this configuration: %s" % ", ".join(unknown), file=sys.stderr)
         return 2
-    sup.start_threads()
+    try:
+        master = Master(sup, int(os.environ["NSTS_BASE_PORT"]))
+    except OSError as exc:
+        print("sim: cannot start master: %s" % exc, file=sys.stderr)
+        return 2
+    try:
+        startup = StartupRestore(master, restore, resume) if restore is not None else None
+    except (OSError, ValueError) as exc:
+        master.close()
+        print('sim: cannot restore at startup: ' + str(exc), file=sys.stderr)
+        return 2
+    master.start()
+    print("sim: master %s at %s:%d" % (master.id, interface(), master.port), flush=True)
 
     stopping = {"now": False}
 
@@ -156,16 +217,27 @@ def cmd_run(config: SimConfig, wanted: List[str], build: bool) -> int:
     signal.signal(signal.SIGINT, bye)
     signal.signal(signal.SIGTERM, bye)
 
-    if wanted:
+    if startup:
+        print('sim: starting checkpoint LRUs for ' + restore, flush=True)
+        sup.autostart(startup.keys)
+    elif wanted:
         for key in wanted:
             sup.start(key)
-    else:
+    elif autostart:
         sup.autostart()
 
     width = max([len(l.key) for l in config.lrus] + [3])
     seen = {key: 0 for key in sup.procs}
     try:
         while True:
+            if startup and not stopping['now']:
+                try:
+                    if startup.tick():
+                        print('sim: restored %s (%s)' % (restore, 'running' if resume else 'frozen'), flush=True)
+                        startup = None
+                except (OSError, ValueError) as exc:
+                    print('sim: startup restore failed: ' + str(exc), file=sys.stderr, flush=True)
+                    return 1
             for key in sup.order:
                 proc = sup.procs[key]
                 lines, seen[key] = proc.since(seen.get(key, 0))
@@ -173,58 +245,241 @@ def cmd_run(config: SimConfig, wanted: List[str], build: bool) -> int:
                     print("%-*s | %s" % (width, key, line.text), flush=True)
             if stopping["now"] and not any(p.state in LIVE for p in sup.procs.values()):
                 break
-            if not stopping["now"] and not sup.busy():
-                alive = any(p.state in LIVE for p in sup.procs.values())
-                started = any(p.state is not State.STOPPED for p in sup.procs.values())
-                if started and not alive:
-                    print("sim: nothing is running", flush=True)
-                    break
             time.sleep(0.1)
     finally:
-        sup.shutdown()
+        master.close()
     return 0
 
 
-def cmd_tui(config: SimConfig, build: bool, ascii_only: bool) -> int:
+def cmd_mgr(client: Client, ascii_only: bool) -> int:
     from .tui import App
 
-    if not sys.stdout.isatty():
-        print("sim: there is no terminal here -- try `sim run` instead",
-              file=sys.stderr)
-        return 2
-
-    sup = Supervisor(config, build=build)
-    sup.start_threads()
+    sup = RemoteSupervisor(client)
     try:
         App(sup, ascii_only=ascii_only,
-        base_port=int(os.environ["NSTS_BASE_PORT"])).run()
+            base_port=int(os.environ["NSTS_BASE_PORT"]),
+            hardware_views=client.host in ("127.0.0.1", "localhost")).run()
     finally:
-        # An LRU left behind answers the next session on the same base port.
-        if any(p.state in LIVE for p in sup.procs.values()):
-            print("sim: stopping the LRUs still running")
-            sup.terminate_now()
         sup.shutdown()
     return 0
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        settle_base_port(args.base_port)
-        config = resolve(args)
-    except (ConfigError, argparse.ArgumentTypeError) as exc:
-        print("sim: %s" % exc, file=sys.stderr)
-        return 2
+# ----------------------------------------------------------------- commands
 
-    command = args.command or "tui"
-    if command == "list":
-        return cmd_list(config)
-    if command == "config":
-        return cmd_config(config)
-    if command == "run":
-        return cmd_run(config, args.lru, not args.no_build)
-    return cmd_tui(config, not args.no_build, args.ascii)
+@app.command()
+def mgr(ctx: typer.Context) -> None:
+    """Open a frontend, starting a master when the default endpoint is idle."""
+    if not sys.stdout.isatty():
+        print("sim: no terminal", file=sys.stderr)
+        raise typer.Exit(2)
+    try:
+        result = cmd_mgr(manager_client(ctx), ctx.obj["ascii"])
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(str(exc))
+    raise typer.Exit(result)
+
+
+def connect(ctx: typer.Context) -> Client:
+    try:
+        return Client(ctx.obj["host"], int(os.environ["NSTS_BASE_PORT"]))
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter("cannot attach to master: %s; start `sim start` first" % exc)
+
+
+def manager_client(ctx: typer.Context) -> Client:
+    if ctx.obj["attach"]:
+        return connect(ctx)
+    port = int(os.environ["NSTS_BASE_PORT"])
+    try:
+        return Client(ctx.obj["host"], port)
+    except ConnectionError as exc:
+        if not isinstance(exc.__cause__ or exc, ConnectionRefusedError):
+            raise
+    config = resolve(ctx)
+    log_dir = config.log_dir or ROOT / "run" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / ("master-%d.log" % port)
+    argv = [sys.executable, "-m", "simMgr", "--base-port", str(port),
+            "--config", str(config.sim_file), "--run-config", str(config.run_file)]
+    if not ctx.obj["build"]:
+        argv.append("--no-build")
+    argv.append("start")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    with log_path.open("a") as output:
+        child = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
+                                 stdout=output, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+    deadline = time.monotonic() + 10
+    try:
+        while time.monotonic() < deadline:
+            try:
+                client = Client(ctx.obj["host"], port)
+                threading.Thread(target=child.wait, daemon=True).start()
+                return client
+            except OSError:
+                if child.poll() is not None:
+                    raise ValueError("master exited with status %s; see %s" % (child.returncode, log_path))
+                time.sleep(0.1)
+        raise ValueError("master startup timed out; see %s" % log_path)
+    except BaseException:
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        raise
+
+
+@app.command()
+def run(ctx: typer.Context,
+        lru: Annotated[Optional[List[str]], typer.Argument(
+            help="start only these LRUs")] = None,
+        restore: Annotated[Optional[str], typer.Option('--restore', metavar='NAME', help='Start checkpoint LRUs and restore NAME, leaving them frozen')] = None,
+        resume: Annotated[bool, typer.Option('--resume', help='RUN after startup restore succeeds')] = False) -> None:
+    """Start the configuration without a terminal interface and follow its output."""
+    raise typer.Exit(cmd_run(resolve(ctx), lru or [], ctx.obj["build"], restore=restore, resume=resume))
+
+
+@app.command("catalog")
+def catalog(ctx: typer.Context) -> None:
+    """The LRUs in this configuration."""
+    raise typer.Exit(cmd_list(resolve(ctx)))
+
+
+@app.command("list")
+def list_(json_output: Annotated[bool, typer.Option("--json")] = False) -> None:
+    """Discover running simulations on the global control channel."""
+    records = discover()
+    if json_output:
+        print(json.dumps(records, indent=2))
+    else:
+        print("SIMULATION  HOST  BASE PORT  MASTER")
+        for record in records:
+            print("%s  %s  %s  %s" % (record.get("name"), record.get("host"),
+                                      record.get("basePort"), record.get("master")))
+
+
+def remote_call(ctx, operation, key=None):
+    try:
+        return connect(ctx).call(operation, key)
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(str(exc))
+
+
+@app.command()
+def status(ctx: typer.Context) -> None:
+    """Show the master's process and health state."""
+    state = remote_call(ctx, "snapshot")
+    print("LRU  STATE  HEALTH  PID")
+    for key, proc in state["processes"].items():
+        print("%s  %s  %s  %s" % (key, proc["state"], proc["health"], proc["pid"] or "--"))
+
+
+@app.command()
+def inspect(ctx: typer.Context,
+            key: Annotated[Optional[str], typer.Argument()] = None) -> None:
+    """Query configuration, component buses, availability and recent errors as JSON."""
+    state = remote_call(ctx, "snapshot")
+    if key is not None:
+        if key not in state["processes"]:
+            raise typer.BadParameter("unknown configured LRU: %s" % key)
+        state = dict(process=state["processes"][key],
+                     components=[record for record in state["components"] if record.get("key") == key],
+                     errors=[record for record in state["errors"] if record.get("key") == key])
+    print(json.dumps(state, indent=2))
+
+
+@app.command()
+def start(ctx: typer.Context,
+          key: Annotated[Optional[str], typer.Argument()] = None,
+          autostart: Annotated[bool, typer.Option("--autostart")] = False,
+          restore: Annotated[Optional[str], typer.Option('--restore', metavar='NAME', help='Start checkpoint LRUs and restore NAME, leaving them frozen')] = None,
+          resume: Annotated[bool, typer.Option('--resume', help='RUN after startup restore succeeds')] = False) -> None:
+    """Run the headless master, or start one LRU in an existing simulation."""
+    if key is not None:
+        if autostart or restore is not None or resume:
+            raise typer.BadParameter("--autostart, --restore and --resume apply to starting a master")
+        print(remote_call(ctx, "start", key))
+    else:
+        raise typer.Exit(cmd_run(resolve(ctx), [], ctx.obj["build"], autostart, restore, resume))
+
+
+@app.command()
+def stop(ctx: typer.Context, key: str) -> None:
+    """Ask the master to stop a configured LRU process."""
+    print(remote_call(ctx, "stop", key))
+
+
+@app.command()
+def restart(ctx: typer.Context, key: str) -> None:
+    """Ask the master to restart a configured LRU process."""
+    print(remote_call(ctx, "restart", key))
+
+
+@app.command()
+def terminate(ctx: typer.Context) -> None:
+    """Stop all configured LRUs; leave the master serving clients."""
+    print(remote_call(ctx, "terminate"))
+
+
+@app.command()
+def logs(ctx: typer.Context, key: str) -> None:
+    """Read the latest 500 log lines from a configured LRU process."""
+    for line in remote_call(ctx, "logs", key):
+        print(line["text"])
+
+
+@app.command("config")
+def config_(ctx: typer.Context) -> None:
+    """The configuration as sim resolved it."""
+    raise typer.Exit(cmd_config(resolve(ctx)))
+
+
+@app.command("doctor")
+def doctor_() -> None:
+    """Every simulator process on this machine, by base port, duplicates flagged."""
+    raise typer.Exit(doctor.report())
+
+
+@app.command("freeze")
+@app.command("frz")
+def freeze(ctx: typer.Context, at: Annotated[Optional[float], typer.Option("--at", help="Simulation seconds")] = None):
+    """Freeze all LRUs now or at a simulation time."""
+    print(connect(ctx).call("freeze", at=at))
+
+
+@app.command("resume")
+def resume(ctx: typer.Context):
+    """RUN a frozen simulation (the run command launches a configuration)."""
+    print(remote_call(ctx, "run"))
+
+
+@app.command("dstore")
+def dstore(ctx: typer.Context, name: str):
+    """Save every frozen LRU into NAME.dstore."""
+    print(connect(ctx).call("dstore", name=name))
+
+
+@app.command("restore")
+def restore(ctx: typer.Context, name: str):
+    """Restore a named store, leaving the simulation frozen."""
+    print(connect(ctx).call("restore", name=name))
+
+
+@app.command("dstores")
+def dstores(ctx: typer.Context):
+    """List saved stores and their completion status."""
+    print(json.dumps(remote_call(ctx, "snapshot")["simulation"], indent=2))
+
+
+@app.command("rename-dstore")
+def rename_dstore(ctx: typer.Context, name: str, new_name: str):
+    """Rename a saved store."""
+    print(connect(ctx).call("rename_dstore", name=name, new_name=new_name))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

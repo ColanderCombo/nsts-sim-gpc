@@ -53,7 +53,7 @@ def state_colour(proc: ManagedProcess) -> str:
 
 
 class MainView:
-    """The table of LRUs, with the global commands beneath it."""
+    """The global commands, over the table of LRUs."""
 
     COMMANDS = ("AUTOSTART", "TERMINATE", "RESTART", "RELOAD", "QUIT")
 
@@ -98,8 +98,13 @@ class MainView:
         x_rst = x_up + 9
         x_cmd = x_rst + 4
 
+        self.app.page_bar(screen)
+        self.buttons.draw(screen, 2, 2, self.focus == "cmds",
+                          enabled=self.app.command_enabled)
+        screen.rule(3)
+
         head = screen.attr("hdr", underline=True)
-        y = 2
+        y = 4
         screen.fill(y, screen.attr("hdr", underline=True))
         screen.put(y, x_name, "LRU", head)
         screen.put(y, x_stat, "STAT", head)
@@ -109,9 +114,9 @@ class MainView:
         screen.put(y, x_rst, "RST", head)
         screen.put(y, x_cmd, "COMMAND", head)
 
-        # The footer is four lines: a rule, the commands, a rule, a message.
-        footer = 5
-        first = 3
+        # The footer is a rule, a message and the key hints.
+        footer = 3
+        first = 5
         rows = max(1, screen.h - first - footer)
         if self.row < self.top:
             self.top = self.row
@@ -153,13 +158,10 @@ class MainView:
 
         y = screen.h - footer
         screen.rule(y, right="%d LRU" % len(keys))
-        self.buttons.draw(screen, y + 1, 2, self.focus == "cmds",
-                          enabled=self.app.command_enabled)
-        screen.rule(y + 2)
-        self.app.message_line(screen, y + 3)
-        self.app.hint_line(screen, y + 4,
+        self.app.message_line(screen, y + 1)
+        self.app.hint_line(screen, y + 2,
                            "arrows select   enter open/run   s start   x stop   "
-                           "r restart   tab commands   q quit")
+                           "r restart   tab commands   F6 view   q quit")
 
     # -------------------------------------------------------------- keys
 
@@ -168,15 +170,15 @@ class MainView:
         keys = self.keys
 
         if ch in (curses.KEY_DOWN, ord("j")):
-            if self.focus == "lrus" and self.row < len(keys) - 1:
-                self.row += 1
-            else:
-                self.focus = "cmds"
-        elif ch in (curses.KEY_UP, ord("k")):
             if self.focus == "cmds":
                 self.focus = "lrus"
-            elif self.row > 0:
+            elif self.row < len(keys) - 1:
+                self.row += 1
+        elif ch in (curses.KEY_UP, ord("k")):
+            if self.focus == "lrus" and self.row > 0:
                 self.row -= 1
+            else:
+                self.focus = "cmds"
         elif ch == curses.KEY_LEFT:
             if self.focus == "cmds":
                 self.buttons.move(-1)
@@ -213,22 +215,26 @@ class MainView:
             self.run("QUIT")
 
     def run(self, command: str) -> None:
-        app, sup = self.app, self.app.sup
-        if command == "AUTOSTART":
-            sup.autostart()
-        elif command == "TERMINATE":
-            if app.confirm("stop every LRU in this configuration?"):
-                sup.terminate()
-        elif command == "RESTART":
-            if app.confirm("stop everything and start it again?"):
-                sup.restart_all()
-        elif command == "RELOAD":
-            try:
-                sup.reload()
-            except Exception as exc:
-                sup.say("reload failed: %s" % exc)
-        elif command == "QUIT":
-            app.quit()
+        run_command(self.app, command)
+
+
+def run_command(app, command):
+    sup = app.sup
+    if command == "AUTOSTART":
+        sup.autostart()
+    elif command == "TERMINATE":
+        if app.confirm("stop every LRU in this configuration?"):
+            sup.terminate()
+    elif command == "RESTART":
+        if app.confirm("stop everything and start it again?"):
+            sup.restart_all()
+    elif command == "RELOAD":
+        try:
+            sup.reload()
+        except Exception as exc:
+            sup.say("reload failed: %s" % exc)
+    elif command == "QUIT":
+        app.quit()
 
 
 class DetailView:
@@ -248,6 +254,11 @@ class DetailView:
     def proc(self) -> ManagedProcess:
         return self.app.sup.procs[self.key]
 
+    def close(self) -> None:
+        proc = self.app.sup.procs.get(self.key)
+        if proc:
+            proc.watch_logs = False
+
     # -------------------------------------------------------------- drawing
 
     def draw(self, screen: Screen) -> None:
@@ -257,13 +268,14 @@ class DetailView:
 
         self.app.title_bar(screen, "%s %s %s" % (
             self.app.sup.config.name, g.arrow, self.key))
+        self.app.page_bar(screen)
 
         label = screen.attr("hdr")
         value = screen.attr("value")
         dim = screen.attr("dim")
         right = screen.w // 2 + 6
 
-        y = 2
+        y = 3
         screen.put(y, 2, lru.name, screen.attr("title"))
         if lru.description:
             screen.put(y, 2 + len(lru.name) + 2,
@@ -377,7 +389,7 @@ class DetailView:
 
     def handle(self, ch: int) -> None:
         proc = self.proc
-        rows = max(1, self.app.screen.h - 14)
+        rows = max(1, self.app.screen.h - 15)
 
         if ch == curses.KEY_LEFT:
             self.buttons.move(-1)

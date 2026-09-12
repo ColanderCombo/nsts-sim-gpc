@@ -5,8 +5,10 @@ window.dgram = dgram
 
 fs := require 'fs'
 window.fs = fs
+window.zlib = require 'zlib'
 
 window.Buffer = Buffer
+window.simIdentity = {pid: process.pid, env: process.env, host: require('os').hostname()}
 
 {ipcRenderer,webFrame} from 'electron'
 window.ipcRenderer = ipcRenderer

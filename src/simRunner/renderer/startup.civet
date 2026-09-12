@@ -1,8 +1,7 @@
 "civet coffeeCompat"
 
-import * as gpc from './../../gpc/gui.coffee'
-import * as mdu from './../../meds/mdu.coffee'
-import * as idp from './../../meds/idp.coffee'
+import * as gpc from './../../gpc/gui/gui.coffee'
+import * as mdu from './../../meds/mdu/mdu.coffee'
 import {configureBus} from './../../com/bus.civet.jsx'
 
 ipcRenderer := window.ipcRenderer
@@ -14,13 +13,10 @@ reactClient := require 'react-dom/client';
 ipcRenderer.on "cde-left-inset", (e, inset) =>
   window.dispatchEvent(new CustomEvent('cde-left-inset', {detail: inset}))
 
-// LRU-mode renderer: one window per windowed LRU (MDU display), with
-// headless "shared" LRUs (IDPs) bundled in for bus comms only
 startLRUs := async (CONFIG) =>
   configureBus(CONFIG.bus) if CONFIG.bus?
   lruMap := {
-    'meds/mdu': mdu
-    'meds/idp': idp
+    'meds/mdu/mdu': mdu
   }
   // NB: this file is coffeeCompat — `for x in arr` iterates values
   for lruName in CONFIG.thisStart
@@ -33,14 +29,9 @@ startLRUs := async (CONFIG) =>
       console.error "startup: no renderer module for #{lruConf.module} (LRU #{lruName})"
       continue
     lru := mod.default.start(lruConf)
-    // A shared (headless) LRU is here for bus comms and does not render into
-    // #root.
-    if lru.initWindow? and not lruConf.shared
+    if lru.initWindow?
       container := document.getElementById("root")
       await reactClient.createRoot(container!).render(await lru.initWindow())
-    // console access: window.lru is the last LRU started in this window
-    // (may be a bundled shared LRU, e.g. the IDP); window.lrus[name] is
-    // keyed by config name (crt1, idp1, ...) so debug pokes can find the MDU
     window.lru = lru
     window.lrus ?= {}
     window.lrus[lruName] = lru
