@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+# runs the MEDS Integrated Display Processors, with no window.
+#
+# Usage:
+#   idp run                            — IDP 1, 2, 3 and 4
+#   idp run --units 1,2 --ipl-request 1
+#   idp run --fill data/TEST-9011-GPC_MEMORY.dfb   — a display with no GPC
+#   idp units                          — the units and their busses
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target idp-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/idp.js" "$@"

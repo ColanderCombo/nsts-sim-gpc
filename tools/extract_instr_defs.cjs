@@ -73,7 +73,7 @@ function extract(instance) {
     const { BCEInstruction } = await bundle('iop_bce_instr.coffee');
 
     const doc = {
-        _comment: 'Auto-extracted from ext/sim/gpc/*_instr.coffee by '
+        _comment: 'Auto-extracted from ext/sim/src/gpc/*_instr.coffee by '
                 + 'tools/extract_instr_defs.cjs; do not hand-edit.',
         cpu: extract(new Instruction()),
         msc: extract(new MSCInstruction()),

@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# runs the four Air Data Transducer Assemblies behind the flight critical
+# forward MDMs.
+#
+# Usage:
+#   adta run                           — ADTA 1/2/3/4 behind FF1/FF2/FF3/FF4
+#   adta run --fail 3=PS_GOOD          — a mode status BITE in one unit
+#   adta run --self-test 1=high        — the high self test in force
+#   adta read 1                        — read ADTA 1 through its MDM
+#   adta watch 1                       — the traffic with its MDM
+#   adta status                        — the mode status word, bit by bit
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target adta-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/adta.js" "$@"

@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# runs the MEDS Analog to Digital Converters on the IDP busses.
+#
+# Usage:
+#   adc run                            — ADC 1A, 1B, 2A and 2B
+#   adc run --units 1A,2A --fail 2A    — two units, one silent
+#   adc drive 1 --nominal              — a signal source for pair 1's inputs
+#   adc drive 1 --sweep                — ... sweeping every meter
+#   adc set 1 mpsPc_C --eu 104         — one channel, in engineering units
+#   adc poll 1A                        — read a unit as its IDP does
+#   adc status 1A                      — the status block
+#   adc cst 1A                         — run the self-test and read the result
+#   adc watch 1A                       — the 1553B traffic to and from a unit
+#   adc channels 1                     — the channel table of a pair
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target adc-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/adc.js" "$@"

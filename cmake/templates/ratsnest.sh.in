@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# routes signals between the simulation busses.
+#
+# Usage:
+#   ratsnest run                       — every wiring/*.wir
+#   ratsnest run wiring/gpc.wir -v     — one file, a line for every net that moves
+#   ratsnest check                     — read the wiring and report what is wrong
+#   ratsnest show --drivers            — the nets and what drives them
+#   ratsnest set F6/S3 LVLH            — put one control on the panel bus
+#   ratsnest watch --panel             — the traffic on a bus the wiring reaches
+#   ratsnest schemes                   — the binding schemes and their addresses
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target ratsnest-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/ratsnest.js" "$@"

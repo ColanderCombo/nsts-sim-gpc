@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# runs a Mass Memory Unit on the simulated mass memory bus.
+#
+# Usage:
+#   mmu run --unit 1 --volume tape.mmv   — serve a tape to a GPC
+#   mmu create tape.mmv                  — make an empty volume
+#   mmu put tape.mmv 0/0/0/0 data.bin    — lay data on the tape
+#   mmu ls tape.mmv                      — what a volume holds
+#   mmu watch MM1 --decode               — see the bus traffic
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target mmu-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/mmu.js" "$@"

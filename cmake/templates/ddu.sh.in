@@ -1,0 +1,26 @@
+#!/bin/bash
+#
+# the GPC's flight instrument output on the flight critical busses: the DDU
+# words and the MEDS transfer, as the flight software writes them.
+#
+# Usage:
+#   ddu drive FC3                      — a GPC stand-in writing FC3, until ^C
+#   ddu drive all --mm 305 --ramp      — every FC bus, every quantity sweeping
+#   ddu drive FC3 --set adiRol=30 --set altitude=25000
+#   ddu watch FC3                      — the DDU and MEDS traffic, decoded
+#   ddu words adi                      — a message's word table
+#   ddu decode avvi 7800 aaa9 0f00 ... — words given by hand
+#   ddu fields                         — the drive's fields and their defaults
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target ddu-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/ddu.js" "$@"

@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# runs the three Inertial Measurement Units behind the flight critical
+# forward MDMs.
+#
+# Usage:
+#   imu run                            — IMU 1/2/3 behind FF1/FF2/FF3
+#   imu run --fail 2=PLATFORM_FAIL     — a mode status BITE in one unit
+#   imu run --silent 3                 — a unit that hears its poll and says nothing
+#   imu read 1                         — read IMU 1 through its MDM
+#   imu watch 1                        — the traffic with its MDM
+#   imu status                         — the mode status word, bit by bit
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target imu-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/imu.js" "$@"

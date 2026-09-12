@@ -1,0 +1,26 @@
+#!/bin/bash
+#
+# runs the MEDS glass-cockpit simulator: the MDU displays.  The IDPs are
+# `idp`.
+#
+# Usage:
+#   meds <mdu...>            — launch MDUs, e.g. meds crt1 cdr1
+#   meds --list              — list available LRU names
+#   meds --display AE_PFD crt1
+#
+# LRU definitions live in config/meds.json (override with --config or
+# the NSTS_SIM_CONFIG env var).
+#
+# Rebuilds the Electron bundles and the units MEDS shares a bus with;
+# NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target meds 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec "@NSTS_SRC_ROOT@/node_modules/.bin/electron" "${BUILD}/dist/main/main.js" meds "$@"

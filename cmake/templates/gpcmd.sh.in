@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# gpcmd — simulate GPC command traffic to a MEDS IDP (DK bus).
+#
+# Usage:
+#   gpcmd fill <file.dfb> [--idp N]   — DATA FILL: display format to an IDP
+#   gpcmd time [--interval 1]         — TIME FILL: drive the DPS time header
+#   gpcmd resetspl                    — RESET SPL: clear the scratch pad line
+#   gpcmd raw <op> [hexwords...]      — arbitrary opcode
+#   gpcmd watch [bus]                 — print bus traffic
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target gpcmd-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/gpcmd.js" "$@"

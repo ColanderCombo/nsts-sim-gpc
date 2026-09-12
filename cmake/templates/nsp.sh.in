@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# runs the Network Signal Processors behind MDMs FF1 and FF3, and the
+# ground's forward link stream they decode commands from.
+#
+# Usage:
+#   nsp run                            — NSP 1 powered behind FF1, NSP 2 off behind FF3
+#   nsp run --power 2                  — NSP 2 powered instead
+#   nsp run --uplink-switch gpc-block  — the panel C3 switch
+#   nsp uplink 4a8b 1234 5678          — send a 48-bit command word on the forward link
+#   nsp uplink $(nsp rtc FF1 10/0 set 0001)   — a real-time command
+#   nsp carrier                        — the idle stream, until ^C
+#   nsp read 1                         — read NSP 1 through its MDM, as a GPC does
+#   nsp watch 1                        — the traffic between NSP 1 and FF1
+#   nsp watch link                     — the forward link frames
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target nsp-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/nsp.js" "$@"

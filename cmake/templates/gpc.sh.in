@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# runs the AP-101 simulator.
+#
+# Usage:
+#   gpc run <fcm>       — batch execution
+#   gpc debug <fcm>     — interactive REPL debugger
+#   gpc dbg-serve <fcm> — headless debugger on a socket
+#   gpc dbg-client ...  — send a command to a dbg-serve session
+#   gpc gui [fcm]       — Electron GUI debugger
+#   gpc dump <fcm>      — FCM dump report
+#   gpc disasm <fcm>    — disassembly listing
+#
+# Rebuilds first; NSTS_NO_BUILD=1 skips that.  `gui` needs the Electron
+# bundles and a GPC's bus partners beside it, so it builds more.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+export NSTS_ELECTRON="@NSTS_SRC_ROOT@/node_modules/.bin/electron"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if [ "$1" = "gui" ]; then
+        TARGET=gpc-gui
+    else
+        TARGET=gpc-bundle
+    fi
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target "${TARGET}" 2>&1); then
+        printf '%s\n' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/gpc.js" "$@"

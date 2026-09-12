@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# runs the Master Timing Unit behind the flight critical forward MDMs.
+#
+# Usage:
+#   mtu run                            — accumulators behind FF1/2/3, outputs behind OF1/2
+#   mtu run --gmt 052:14:30:00         — start at a given GMT
+#   mtu run --skew 2=+0.9 --fail 3     — an off accumulator, a silent one
+#   mtu read 1                         — read accumulator 1 through its MDM
+#   mtu watch 1                        — the traffic with its MDM
+#   mtu watch oi1                      — the voted output's traffic with OF1
+#   mtu commands                       — the command words a GPC uses
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target mtu-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/mtu.js" "$@"

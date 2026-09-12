@@ -1,7 +1,4 @@
 node_modules/
-dist/
-release/
-release-meds/
 *.log
 .DS_Store
 Thumbs.db
@@ -18,3 +15,9 @@ data/overlay_images/
 # sim: per-LRU logs from a supervised session
 run/
 __pycache__/
+
+# cmake build tree: the bundles, the addons and the command wrappers
+build/
+
+# Named simulation state stores
+*.dstore/

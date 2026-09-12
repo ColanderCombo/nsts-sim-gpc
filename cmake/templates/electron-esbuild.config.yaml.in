@@ -1,0 +1,18 @@
+# Generated into the build directory by cmake.  electron-esbuild resolves
+# every path in here against its working directory, so it runs from the
+# build tree and each source path is absolute.
+mainConfig:
+  type: esbuild
+  path: @NSTS_SRC_ROOT@/cmake/esbuild/main.config.ts
+  src: @NSTS_SRC_ROOT@/src/simRunner/main/main.civet
+  output:
+    dir: dist/main
+    filename: main.js
+rendererConfig:
+  type: esbuild
+  path: @NSTS_SRC_ROOT@/cmake/esbuild/renderer.config.ts
+  html: @NSTS_SRC_ROOT@/src/simRunner/renderer/index.html
+  src: @NSTS_SRC_ROOT@/src/simRunner/renderer/startup.civet
+  output:
+    dir: dist/renderer
+    filename: startup.js

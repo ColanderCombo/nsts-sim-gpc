@@ -1,0 +1,34 @@
+# Generated into the build directory by cmake.  The bundles it packages
+# live in the build tree, so they come in as a file set with an absolute
+# `from`; everything else is relative to the project the app is built from.
+appId: @NSTS_PKG_APPID@
+productName: @NSTS_PKG_PRODUCT@
+directories:
+  output: @CMAKE_BINARY_DIR@/release-@NSTS_PKG_NAME@
+  buildResources: @NSTS_SRC_ROOT@/build-resources
+files:
+  - from: @NSTS_DIST@
+    to: dist
+    filter: ["**/*", "!**/*.map"]
+  - config/meds.json
+  - data/**/*
+  - package.json
+extraMetadata:
+  main: dist/main/main.js
+asar: true
+linux:
+  target:
+    - AppImage
+  category: Development
+  executableName: @NSTS_PKG_EXECUTABLE@
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+  executableArgs:
+    - "--no-sandbox"
+appImage:
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.developer-tools
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"

@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# runs the line replaceable units: the device models and their bus tools,
+# one command.
+#
+# Usage:
+#   lru list                           — the catalog
+#   lru run imu                        — one unit, as `imu run` does
+#   lru run imu + mtu + mdm FF1        — three units in this process
+#   lru run mdm FF1 + mdm FF2 -q       — the same kind twice
+#   lru mdm cards FF1                  — a unit's own subcommands
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target lru-bundle 2>&1); then
+        printf '%s\n' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/lru.js" "$@"

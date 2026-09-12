@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# runs the two PCM Master Units: the GPC downlists on the IP busses, the
+# fetch of the OI MDMs, and the 128 and 64 kbps telemetry streams.
+#
+# Usage:
+#   pcmmu run                          — PCMMU 1 powered, FORMAT switch at GPC
+#   pcmmu run --power 2                — PCMMU 2 instead
+#   pcmmu run --hdr-format 161 --ldr-format 103   — the format RAMs preloaded
+#   pcmmu watch gpc 4                  — GPC 4's commands and downlist frames
+#   pcmmu watch hdr                    — the 128 kbps stream
+#   pcmmu watch oi 1                   — the fetch on OI1
+#   pcmmu read --gpc 5 2043 3          — read the OI/PL RAM as a GPC does, on a spare bus
+#   pcmmu bite --gpc 5                 — the BITE register
+#   pcmmu map OF1                      — the fetch program's RAM map
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target pcmmu-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/pcmmu.js" "$@"

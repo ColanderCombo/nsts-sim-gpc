@@ -4,63 +4,14 @@
   "description": "Space Shuttle AP-101 GPC Simulator",
   "author": "Donald Schmidt <daschmid@gmail.com>",
   "license": "MIT",
-  "main": "dist/main/main.js",
+  "main": "build/dist/main/main.js",
   "scripts": {
-    "gui:dev": "electron-esbuild dev",
-    "gui:build": "electron-esbuild build",
-    "gpc:build": "node esbuild/esbuild.gpc.config.js",
-    "gpc": "node dist/gpc.js",
-    "dist:prep": "electron-esbuild build && node esbuild/esbuild.gpc.config.js",
-    "dist:pkg": "npm run dist:prep && electron-builder",
-    "dist:linux": "npm run dist:prep && electron-builder --linux",
-    "dist:mac": "npm run dist:prep && electron-builder --mac",
-    "meds": "electron dist/main/main.js meds",
-    "dist:meds": "npm run dist:prep && electron-builder --config electron-builder-meds.yml",
-    "gpcmd:build": "node esbuild/esbuild.gpcmd.config.js",
-    "gpcmd": "node dist/gpcmd.js",
-    "mmu:build": "node esbuild/esbuild.mmu.config.js",
-    "mmu": "node dist/mmu.js"
-  },
-  "build": {
-    "appId": "com.nsts.gpc",
-    "productName": "GPC",
-    "directories": {
-      "output": "release",
-      "buildResources": "build-resources"
-    },
-    "files": [
-      "dist/**/*",
-      "config/meds.json",
-      "data/**/*",
-      "package.json",
-      "!**/*.map"
-    ],
-    "extraMetadata": {
-      "main": "dist/main/main.js"
-    },
-    "asar": true,
-    "linux": {
-      "target": [
-        "AppImage"
-      ],
-      "category": "Development",
-      "executableName": "gpc",
-      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
-      "executableArgs": [
-        "--no-sandbox"
-      ]
-    },
-    "appImage": {
-      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
-    },
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.developer-tools",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
-    }
+    "build": "./BUILD.sh",
+    "check": "./BUILD.sh check",
+    "gui:dev": "cd build && NSTS_SRC_ROOT=.. ../node_modules/.bin/electron-esbuild dev",
+    "meds": "electron build/dist/main/main.js meds",
+    "pkg:gpc": "./BUILD.sh gpc-pkg",
+    "pkg:meds": "./BUILD.sh meds-pkg"
   },
   "devDependencies": {
     "@babel/preset-react": "7.23.3",
@@ -86,6 +37,7 @@
     "path-data-polyfill": "^1.0.4",
     "react": "18.2.0",
     "react-dom": "18.2.0",
+    "shm-typed-array": "^0.1.1",
     "svg-segmentize": "^0.1.6",
     "three": "^0.150.1"
   }

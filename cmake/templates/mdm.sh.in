@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# runs a Multiplexer/Demultiplexer on its flight busses and its hardware
+# side bus.
+#
+# Usage:
+#   mdm run FF1                          — answer a GPC as MDM FF1
+#   mdm list                             — the catalog
+#   mdm cards FF1                        — the cards in a unit
+#   mdm io FF1 set 4/0 8000              — drive a discrete input
+#   mdm io FF1 watch                     — see the hardware side traffic
+#   mdm watch FC1 --decode               — see the bus traffic
+#
+# Rebuilds the bundle first; NSTS_NO_BUILD=1 skips that.
+#
+BUILD="@CMAKE_BINARY_DIR@"
+export NSTS_TOP="@NSTS_SRC_ROOT@"
+if [ -z "${NSTS_NO_BUILD}" ]; then
+    if ! LOG=$("@CMAKE_COMMAND@" --build "${BUILD}" --target mdm-bundle 2>&1); then
+        printf '%s
+' "$LOG" >&2
+        exit 1
+    fi
+fi
+exec node "${BUILD}/dist/mdm.js" "$@"
