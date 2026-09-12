@@ -9,8 +9,6 @@
 #   watch  print what everything on the bus publishes
 #   get    ask the GPC for a register's current value
 #
-# Every subcommand takes --gpc <n>; set, mode, ipl and watch also take a
-# comma list or `all`.
 #
 # The GPC holds the canonical value, the discrete outputs included, so
 # anything here that wants a starting picture asks for it with REQUEST.
@@ -24,6 +22,7 @@ import {DiscreteBus, DiscreteLines, decodeDiscrete, applyDiscrete, bitMask,
         describeDiscrete as describe, regName,
         SET, RESET, REQUEST, VALUE,
         REG_A, REG_B, REG_OUT, REPUBLISH_MS, IPL_PRESS_MS} from 'com/discretes'
+import {linksInto} from 'gpc/gpclinks'
 
 regOf = (o) -> if o.b then REG_B else REG_A
 
@@ -163,10 +162,11 @@ export addCommand = (program) ->
           else              'VALUE  '
         what = if m.op == VALUE then hex(m.mask) else describe(m.reg, m.mask)
         who = if list.length > 1 then "gpc#{gpc}  " else ""
+        at = if m.timeUs? then "  @#{(m.timeUs / 1000).toFixed(3)} ms" else ""
         console.log "#{t}s  #{who}#{op} reg #{regName(m.reg).padEnd(3)}  " +
                     "#{what.padEnd(28)}   " +
                     "A=#{hex(reg[REG_A])} B=#{hex(reg[REG_B])} " +
-                    "OUT=#{hex(reg[REG_OUT])}"
+                    "OUT=#{hex(reg[REG_OUT])}#{at}"
       console.log "listening to #{label(list)}"
       # A GPC already running has the values, so they are asked for.
       bus.request(r1) for r1 in ALL
@@ -203,8 +203,23 @@ export addCommand = (program) ->
       bus.request(reg)
       setTimeout (->
         unless answered
-          console.error "no answer for register #{regName(reg)} -- is GPC #{gpc} running?"
+          console.error "no answer for GPC #{gpc} register #{regName(reg)}"
           process.exit(1)), Number(o.seconds) * 1000
+
+  gpcOption(cmd.command('links')
+    .description("the register A inputs the other GPCs' outputs drive"),
+    'GPC ID, a comma list of them, or all')
+    .action (o) ->
+      for gpc in gpcIds(o.gpc)
+        links = linksInto(gpc)
+        unless links.length
+          console.log "GPC #{gpc}: standalone, no links"
+          continue
+        console.log "GPC #{gpc} register A"
+        for l in links
+          console.log "   #{String(l.inBit).padStart(2)}  #{l.input.padEnd(10)} " +
+                      "<- GPC #{l.gpc} DO-#{l.outBit} #{l.out}"
+      setTimeout (-> process.exit(0)), 0
 
   gpcOption(cmd.command('panel')
     .description('toggle the discrete inputs interactively')
@@ -306,11 +321,15 @@ export addCommand = (program) ->
         return
 
       mode(o.mode.toLowerCase()) if o.mode and o.mode.toLowerCase() in MODES
-      publish()
-      timer = setInterval publish, REPUBLISH_MS
 
-      console.log "GPC #{gpc} discrete panel -- republishing every #{REPUBLISH_MS} ms.  '?' for help, 'quit' to stop."
-      show()
+      pulse = () ->
+        publish()
+        bus.request(rr) for rr in ALL
+        return
+      pulse()
+      timer = setInterval pulse, REPUBLISH_MS
+
+      console.log "GPC #{gpc} discretes, #{REPUBLISH_MS} ms refresh; '?' for help"
       rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: 'discretes> '})
       # The table above is what this panel knows; the GPC's answer arrives
       # after it, and is worth drawing again only if it said something new.

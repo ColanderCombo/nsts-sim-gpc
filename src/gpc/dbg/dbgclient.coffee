@@ -16,7 +16,7 @@
 fs = require 'fs'
 path = require 'path'
 
-import {latestSession, sessionFileFor, DEFAULT_PORT} from 'gpc/dbgserver'
+import {latestSession, sessionFileFor, DEFAULT_PORT} from 'gpc/dbg/dbgserver'
 
 # Where to connect: an explicit endpoint wins, then a named session file,
 # then whichever session started last.

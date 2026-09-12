@@ -14,7 +14,7 @@
 fs = require 'fs'
 path = require 'path'
 
-import {SymbolTable} from 'gpc/symbolTable'
+import {SymbolTable} from 'gpc/dbg/sym/symbolTable'
 
 export class SymbolStack
   constructor: (@base) ->

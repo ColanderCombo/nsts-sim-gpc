@@ -16,6 +16,7 @@ path = require 'path'
 
 require 'com/util'
 import {DISCRETE_BITS, discreteName, discreteOutName, bitMask,
+        syncCodeOut, syncCodeIn, syncCodeName,
         REG_A, REG_B} from 'com/discretes'
 
 # One record carries both clocks: the host's, for lining a run up against
@@ -228,6 +229,19 @@ export class DiscreteMonitor
       out.push("#{if (after & bitMask(b)) then '+' else '-'}#{label}")
     out
 
+  # The self-sync codes a set of register values carries: `out` is what
+  # this computer is issuing, `partners` names each computer whose lines
+  # are not all low, as `n2 SSIP (110)`.
+  @syncOf: (regs) ->
+    sync = {}
+    if regs.DISCOUT?
+      sync.out = syncCodeName(syncCodeOut(regs.DISCOUT))
+    if regs.DISCINA?
+      seen = for n in [1..4] when (syncCodeIn(regs.DISCINA, n)) != 0
+        "n#{n} #{syncCodeName(syncCodeIn(regs.DISCINA, n))}"
+      sync.partners = seen.join(', ') if seen.length
+    sync
+
   # Compare against the last snapshot and record whatever moved.
   sample: () ->
     return unless @enabled or @_origRecv?
@@ -241,6 +255,8 @@ export class DiscreteMonitor
         register: name, value: value, previous: before ? 0, changed: changed
         timeNs: @session.gpc.cpu.timeNs
       }
+      sync = DiscreteMonitor.syncOf({"#{name}": value})
+      body.sync = sync.out ? sync.partners if sync.out? or sync.partners?
       @ring.push(Object.assign({ steps: @session.stepCount }, body))
       while @ring.length > @limit
         @ring.shift()
@@ -257,7 +273,7 @@ export class DiscreteMonitor
       bits = for b in [0...32] when value & bitMask(b)
         { bit: b, name: (if name == 'DISCOUT' then discreteOutName(b) else discreteName(reg, b)) }
       { name: name, value: value, bits: bits }
-    { registers: registers, monitoring: @enabled }
+    { registers: registers, sync: DiscreteMonitor.syncOf(regs), monitoring: @enabled }
 
   clear: () ->
     n = @ring.length

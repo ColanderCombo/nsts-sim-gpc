@@ -2,7 +2,7 @@
 #
 # The machine runs in a `gpc dbg-serve` process.  This window sends
 # commands, listens for events, and draws a mirror of the session
-# (gpc/guimirror) that answers every accessor the panes were written
+# (gpc/gui/guimirror) that answers every accessor the panes were written
 # against.  The session runs at full speed in that process and the window
 # redraws from whatever the last snapshot carried, at whatever rate it can
 # manage; neither waits for the other.
@@ -14,26 +14,26 @@
 fs = require 'fs'
 path = require 'path'
 import React from 'react'
-import {SymbolTable} from 'gpc/symbolTable'
-import {DebugClient, resolveEndpoint, describeEndpoint} from 'gpc/dbgclient'
-import {GUIMirror} from 'gpc/guimirror'
+import {SymbolTable} from 'gpc/dbg/sym/symbolTable'
+import {DebugClient, resolveEndpoint, describeEndpoint} from 'gpc/dbg/dbgclient'
+import {GUIMirror} from 'gpc/gui/guimirror'
 import 'cde/cde-window'
 import 'cde/toolbar'
 import 'cde/bit-field'
 import 'cde/split-pane'
 import 'cde/dock'
-import 'gpc/gui/gpc-register'
-import 'gpc/gui/gpc-breakpoints'
-import 'gpc/gui/gpc-disasm'
-import 'gpc/gui/gpc-instr'
-import 'gpc/gui/gpc-regview'
-import 'gpc/gui/gpc-watch'
-import 'gpc/gui/gpc-memory'
-import 'gpc/gui/gpc-sections'
-import 'gpc/gui/gpc-labels'
-import 'gpc/gui/gpc-interrupts'
-import 'gpc/gui/gpc-iop'
-import 'gpc/gui/gpc-terminal'
+import 'gpc/gui/widgets/gpc-register'
+import 'gpc/gui/widgets/gpc-breakpoints'
+import 'gpc/gui/widgets/gpc-disasm'
+import 'gpc/gui/widgets/gpc-instr'
+import 'gpc/gui/widgets/gpc-regview'
+import 'gpc/gui/widgets/gpc-watch'
+import 'gpc/gui/widgets/gpc-memory'
+import 'gpc/gui/widgets/gpc-sections'
+import 'gpc/gui/widgets/gpc-labels'
+import 'gpc/gui/widgets/gpc-interrupts'
+import 'gpc/gui/widgets/gpc-iop'
+import 'gpc/gui/widgets/gpc-terminal'
 
 # Speed multipliers offered by the toolbar's real-time selector.  A factor
 # the CLI asked for that isn't in this list is added to the menu at startup.

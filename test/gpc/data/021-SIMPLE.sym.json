@@ -1,0 +1,1354 @@
+{
+  "version": "7de8d62(2026-08-24) (dirty) src:f40aac94",
+  "imageSize": 65854,
+  "entryPoint": 65852,
+  "sections": [
+    {
+      "name": "#QCASPV",
+      "address": 320,
+      "size": 2,
+      "module": "#QCASPV"
+    },
+    {
+      "name": "#QCASV",
+      "address": 322,
+      "size": 2,
+      "module": "#QCASV"
+    },
+    {
+      "name": "#QCOUT",
+      "address": 324,
+      "size": 2,
+      "module": "#QCOUT"
+    },
+    {
+      "name": "#QEIN",
+      "address": 326,
+      "size": 2,
+      "module": "#QEIN"
+    },
+    {
+      "name": "#QEOUT",
+      "address": 328,
+      "size": 2,
+      "module": "#QEOUT"
+    },
+    {
+      "name": "#QINTRAP",
+      "address": 330,
+      "size": 2,
+      "module": "#QINTRAP"
+    },
+    {
+      "name": "#QIOINIT",
+      "address": 332,
+      "size": 2,
+      "module": "#QIOINIT"
+    },
+    {
+      "name": "#QOUTER1",
+      "address": 334,
+      "size": 2,
+      "module": "#QOUTER1"
+    },
+    {
+      "name": "#DSIMPLE",
+      "address": 336,
+      "size": 41,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": "#ESIMPLE",
+      "address": 378,
+      "size": 6,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": "#LCASPV",
+      "address": 384,
+      "size": 2,
+      "module": "CASPV"
+    },
+    {
+      "name": "#LIOINIT",
+      "address": 386,
+      "size": 131,
+      "module": "IOINIT"
+    },
+    {
+      "name": "@0SIMPLE",
+      "address": 518,
+      "size": 56,
+      "module": "<generated-stacks>"
+    },
+    {
+      "name": "$0SIMPLE",
+      "address": 65536,
+      "size": 48,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": "CASPV",
+      "address": 65584,
+      "size": 64,
+      "module": "CASPV"
+    },
+    {
+      "name": "CASV",
+      "address": 65648,
+      "size": 28,
+      "module": "CASV"
+    },
+    {
+      "name": "COUTP",
+      "address": 65676,
+      "size": 20,
+      "module": "COUTP"
+    },
+    {
+      "name": "HIN",
+      "address": 65696,
+      "size": 70,
+      "module": "HIN"
+    },
+    {
+      "name": "IOINIT",
+      "address": 65766,
+      "size": 86,
+      "module": "IOINIT"
+    },
+    {
+      "name": "START",
+      "address": 65852,
+      "size": 2,
+      "module": "021-SIMPLE"
+    }
+  ],
+  "symbols": [
+    {
+      "name": "#QCASPV",
+      "address": 320,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QCASPV"
+    },
+    {
+      "name": "#QCASV",
+      "address": 322,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QCASV"
+    },
+    {
+      "name": "#QCOUT",
+      "address": 324,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QCOUT"
+    },
+    {
+      "name": "#QEIN",
+      "address": 326,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QEIN"
+    },
+    {
+      "name": "#QEOUT",
+      "address": 328,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QEOUT"
+    },
+    {
+      "name": "#QINTRAP",
+      "address": 330,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QINTRAP"
+    },
+    {
+      "name": "#QIOINIT",
+      "address": 332,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QIOINIT"
+    },
+    {
+      "name": "#QOUTER1",
+      "address": 334,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "#QOUTER1"
+    },
+    {
+      "name": "#DSIMPLE",
+      "address": 336,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": "#ESIMPLE",
+      "address": 378,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": "#LCASPV",
+      "address": 384,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "CASPV"
+    },
+    {
+      "name": "AERROR1",
+      "address": 384,
+      "type": "local",
+      "kind": "data",
+      "scope": "local",
+      "section": "#LCASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "#LIOINIT",
+      "address": 386,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "IOINIT"
+    },
+    {
+      "name": "IOCODE",
+      "address": 386,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "#LIOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "IOBUF",
+      "address": 388,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "#LIOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "@0SIMPLE",
+      "address": 518,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "<generated-stacks>"
+    },
+    {
+      "name": "$0SIMPLE",
+      "address": 65536,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": "CASPV",
+      "address": 65584,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "CASPV"
+    },
+    {
+      "name": "CASP",
+      "address": 65585,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L1",
+      "address": 65591,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L2",
+      "address": 65599,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L3",
+      "address": 65608,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L4",
+      "address": 65615,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L5",
+      "address": 65630,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L6",
+      "address": 65639,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "L7",
+      "address": 65640,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "EXIT",
+      "address": 65645,
+      "type": "local",
+      "kind": "data",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "$RET1",
+      "address": 65647,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASPV",
+      "module": "CASPV"
+    },
+    {
+      "name": "CASV",
+      "address": 65648,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "CASV"
+    },
+    {
+      "name": "CAS",
+      "address": 65649,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "CASV",
+      "module": "CASV"
+    },
+    {
+      "name": "L1",
+      "address": 65659,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASV",
+      "module": "CASV"
+    },
+    {
+      "name": "L2",
+      "address": 65667,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASV",
+      "module": "CASV"
+    },
+    {
+      "name": "EXIT",
+      "address": 65672,
+      "type": "local",
+      "kind": "data",
+      "scope": "local",
+      "section": "CASV",
+      "module": "CASV"
+    },
+    {
+      "name": "$RET1",
+      "address": 65674,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "CASV",
+      "module": "CASV"
+    },
+    {
+      "name": "COUTP",
+      "address": 65676,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "COUTP"
+    },
+    {
+      "name": "COUT",
+      "address": 65683,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "COUTP",
+      "module": "COUTP"
+    },
+    {
+      "name": ".PASS",
+      "address": 65684,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "COUTP",
+      "module": "COUTP"
+    },
+    {
+      "name": "CALLOUT1",
+      "address": 65689,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "COUTP",
+      "module": "COUTP"
+    },
+    {
+      "name": "$RET1",
+      "address": 65695,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "COUTP",
+      "module": "COUTP"
+    },
+    {
+      "name": "HIN",
+      "address": 65696,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "HIN"
+    },
+    {
+      "name": "$RET1",
+      "address": 65707,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "IIN",
+      "address": 65708,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "$RET2",
+      "address": 65719,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "EIN",
+      "address": 65720,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "$RET3",
+      "address": 65731,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "DIN",
+      "address": 65732,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "$RET4",
+      "address": 65744,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": ".PASS",
+      "address": 65744,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "BIN",
+      "address": 65745,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": ".SB",
+      "address": 65752,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "BINSTORE",
+      "address": 65761,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "$RET5",
+      "address": 65764,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "HIN",
+      "module": "HIN"
+    },
+    {
+      "name": "IOINIT",
+      "address": 65766,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "IOINIT"
+    },
+    {
+      "name": "$RET1",
+      "address": 65774,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "HOUT",
+      "address": 65775,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "OUTCOM",
+      "address": 65781,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "OUTRAP",
+      "address": 65783,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "$RET2",
+      "address": 65784,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "OUTER1",
+      "address": 65785,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "IOUT",
+      "address": 65788,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "EOUT",
+      "address": 65795,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "DOUT",
+      "address": 65802,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "BOUT",
+      "address": 65809,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "INTRAP",
+      "address": 65818,
+      "type": "entry",
+      "kind": "code",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "SKIP",
+      "address": 65819,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "CTCOM",
+      "address": 65823,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "$RET3",
+      "address": 65829,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "CNTRAP",
+      "address": 65830,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "LINE",
+      "address": 65831,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "COLUMN",
+      "address": 65836,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "TAB",
+      "address": 65841,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "PAGE",
+      "address": 65846,
+      "type": "entry",
+      "kind": "data",
+      "scope": "global",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    },
+    {
+      "name": "START",
+      "address": 65852,
+      "type": "section",
+      "kind": "section",
+      "scope": "global",
+      "section": null,
+      "module": "021-SIMPLE"
+    },
+    {
+      "name": ".PASS",
+      "address": 65886,
+      "type": "local",
+      "kind": "code",
+      "scope": "local",
+      "section": "IOINIT",
+      "module": "IOINIT"
+    }
+  ],
+  "modules": [
+    {
+      "name": "021-SIMPLE",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/progHal/021-SIMPLE.obj"
+    },
+    {
+      "name": "021-SIMPLE",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/progHal/021-SIMPLE.obj"
+    },
+    {
+      "name": "#QIOINIT",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QIOINIT.obj"
+    },
+    {
+      "name": "#QCOUT",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QCOUT.obj"
+    },
+    {
+      "name": "#QEIN",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QEIN.obj"
+    },
+    {
+      "name": "#QEOUT",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QEOUT.obj"
+    },
+    {
+      "name": "IOINIT",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/IOINIT.obj"
+    },
+    {
+      "name": "COUTP",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/COUTP.obj"
+    },
+    {
+      "name": "HIN",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/HIN.obj"
+    },
+    {
+      "name": "#QCASPV",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QCASPV.obj"
+    },
+    {
+      "name": "#QCASV",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QCASV.obj"
+    },
+    {
+      "name": "#QOUTER1",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QOUTER1.obj"
+    },
+    {
+      "name": "#QINTRAP",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QINTRAP.obj"
+    },
+    {
+      "name": "CASPV",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/CASPV.obj"
+    },
+    {
+      "name": "CASV",
+      "filename": "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/CASV.obj"
+    },
+    {
+      "name": "<generated-stacks>",
+      "filename": "<generated-stacks>"
+    }
+  ],
+  "storeProtect": {
+    "unit": "halfword",
+    "ranges": [
+      [
+        320,
+        336
+      ],
+      [
+        65536,
+        65854
+      ]
+    ]
+  },
+  "relocations": [
+    {
+      "address": 320,
+      "target": 65584,
+      "targetName": "CASPV",
+      "flags": 4,
+      "symbol": "CASPV"
+    },
+    {
+      "address": 322,
+      "target": 65648,
+      "targetName": "CASV",
+      "flags": 4,
+      "symbol": "CASV"
+    },
+    {
+      "address": 324,
+      "target": 65683,
+      "targetName": "COUT",
+      "flags": 4,
+      "symbol": "COUT"
+    },
+    {
+      "address": 326,
+      "target": 65720,
+      "targetName": "EIN",
+      "flags": 4,
+      "symbol": "EIN"
+    },
+    {
+      "address": 328,
+      "target": 65795,
+      "targetName": "EOUT",
+      "flags": 4,
+      "symbol": "EOUT"
+    },
+    {
+      "address": 330,
+      "target": 65818,
+      "targetName": "INTRAP",
+      "flags": 4,
+      "symbol": "INTRAP"
+    },
+    {
+      "address": 332,
+      "target": 65766,
+      "targetName": "IOINIT",
+      "flags": 4,
+      "symbol": "IOINIT"
+    },
+    {
+      "address": 334,
+      "target": 65785,
+      "targetName": "OUTER1",
+      "flags": 4,
+      "symbol": "OUTER1"
+    },
+    {
+      "address": 380,
+      "target": 65536,
+      "targetName": "$0SIMPLE",
+      "flags": 16,
+      "symbol": "$0SIMPLE"
+    },
+    {
+      "address": 382,
+      "target": 518,
+      "targetName": "@0SIMPLE",
+      "flags": 4,
+      "symbol": "@0SIMPLE"
+    },
+    {
+      "address": 65537,
+      "target": 518,
+      "targetName": "@0SIMPLE",
+      "flags": 0,
+      "symbol": "@0SIMPLE"
+    },
+    {
+      "address": 65539,
+      "target": 336,
+      "targetName": "#DSIMPLE",
+      "flags": 0,
+      "symbol": "#DSIMPLE"
+    },
+    {
+      "address": 65548,
+      "target": 14668,
+      "targetName": "#QIOINIT",
+      "flags": 0,
+      "symbol": "#QIOINIT"
+    },
+    {
+      "address": 65551,
+      "target": 14660,
+      "targetName": "#QCOUT",
+      "flags": 0,
+      "symbol": "#QCOUT"
+    },
+    {
+      "address": 65555,
+      "target": 14668,
+      "targetName": "#QIOINIT",
+      "flags": 0,
+      "symbol": "#QIOINIT"
+    },
+    {
+      "address": 65558,
+      "target": 14662,
+      "targetName": "#QEIN",
+      "flags": 0,
+      "symbol": "#QEIN"
+    },
+    {
+      "address": 65565,
+      "target": 14668,
+      "targetName": "#QIOINIT",
+      "flags": 0,
+      "symbol": "#QIOINIT"
+    },
+    {
+      "address": 65568,
+      "target": 14660,
+      "targetName": "#QCOUT",
+      "flags": 0,
+      "symbol": "#QCOUT"
+    },
+    {
+      "address": 65571,
+      "target": 14664,
+      "targetName": "#QEOUT",
+      "flags": 0,
+      "symbol": "#QEOUT"
+    },
+    {
+      "address": 65574,
+      "target": 14660,
+      "targetName": "#QCOUT",
+      "flags": 0,
+      "symbol": "#QCOUT"
+    },
+    {
+      "address": 65580,
+      "target": 14664,
+      "targetName": "#QEOUT",
+      "flags": 0,
+      "symbol": "#QEOUT"
+    },
+    {
+      "address": 65590,
+      "target": 384,
+      "targetName": "#LCASPV",
+      "flags": 0,
+      "symbol": "#LCASPV"
+    },
+    {
+      "address": 65598,
+      "target": 384,
+      "targetName": "#LCASPV",
+      "flags": 0,
+      "symbol": "#LCASPV"
+    },
+    {
+      "address": 65607,
+      "target": 384,
+      "targetName": "#LCASPV",
+      "flags": 0,
+      "symbol": "#LCASPV"
+    },
+    {
+      "address": 65679,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65681,
+      "target": 14656,
+      "targetName": "#QCASPV",
+      "flags": 0,
+      "symbol": "#QCASPV"
+    },
+    {
+      "address": 65686,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65688,
+      "target": 14658,
+      "targetName": "#QCASV",
+      "flags": 0,
+      "symbol": "#QCASV"
+    },
+    {
+      "address": 65692,
+      "target": 386,
+      "targetName": "IOCODE",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65694,
+      "target": 14670,
+      "targetName": "#QOUTER1",
+      "flags": 0,
+      "symbol": "#QOUTER1"
+    },
+    {
+      "address": 65701,
+      "target": 386,
+      "targetName": "IOCODE",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65703,
+      "target": 14666,
+      "targetName": "#QINTRAP",
+      "flags": 0,
+      "symbol": "#QINTRAP"
+    },
+    {
+      "address": 65705,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65713,
+      "target": 386,
+      "targetName": "IOCODE",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65715,
+      "target": 14666,
+      "targetName": "#QINTRAP",
+      "flags": 0,
+      "symbol": "#QINTRAP"
+    },
+    {
+      "address": 65717,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65725,
+      "target": 386,
+      "targetName": "IOCODE",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65727,
+      "target": 14666,
+      "targetName": "#QINTRAP",
+      "flags": 0,
+      "symbol": "#QINTRAP"
+    },
+    {
+      "address": 65729,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65737,
+      "target": 386,
+      "targetName": "IOCODE",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65739,
+      "target": 14666,
+      "targetName": "#QINTRAP",
+      "flags": 0,
+      "symbol": "#QINTRAP"
+    },
+    {
+      "address": 65741,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65748,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65752,
+      "target": 386,
+      "targetName": "IOCODE",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65754,
+      "target": 14666,
+      "targetName": "#QINTRAP",
+      "flags": 0,
+      "symbol": "#QINTRAP"
+    },
+    {
+      "address": 65756,
+      "target": 388,
+      "targetName": "IOBUF",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65769,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65771,
+      "target": 386,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65778,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65782,
+      "target": 386,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65791,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65798,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65805,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65812,
+      "target": 390,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF+2"
+    },
+    {
+      "address": 65814,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65824,
+      "target": 388,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOBUF"
+    },
+    {
+      "address": 65826,
+      "target": 386,
+      "targetName": "#LIOINIT",
+      "flags": 0,
+      "symbol": "IOCODE"
+    },
+    {
+      "address": 65853,
+      "target": 65536,
+      "targetName": "$0SIMPLE",
+      "flags": 0,
+      "symbol": "$0SIMPLE"
+    }
+  ],
+  "repro": {
+    "tool": "lnk101",
+    "version": "7de8d62(2026-08-24) (dirty) src:f40aac94",
+    "git": {
+      "commit": "7de8d62401d1aa14ee23831ce4d1ef9e3769f1d6 (dirty)",
+      "date": "2026-08-24 16:01:15 -0700",
+      "source_hash": "f40aac9446bda6dc6a5b48e735be0771"
+    },
+    "files": {
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/CASPV.obj": {
+        "md5": "16d7cccca61a8daf12345842480a6293",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/CASV.obj": {
+        "md5": "2553810de6871ae8a5fc73580b674367",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/COUTP.obj": {
+        "md5": "853d902a270c197572ac0c7c78c46d15",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/HIN.obj": {
+        "md5": "c837f81d0f0724db230bfc8e46712a2d",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/RUN/IOINIT.obj": {
+        "md5": "a5c8a2f17e5d8f03aba5b6d44c54ddc6",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QCASPV.obj": {
+        "md5": "6203aa4489ec0e86cb14a43e505c07b7",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QCASV.obj": {
+        "md5": "8e0c96e03d52a0c1c4bfb9574b43270a",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QCOUT.obj": {
+        "md5": "135845ca9c1d56639dc62a17356fb46d",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QEIN.obj": {
+        "md5": "de621fb446ec715f5fd357f73d5153c7",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QEOUT.obj": {
+        "md5": "7ec2500fcee800682c46b914b57418a1",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QINTRAP.obj": {
+        "md5": "f7f6465a07701db1a5dce4863bd3f3d5",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QIOINIT.obj": {
+        "md5": "1decce4c0521cf607b9835cee60a9f8f",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/lib/runtime/ZCON/#QOUTER1.obj": {
+        "md5": "52e1b946eec6725e15e43c463b2417a6",
+        "role": "library"
+      },
+      "/Users/don/nsts/sw/code/dps/sdl/build/progHal/021-SIMPLE.obj": {
+        "md5": "bc4f840711c283cb2d6802559ea1ecee",
+        "role": "input"
+      }
+    },
+    "inputs": {
+      "mapLibs": [],
+      "concardRoot": "OFTMP",
+      "phaseRegionOrigins": {}
+    }
+  }
+}

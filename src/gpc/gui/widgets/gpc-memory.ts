@@ -2,7 +2,7 @@ import {LitElement, html, css, render} from 'lit';
 import {customElement} from 'lit/decorators.js';
 import 'cde/toolbar';
 import 'com/util';
-import {interpretHalfwords} from 'gpc/gui/memformat';
+import {interpretHalfwords} from 'gpc/gui/widgets/memformat';
 
 @customElement('gpc-memory')
 export class GpcMemory extends LitElement {

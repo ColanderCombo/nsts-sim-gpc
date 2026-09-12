@@ -1,33 +1,34 @@
 # gpc gui cmd
 # run gui debugger
 #
+fs = require 'fs'
 path = require 'path'
 {spawn} = require 'child_process'
 
-import {addGUIOptions, guiCliOpts, startGUISession} from 'gpc/guibackend'
-import {addBusOptions} from 'com/busCli'
-import {resolveEndpoint, describeEndpoint} from 'gpc/dbgclient'
+import {addGUIOptions, guiCliOpts, startGUISession} from 'gpc/gui/guibackend'
+import {resolveEndpoint, describeEndpoint} from 'gpc/dbg/dbgclient'
 import {checkFCMFits} from 'gpc/machine'
 
 export addCommand = (program) ->
   cmd = program.command('gui')
     .description('Electron GUI debugger')
-    .argument('[fcm-file]', 'FCM memory image to load (optional; GUI can also load later)')
+    .argument('[fcm-file]', 'FCM image')
 
   addGUIOptions(cmd)
-  addBusOptions(cmd)
 
   cmd
-    .option('--no-sandbox', 'pass --no-sandbox to Electron (required on some Linux systems)')
+    .option('--no-sandbox', 'disable the Electron sandbox')
     .action (fcmPath, o) ->
       checkFCMFits(fcmPath, o.machine) if fcmPath? and not o.attach
 
-      # Resolve Electron binary and main.js relative to this bundle's
-      # location.  gpc.js lives at ext/sim/dist/gpc.js, so __dirname is
-      # ext/sim/dist/.
-      simDir = path.resolve(__dirname, '..')
-      electron = path.join(simDir, 'node_modules', '.bin', 'electron')
-      mainJs = path.join(simDir, 'dist', 'main', 'main.js')
+      mainJs = path.join(__dirname, 'main', 'main.js')
+      electron = process.env.NSTS_ELECTRON
+      unless electron
+        candidates = [
+          path.resolve(__dirname, '..', '..', 'node_modules', '.bin', 'electron')
+          path.resolve(__dirname, '..', 'node_modules', '.bin', 'electron')
+        ]
+        electron = (c for c in candidates when fs.existsSync(c))[0] ? candidates[0]
 
       opts = guiCliOpts(fcmPath, o)
 

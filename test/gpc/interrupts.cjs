@@ -1,9 +1,6 @@
-// test_interrupts.cjs — the interrupt repertoire and priority ladder
 // (IBM-85-C67-001 Figure 2-20), the interval-timer interface, the
-// interrupt log, the GUI harness's break-on-interrupt and its
 // stop-before-swap hold, and the IOP registers that feed External 0.
 //
-// Usage:  node test/test_interrupts.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -15,9 +12,8 @@ const fs      = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..');
+const SRC = path.resolve(__dirname, '..', '..');
 
-// GUIHarness reaches com/lru, which is Civet (see test_realtime.cjs).
 const civetPlugin = {
     name: 'civet',
     setup(build) {
@@ -37,7 +33,7 @@ async function bundle(entry) {
         `interrupts.${path.basename(entry, '.coffee')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SRC,
-        entryPoints: [path.join(SRC, 'gpc', entry)],
+        entryPoints: [path.join(SRC, 'src', 'gpc', entry)],
         bundle:   true,
         platform: 'node',
         format:   'cjs',
@@ -64,7 +60,7 @@ function check(label, got, want) {
     // inside the CPU bundle does not matter.
     const intrMod             = await bundle('cpu_intr.coffee');
     const { INTERRUPTS }      = intrMod;
-    const { GUIHarness }      = await bundle('guiharness.coffee');
+    const { RunHarness }      = await bundle('runharness.coffee');
     const { AP101 }           = await bundle('ap101.coffee');
 
     // Main store comes up store-protected; load it the way the FCM loader does.
@@ -355,11 +351,10 @@ function check(label, got, want) {
     check('system reset restores the hardware counters', cpu.counter1, 0xffff);
     check('system reset loads the reset PSW', cpu.psw.getNIA(), 0xe00);
 
-    // GUIHarness: break on interrupt
     //
     // A loop at 0x800 with timer 1 due in 2 ms, its handler at 0x900.
     const mkHarness = () => {
-        const h = new GUIHarness({ machine: 'ap101s' });
+        const h = new RunHarness({ machine: 'ap101s' });
         for (const at of [0x800, 0x900]) {
             poke16(h.cpu, at,     0x01E2);           // AR   R1,R2
             poke16(h.cpu, at + 1, 0xC7F0);           // BC   7,at
@@ -373,7 +368,7 @@ function check(label, got, want) {
         return h;
     };
     const runFor = (h, ms) => new Promise((res) => {
-        h.updateDisplay = () => {};
+        h.onProgress = () => {};
         h.run();
         setTimeout(() => { const running = h.running; h.stop(); res(running); }, ms);
     });
@@ -392,7 +387,6 @@ function check(label, got, want) {
     check('unarmed run continues past the interrupt', stillRunning, true);
     check('unarmed run took the interrupt', h.cpu.intCount >= 1, true);
 
-    // GUIHarness: a raise from the ground is serviced while stopped
     //
     h = mkHarness();
     h.raiseInterrupt('clk1');
@@ -504,7 +498,6 @@ function check(label, got, want) {
           predicted, cpu.psw.getNIA());
     check('...which is the sector-2 address', predicted, (2 << 15) | 0x0123);
 
-    // GUIHarness: the hold in a run
     //
     h = mkHarness();
     check('the pane reads the hold off the CPU', h.holdInterrupt, false);
@@ -539,21 +532,16 @@ function check(label, got, want) {
     check('run kept running afterwards', stillRunning, true);
     h.stop();
 
-    // GUIHarness: an internal error is reported, not swallowed
     //
-    // An exception out of exec1 used to unwind past updateDisplay, so the
-    // panes just did not refresh and the next step looked like it skipped
-    // an instruction.
     h = mkHarness();
     let refreshes = 0;
-    h.updateDisplay = () => { refreshes++; };
+    h.onProgress = () => { refreshes++; };
     h.gpc.exec1 = () => { throw new Error('boom'); };
     h.step();
-    check('a step that throws still refreshes the panes', refreshes > 0, true);
+    check('a step that throws still reports progress', refreshes > 0, true);
     check('...and reports the error', /simulator error/.test(h.statusNote || ''), true);
     check('...naming the instruction it died on', /0x00800/.test(h.statusNote || ''), true);
 
-    // GUIHarness: mask editing
     //
     h = mkHarness();
     check('mask bit 32 starts enabled', (h.cpu.psw.getIntMask() & 0x80) !== 0, true);

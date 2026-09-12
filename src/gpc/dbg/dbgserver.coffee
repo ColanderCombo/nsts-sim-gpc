@@ -32,7 +32,7 @@ os = require 'os'
 path = require 'path'
 
 import {COMMANDS, lookupCommand, coerceArgs, parseArgLine, cmdError,
-        PROTOCOL_VERSION} from 'gpc/dbgcmds'
+        PROTOCOL_VERSION} from 'gpc/dbg/dbgcmds'
 
 # Bound on one request line, so a client that sends no newline cannot grow
 # the buffer without limit.
@@ -242,7 +242,7 @@ export class DebugServer
     spec = lookupCommand(req.cmd)
     unless spec?
       return conn.reply(id, { ok: false, error: {
-        code: 'unknownCommand', message: "no such command: #{req.cmd} (try 'help')" } })
+        code: 'unknownCommand', message: "no such command: #{req.cmd}" } })
 
     try
       raw = if req.argv? then parseArgLine(spec, req.argv) else (req.args ? {})

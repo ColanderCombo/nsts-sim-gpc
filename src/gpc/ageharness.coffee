@@ -17,17 +17,25 @@ import {AP101} from 'gpc/ap101'
 import {CPU} from 'gpc/cpu'
 import {IPLLoader} from 'gpc/iplloader'
 import {HalUCP} from 'gpc/halUCP'
-import {SymbolTable} from 'gpc/symbolTable'
+import {SymbolTable} from 'gpc/dbg/sym/symbolTable'
 import {DEFAULT_MACHINE, parseMachineOption} from 'gpc/machine'
+import {DISCRETE_BITS, DISCRETE_MODES, REG_A as DISC_REG_A} from 'com/discretes'
 
 parseHex = (s) -> parseInt(s.replace(/^0x/i, ''), 16)
 
 parseGpcId = (v) ->
   n = parseInt(v, 10)
   unless n >= 0 and n <= 5
-    process.stderr.write "FATAL: --gpc must be a GPC ID from 0 to 5\n"
+    process.stderr.write "FATAL: invalid --gpc '#{v}'\n"
     process.exit(1)
   return n
+
+parseModeOption = (v) ->
+  m = String(v).toLowerCase()
+  unless m in DISCRETE_MODES
+    process.stderr.write "FATAL: invalid --mode '#{v}'\n"
+    process.exit(1)
+  m
 
 export class AGEHarness
 
@@ -40,13 +48,16 @@ export class AGEHarness
       .option('--sys-reset', 'enter at system reset PSW')
       .option('--ipl', 'simulate microcode IPL to load and run FCMBOOT from MMU')
       .option('--symbols <file>', 'load symbol table JSON from linker')
+      .option('--sdl <file>', 'load an SDL index (default: <fcm>.sdl.json)')
+      .option('--config-root <dir>', 'configuration build root')
       .option('--ebcdic', 'use EBCDIC encoding for character I/O')
-      .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs (default)', true)
+      .option('--trap-svc-error', 'intercept HAL/S SEND ERROR SVCs', true)
       .option('--no-trap-svc-error', 'pass SEND ERROR SVCs to SVC handler')
-      .option('--halucp-format-num-blanks <n>', 'blanks between WRITE output fields (default: 5)', '5')
-      .option('--line-width <n>', 'WRITE line width for wrap (default: 132)', '132')
-      .option('--machine <model>', "machine model, ap101s or ap101b (default ap101s)", parseMachineOption, DEFAULT_MACHINE)
+      .option('--halucp-format-num-blanks <n>', 'WRITE field spacing', '5')
+      .option('--line-width <n>', 'WRITE line width', '132')
+      .option('--machine <model>', 'ap101s or ap101b', parseMachineOption, DEFAULT_MACHINE)
       .option('--gpc <n>', 'GPC ID, 0-5', parseGpcId, 0)
+      .option('--mode <position>', 'initial mode switch position', parseModeOption)
 
   # Extract the AGEHarness-consumable subset of commander opts.
   # Use when forwarding parsed CLI options into a constructor that will
@@ -54,6 +65,7 @@ export class AGEHarness
   @optsFrom: (o) ->
     machine: o.machine
     gpc: o.gpc
+    mode: o.mode
     start: o.start
     powerOn: o.powerOn
     sysReset: o.sysReset
@@ -139,6 +151,7 @@ export class AGEHarness
     @gpc = new AP101(opts)
     @CONFIG = opts  # preserve for subclasses that need config access
     @gpc.iop.onIPL = () => @iplFromButton()
+    @setModeSwitch(opts.mode) if opts.mode?
 
     # Ground equipment: the HAL/S UCP I/O trap layer
     # Originally ran on the IBM 360 to simulate HAL/S I/O during development.
@@ -194,6 +207,13 @@ export class AGEHarness
         @gpc.ram.setStoreProtect(a, true)
         n++
     return n
+
+  setModeSwitch: (position) ->
+    chosen = String(position).toLowerCase()
+    throw new Error("invalid mode '#{chosen}'") unless chosen in DISCRETE_MODES
+    for m in DISCRETE_MODES
+      @gpc.iop.setDiscreteInput(DISC_REG_A, DISCRETE_BITS.A[m], m == chosen)
+    return
 
   iplFromMassMemory: (opts = {}, pacer = null, log = null) ->
     loader = new IPLLoader(@gpc, { log: log })
@@ -302,8 +322,8 @@ export class AGEHarness
   # Reset
   #
   # Reset hardware and ground equipment, then replay the original
-  # configureFromOpts to reload memory and symbols.  GUIHarness overrides
-  # this to also clear @running and refresh the display.
+  # configureFromOpts to reload memory and symbols.  RunHarness overrides
+  # this to also clear @running and report progress.
   reset: () ->
     @stepCount = 0
     @gpc.reset()
@@ -313,7 +333,6 @@ export class AGEHarness
     @halUCP.pendingIocode = null
     @halUCP.skipTrap = false
     @halUCP.wasRunning = false
-    @halUCP.svcTrapped = false
     @halUCP.active = false
 
     if @initialFcmPath

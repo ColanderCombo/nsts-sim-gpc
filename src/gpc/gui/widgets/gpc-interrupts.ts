@@ -13,7 +13,7 @@ import {customElement} from 'lit/decorators.js';
  * Properties (set via JS):
  *   cpu       -- CPU instance (intStatus, timerValue, timerRemainingUs, intLog)
  *   iop       -- IOP instance, for the External 0 sources (interrupt register A)
- *   harness   -- GUIHarness, for breakOnInterrupt / holdInterrupt state
+ *   harness   -- DebugGUI, for breakOnInterrupt / holdInterrupt state
  *
  * Public methods:
  *   refresh() -- re-read the CPU state and re-render

@@ -1,6 +1,6 @@
 import {LitElement, html, css} from 'lit';
 import {customElement} from 'lit/decorators.js';
-import {readHalfwords, formatTypedValue} from 'gpc/gui/memformat';
+import {readHalfwords, formatTypedValue} from 'gpc/gui/widgets/memformat';
 
 /**
  * <gpc-watch>: Displays symbol values (watch panel).

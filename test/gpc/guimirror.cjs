@@ -1,6 +1,4 @@
-// test_guimirror.cjs — the GUI's execution backend
 //
-// The window draws a mirror (gpc/guimirror) of a `DebugSession` reached
 // over the socket protocol, refilled by the `guisnap` command.  The claim
 // this file tests:
 //
@@ -17,7 +15,6 @@
 // until it has read it, so the mirror records the reads and asks next
 // time), and the write-through path for a register edited in a pane.
 //
-// Usage:  node test/test_guimirror.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -29,7 +26,7 @@ const fs      = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..');
+const SRC = path.resolve(__dirname, '..', '..');
 
 const civetPlugin = {
     name: 'civet',
@@ -106,10 +103,10 @@ function writeSymbols(file) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
-    const { DebugSession } = await bundle(path.join(SRC, 'gpc/dbgsession.coffee'));
-    const { DebugServer }  = await bundle(path.join(SRC, 'gpc/dbgserver.coffee'));
-    const { DebugClient }  = await bundle(path.join(SRC, 'gpc/dbgclient.coffee'));
-    const mirrorMod        = await bundle(path.join(SRC, 'gpc/guimirror.coffee'));
+    const { DebugSession } = await bundle(path.join(SRC, 'src/gpc/dbg/dbgsession.coffee'));
+    const { DebugServer }  = await bundle(path.join(SRC, 'src/gpc/dbg/dbgserver.coffee'));
+    const { DebugClient }  = await bundle(path.join(SRC, 'src/gpc/dbg/dbgclient.coffee'));
+    const mirrorMod        = await bundle(path.join(SRC, 'src/gpc/gui/guimirror.coffee'));
     const { GUIMirror, coalesce } = mirrorMod;
 
     // Window coalescing, on its own

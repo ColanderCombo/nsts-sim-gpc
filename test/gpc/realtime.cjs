@@ -1,9 +1,4 @@
-// test_realtime.cjs — real-time execution: the wait-state idle model
-// (CPU.nextTimerNs/advanceIdleNs/canWake), the RTPacer slice API that the
-// GUI drives from its own loop, and the GUIHarness run loop's 200 ms
-// chunking, pacing and wait-state handling.
 //
-// Usage:  node test/test_realtime.cjs
 //
 // The pacing checks are wall-clock measurements, so they carry tolerances
 // and the ones that need the host to outrun the AP-101S are skipped (with
@@ -19,9 +14,8 @@ const fs      = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..');
+const SRC = path.resolve(__dirname, '..', '..');
 
-// GUIHarness reaches com/lru, which is Civet — same plugin the gpc bundle
 // uses (esbuild/esbuild.gpc.config.js).
 const civetPlugin = {
     name: 'civet',
@@ -42,7 +36,7 @@ async function bundle(entry) {
         `realtime.${path.basename(entry, '.coffee')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SRC,
-        entryPoints: [path.join(SRC, 'gpc', entry)],
+        entryPoints: [path.join(SRC, 'src', 'gpc', entry)],
         bundle:   true,
         platform: 'node',
         format:   'cjs',
@@ -71,7 +65,7 @@ function note(s) { console.log(`      ${s}`); }
     const { CPU }        = await bundle('cpu.coffee');
     const { RTPacer, IDLE_CATCHUP_MAX_NS } = await bundle('rtpacer.coffee');
     const CAP_US = IDLE_CATCHUP_MAX_NS / 1000;
-    const { GUIHarness } = await bundle('guiharness.coffee');
+    const { RunHarness } = await bundle('runharness.coffee');
 
     const poke16 = (c, a, v) => c.ram.set16(a, v, false);
     const poke32 = (c, a, v) => c.ram.set32(a, v, false);
@@ -173,7 +167,28 @@ function note(s) { console.log(`      ${s}`); }
     check('idleWait resumed', await new RTPacer(cpu, 1.0, 2000).idleWait(), 'resumed');
     check('idleWait entered the handler', cpu.psw.getNIA(), 0x500);
 
-    // GUIHarness run loop
+    cpu = makeWaitingCPU(3000);
+    let owedSince = Date.now();
+    cpu.iop = { replyOwedSince: () => owedSince };
+    pacer = new RTPacer(cpu, 1.0, 2000);
+    check('a reply owed within the hold is waited for', pacer.replyOwed(), true);
+    const simBefore = cpu.timeNs, wallBefore = Date.now();
+    setTimeout(() => { owedSince = null; }, 15);
+    check('stallForReply held', await pacer.stallForReply(), true);
+    check('...for as long as the reply was owed', Date.now() - wallBefore >= 14, true);
+    check('...with simulated time still', cpu.timeNs, simBefore);
+    check('...and the pacing baseline retaken', Math.abs(pacer.aheadMs()) <= 2, true);
+    check('...counting the stall', pacer.stalls, 1);
+    owedSince = Date.now() - 100;
+    check('a reply owed past the hold is not waited for', pacer.replyOwed(), false);
+    check('and stallForReply returns at once', await pacer.stallForReply(), false);
+    owedSince = Date.now();
+    pacer = new RTPacer(cpu, 1.0, 2000);
+    pacer.enterIdle();
+    check('advanceIdle holds while a reply is owed', pacer.advanceIdle(), 'waiting');
+    check('...without advancing simulated time', cpu.timeNs, simBefore);
+    owedSince = null;
+
     //
     // Two-instruction loop: AR R1,R2 (0.25 us) + BC 7 back to it (1.25 us
     // taken) = 1.5 us of simulated time per iteration.
@@ -183,7 +198,7 @@ function note(s) { console.log(`      ${s}`); }
         poke16(h.cpu, addr + 2, addr);
     }
     function mkHarness() {
-        const h = new GUIHarness({ machine: 'ap101s' });
+        const h = new RunHarness({ machine: 'ap101s' });
         loopAt(h, 0x800);
         h.cpu.psw.setNIA(0x800);
         return h;
@@ -191,7 +206,7 @@ function note(s) { console.log(`      ${s}`); }
     // Run for `ms` of wall time, counting display refreshes.
     const runFor = (h, ms) => new Promise((res) => {
         let refreshes = 0;
-        h.updateDisplay = () => { refreshes++; };
+        h.onProgress = () => { refreshes++; };
         h.run();
         setTimeout(() => { h.stop(); res(refreshes); }, ms);
     });
@@ -205,14 +220,12 @@ function note(s) { console.log(`      ${s}`); }
     check('free run advances simulated time', freeSim > 0, true);
     check('free run refreshes ~5/s', refreshes >= 3 && refreshes <= 8, true);
 
-    // An expensive refresh throttles itself rather than stealing the
-    // machine -- see REFRESH_DUTY.  
     h = mkHarness();
     const costly = await (new Promise((res) => {
         let n = 0, spent = 0;
-        h.updateDisplay = () => {
-            const until = Date.now() + 100;             // 100 ms of redraw
-            while (Date.now() < until) { /* block, as the panes do */ }
+        h.onProgress = () => {
+            const until = Date.now() + 100;
+            while (Date.now() < until) {}
             if (h.running) { n++; spent += 100; }       // not the stop()
         };
         const t0 = Date.now();

@@ -32,16 +32,14 @@ export resolveMachine = (name) ->
   return MACHINES[DEFAULT_MACHINE] unless name?
   key = String(name).toLowerCase().replace(/-/g, '')
   m = MACHINES[key]
-  if not m?
-    known = Object.keys(MACHINES).join(', ')
-    throw new Error("unknown machine model '#{name}' (known: #{known})")
+  throw new Error("unknown machine model '#{name}'") unless m?
   return m
 
 export parseMachineOption = (v) ->
   try
     resolveMachine(v)
   catch e
-    process.stderr.write "FATAL: --machine must be one of: #{Object.keys(MACHINES).join(', ')}\n"
+    process.stderr.write "FATAL: invalid --machine '#{v}'\n"
     process.exit(1)
   return v
 
@@ -51,7 +49,7 @@ export parseCPUModelOption = (v) ->
   try
     return resolveMachine(v).model
   catch e
-    process.stderr.write "FATAL: --cpu-model must be one of: #{Object.keys(MACHINES).join(', ')}\n"
+    process.stderr.write "FATAL: invalid --cpu-model '#{v}'\n"
     process.exit(1)
 
 # Main storage in halfwords.  Both MCMs are one address space (MemoryBus).

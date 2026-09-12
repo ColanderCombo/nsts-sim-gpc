@@ -1,10 +1,6 @@
-// test_dbgserver.cjs — the socket debugger: DebugSession's execution and
-// stop classification, the command table's argument coercion and rendering,
 // and DebugServer's framing, dispatch and event broadcast.
 //
-// Usage:  node test/test_dbgserver.cjs
 //
-// The image is synthesized here (LHI/STH pairs storing 1, 2, 3 into 0x0200),
 // so the test carries no dependency on a built FCM corpus.
 //
 // Exit status is 1 iff any assertion fails.
@@ -18,9 +14,8 @@ const net     = require('net');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..');
+const SRC = path.resolve(__dirname, '..', '..');
 
-// DebugSession reaches com/lru, which is Civet — same plugin the gpc bundle
 // uses (esbuild/esbuild.gpc.config.js).
 const civetPlugin = {
     name: 'civet',
@@ -41,7 +36,7 @@ async function bundle(entry) {
         `dbgserver.${path.basename(entry, '.coffee')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SRC,
-        entryPoints: [path.join(SRC, 'gpc', entry)],
+        entryPoints: [path.join(SRC, 'src', 'gpc', entry)],
         bundle:   true,
         platform: 'node',
         format:   'cjs',
@@ -154,9 +149,9 @@ class Client {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
-    const { DebugSession } = await bundle('dbgsession.coffee');
-    const { DebugServer }  = await bundle('dbgserver.coffee');
-    const cmds             = await bundle('dbgcmds.coffee');
+    const { DebugSession } = await bundle('dbg/dbgsession.coffee');
+    const { DebugServer }  = await bundle('dbg/dbgserver.coffee');
+    const cmds             = await bundle('dbg/dbgcmds.coffee');
 
     const tmp  = fs.mkdtempSync(path.join(os.tmpdir(), 'gpc-dbgtest-'));
     const fcm  = path.join(tmp, 'tiny.fcm');
@@ -493,6 +488,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const plain = t.eventsOf('unparsed').map((e) => e.line).join('\n');
     ok('text mode answers in text', /^mode text/m.test(plain), JSON.stringify(plain.slice(0, 160)));
     ok('and renders the stop',      /---/.test(plain),         JSON.stringify(plain.slice(0, 160)));
+
+    const p = new Client(port);
+    await p.ready;
+    await sleep(50);
+    await p.send('reset', {});
+    const slow = p.send('continue', {});
+    await sleep(100);
+    const quick = await p.send('regs', { name: 'R0' });
+    ok('a query is answered while a run is outstanding', quick.ok,
+       JSON.stringify(quick).slice(0, 120));
+    const stopped = await p.send('pause', {});
+    ok('and pause reaches the run', stopped.ok);
+    const ran = await slow;
+    ok('the outstanding reply still arrives', ran.ok);
+    ok('and is the run, not the query', ran.result?.reason !== undefined,
+       JSON.stringify(ran.result).slice(0, 120));
+    p.close();
 
     c.close(); obs.close(); t.close();
     server.shutdown();

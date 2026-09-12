@@ -1,10 +1,6 @@
-// test_floatIBM.cjs — runs the AP-101S reference vectors against
-// gpc/floatIBM.coffee and reports compliance.
 //
 // Usage:
-//   node test/test_floatIBM.cjs <refgen-binary>
 //
-// Exit status is 1 iff any FAIL row exists.  
 
 'use strict';
 
@@ -15,7 +11,7 @@ const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
 if (process.argv.length < 3) {
-    console.error('usage: node test_floatIBM.cjs <refgen-binary>');
+    console.error('usage: node floatIBM.cjs <refgen-binary>');
     process.exit(2);
 }
 const refgenPath = process.argv[2];
@@ -24,7 +20,7 @@ const refgenPath = process.argv[2];
     const bundlePath = path.join(os.tmpdir(),
                                  'floatIBM.test.bundle.' + process.pid + '.cjs');
     await esbuild.build({
-        entryPoints: [path.resolve(__dirname, '../gpc/floatIBM.coffee')],
+        entryPoints: [path.resolve(__dirname, '../../src/gpc/floatIBM.coffee')],
         bundle:   true,
         platform: 'node',
         format:   'cjs',

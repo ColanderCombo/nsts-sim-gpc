@@ -1,6 +1,6 @@
 import {LitElement, html, css} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
-import 'gpc/gui/gpc-register';
+import 'gpc/gui/widgets/gpc-register';
 import 'cde/bit-field';
 
 const PSW1_LEGEND = 'p=NIA c=CC r=carry v=ovf f=fixovf mask u=expundf mask s=signif mask b=BSR d=DSR';

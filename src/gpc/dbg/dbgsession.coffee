@@ -6,7 +6,7 @@
 # settles when the machine stops.  Every stop, every character of program
 # output and every request for input is published as an event.
 #
-# The run loop is GUIHarness's, reached through its `_afterStep`,
+# The run loop is RunHarness's, reached through its `_afterStep`,
 # `onRunStart` and `onRunStop` hooks.
 #
 # Stop reasons take DAP's `stopped` vocabulary where one applies: 'entry',
@@ -14,22 +14,30 @@
 # 'interrupt', 'interrupt held', 'input' and 'step budget' cover the rest of
 # the AP-101 states.
 
+fs = require 'fs'
+
 require 'com/util'
-import {GUIHarness} from 'gpc/guiharness'
+import {RunHarness} from 'gpc/runharness'
 import {IOHost} from 'gpc/iohost'
 import {HalUCP} from 'gpc/halUCP'
 import Instruction from 'gpc/cpu_instr'
-import {SymbolStack} from 'gpc/symbolStack'
-import {BusMonitor, DiscreteMonitor, EventLog, stampOf} from 'gpc/dbgmonitor'
+import {SymbolStack} from 'gpc/dbg/sym/symbolStack'
+import {SdlIndex} from 'gpc/dbg/sym/sdl'
+import {ConfigDetector} from 'gpc/dbg/fcos/configdetect'
+
+NO_ROOT = 'no build tree: name it with --config-root or `symauto --root`'
+import {BusMonitor, DiscreteMonitor, EventLog, stampOf} from 'gpc/dbg/dbgmonitor'
 
 # Program output kept for a client that connects after it was written.
 OUTPUT_LOG_MAX = 4096
 
-export class DebugSession extends GUIHarness
+export class DebugSession extends RunHarness
   constructor: (opts = {}) ->
     super(opts)
     @opts = opts
     @fcmPath = opts.fcmPath ? null
+    @traceSink = null       # set by a console that renders a running trace
+    @_traceBefore = null
     @maxSteps = opts.maxSteps ? 10000000
 
     @listeners = []
@@ -64,6 +72,12 @@ export class DebugSession extends GUIHarness
     # Symbol layers over the image's table, for overlays.
     @syms = new SymbolStack(@sym)
 
+    @sdl = null
+
+    @autoConfig = { armed: false, min: 0.9, adopted: null, note: null }
+    @configRoot = opts.configRoot ? null
+    @_detector = null
+
     # Logpoints record and carry on; breakpoints stop.
     @logpoints = new Map()
     @_reenable = null
@@ -78,6 +92,11 @@ export class DebugSession extends GUIHarness
     @traceRing = []
 
     @iohost = null
+
+  _wireTraceHook: () ->
+    @gpc.iop?.onTrace = (text, fields = {}) =>
+      @publish('trace', Object.assign({text: text}, fields))
+    return
 
   # Capture the acceptance that armed a break, for the stop classification.
   _wireInterruptHook: () ->
@@ -136,7 +155,6 @@ export class DebugSession extends GUIHarness
     @logs = keep
     closed
 
-  # GUIHarness posts its refusals and its reasons for stopping here.
   notify: (msg) ->
     @statusNote = msg
     return
@@ -149,6 +167,13 @@ export class DebugSession extends GUIHarness
     info = @configureFromOpts(fcmPath, opts)
     @configureRunOpts(opts)
     @syms.rebase()
+    sdlPath = opts.sdl ? @sdlPathFor(fcmPath)
+    if sdlPath?
+      try
+        @loadSdl(sdlPath)
+        info.sdlPath = sdlPath
+      catch e
+        info.sdlWarning = "#{sdlPath}: #{e.message}"
     @_initIO()
     @stopReason = 'entry'
     @stopDescription = null
@@ -162,11 +187,11 @@ export class DebugSession extends GUIHarness
     @halUCP.errorCallback = (msg) => @_output("*** #{msg}\n", 0, 'stderr')
     @halUCP.controlCallback = (iocode, param, channel) =>
       @_output(@_controlText(iocode, param), channel)
-    @halUCP.inputCallback = () =>
+    @halUCP.inputCallback = (channel, iocode) =>
       @emit('input', {
-        iocode: @halUCP.pendingIocode
-        type: HalUCP.iocodeTypeName(@halUCP.pendingIocode)
-        channel: 0
+        iocode: iocode ? @halUCP.pendingIocode
+        type: HalUCP.iocodeTypeName(iocode ? @halUCP.pendingIocode)
+        channel: channel ? @halUCP.channel ? 0
       })
     return
 
@@ -223,6 +248,8 @@ export class DebugSession extends GUIHarness
     return parseInt(s.slice(2), 16) if s.match(/^0[xX][0-9a-fA-F]+$/)
     a = @syms.addressOf(s)
     return a if a?
+    a = @sdl?.addressOf(s)
+    return a if a?
     return parseInt(s, 16) if s.match(/^[0-9a-fA-F]+$/)
     return null
 
@@ -239,6 +266,78 @@ export class DebugSession extends GUIHarness
   formatCSect: (addr) -> @syms.formatCSect(addr) ? ''
   relocAt: (addr, len = 1) -> @syms.getRelocAt(addr, len) ? null
   hasSymbols: () -> @sym.symbols? or @syms.layers.length > 0
+
+  readHw: (addr) => @ram.get16(addr & 0x7ffff, false)
+
+  loadSdl: (file) ->
+    @sdl = SdlIndex.load(file)
+    @sdl
+
+  sdlPathFor: (fcmPath = @fcmPath) ->
+    return null unless fcmPath?
+    p = String(fcmPath).replace(/\.fcm$/i, '.sdl.json')
+    if p != String(fcmPath) and fs.existsSync(p) then p else null
+
+
+  baseConfig: () -> @sym.symbols?.repro?.config ? null
+
+  detector: () ->
+    root = @configRoot ? ConfigDetector.rootFor(@fcmPath)
+    return null unless root?
+    @_detector = null if @_detector? and @_detector.root != root
+    @_detector ?= new ConfigDetector(root)
+
+  detectConfig: (min = @autoConfig.min) ->
+    d = @detector()
+    throw new Error(NO_ROOT) unless d?
+    { residency, configs } = d.fingerprint(@readHw)
+    fcos = d.fromFcos(@sdl, @readHw)
+    best = d.choose(configs, min)
+    {
+      root: d.root, base: @baseConfig(), adopted: @autoConfig.adopted
+      armed: @autoConfig.armed, min: min
+      residency: residency, fingerprint: configs, fcos: fcos
+      best: best?.config ? null
+      agrees: if fcos?.config? and best? then fcos.config == best.config else null
+    }
+
+  adoptConfig: (name) ->
+    d = @detector()
+    throw new Error(NO_ROOT) unless d?
+    cand = (c for c in d.candidates() when c.name == name)[0]
+    throw new Error("no configuration named #{name}") unless cand?
+    out = { config: name, layer: null, sdl: null }
+    if name != @baseConfig()
+      @syms.load(cand.sym, { name })
+      @syms.switchTo(name)
+      out.layer = name
+    else
+      @syms.switchTo(name) if @syms.find(name)?
+    if cand.sdl?
+      @loadSdl(cand.sdl)
+      out.sdl = cand.sdl
+    @autoConfig.adopted = name
+    out
+
+  _trackConfig: () ->
+    return unless @autoConfig.armed
+    try
+      r = @detectConfig()
+    catch e
+      @autoConfig.note = e.message
+      return
+    want = r.best ? r.fcos?.config
+    if not want?
+      @autoConfig.note = 'no configuration matched'
+      return
+    return if want == (@autoConfig.adopted ? @baseConfig())
+    try
+      @adoptConfig(want)
+      @autoConfig.note = "adopted #{want}"
+      @emit('config', { config: want, fingerprint: r.fingerprint[0] ? null })
+    catch e
+      @autoConfig.note = e.message
+    return
 
   # The location fields every stop and every location-bearing result carries.
   location: (addr = @gpc.cpu.psw.getNIA()) ->
@@ -490,13 +589,31 @@ export class DebugSession extends GUIHarness
   #
   # Execution
   #
-  # Every entry point here settles when the machine stops.  GUIHarness
+  # Every entry point here settles when the machine stops.  RunHarness
   # refuses some requests outright -- a step while waiting for input, a run
   # in the wait state without real-time pacing -- and returns without
   # entering the loop, leaving its hooks unfired; _finishExec settles those
   # here, and is guarded so the two paths cannot both report the stop.
   #
+  # A console that prints the trace as it runs sets `traceSink` and gets a
+  # call an instruction, with the register changes that instruction made.
+  # The ring is what a client reads back; this is what a batch run writes.
+  _beforeStep: (nia) ->
+    @_traceBefore = @snapshotRegs() if @traceSink?
+    return
+
   _afterStep: (nia) ->
+    if @traceSink?
+      hw1 = @ram.get16(nia, false)
+      hw2 = @ram.get16(nia + 1, false)
+      [d, v] = Instruction.decode(hw1, hw2)
+      changes = @diffRegs(@_traceBefore, @snapshotRegs())
+      @traceSink({
+        step: @stepCount - 1, addr: nia, hw1: hw1, hw2: hw2
+        len: if d? then d.origLen else 1
+        text: if d? then Instruction.toStr(hw1, hw2) else '??? (invalid)'
+      }, (c for c in changes when c.name != 'NIA'))
+
     # A breakpoint stepped past under its ignore count comes back once
     # the machine has moved off it.
     if @_reenable?
@@ -567,6 +684,7 @@ export class DebugSession extends GUIHarness
         bp.hits = (bp.hits ? 0) + 1
         @breakpoints.delete(@gpc.cpu.psw.getNIA()) if bp.once
     @discMon.sample() if @discMon.enabled
+    @_trackConfig()
     body = @stopBody()
     @emit('stopped', body)
     waiters = @_stopWaiters
@@ -607,7 +725,6 @@ export class DebugSession extends GUIHarness
     body.watches = @watchList() if @watches.size > 0
     return body
 
-  # GUIHarness reports a simulator fault through notify() and stops the run.
   _exec1: (nia) ->
     try
       @gpc.exec1()
@@ -618,9 +735,7 @@ export class DebugSession extends GUIHarness
       @notify("simulator error at #{nia.asHex(5)}: #{e.message}")
       return false
 
-  # `step` with a count of one takes GUIHarness's single-instruction path,
-  # which also handles the held-interrupt swap and a wait-state step; a
-  # larger count is the run loop under a budget, so breakpoints still apply.
+  # Multi-step execution uses the run loop so breakpoints still apply.
   stepInstr: (count = 1) ->
     return @_refuse('already running') if @running
     if count <= 1
@@ -696,8 +811,7 @@ export class DebugSession extends GUIHarness
     @emit('stopped', @stopBody())
     return
 
-  # A progress event per display refresh: one per chunk of a run.
-  updateDisplay: () ->
+  onProgress: () ->
     @emit('running', {
       location: @location()
       steps: @stepCount
@@ -705,5 +819,3 @@ export class DebugSession extends GUIHarness
       speedRatio: @speedRatio
     }) if @running
     return
-
-  updateToolbar: () -> return

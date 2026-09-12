@@ -1,8 +1,6 @@
-// test_iop_state.cjs — the IOP state the ground equipment reads: the
 // per-processor snapshots the <gpc-iop> pane renders, the MSC and BCE
 // disassemblers behind its excerpt, and the MIA traffic rings.
 //
-// Usage:  node test/test_iop_state.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -14,9 +12,11 @@ const fs      = require('fs');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..');
+const SRC = path.resolve(__dirname, '..', '..');
 
-// AP101 reaches com/lru, which is Civet (see test_realtime.cjs).
+process.env.NSTS_BASE_PORT =
+    process.env.NSTS_TEST_BASE_PORT ?? String(20000 + (process.pid % 400) * 100);
+
 const civetPlugin = {
     name: 'civet',
     setup(build) {
@@ -36,7 +36,7 @@ async function bundle(entry) {
         `iopstate.${path.basename(entry, '.coffee')}.${process.pid}.cjs`);
     await esbuild.build({
         absWorkingDir: SRC,
-        entryPoints: [path.join(SRC, entry.includes('/') ? entry : `gpc/${entry}`)],
+        entryPoints: [path.join(SRC, 'src', entry.includes('/') ? entry : `gpc/${entry}`)],
         bundle:   true,
         platform: 'node',
         format:   'cjs',
@@ -128,6 +128,19 @@ function check(label, got, want) {
     gpc.iop.recvFromCPU(PCO_HALT, 0x40000000);
     check('halting BCE 1 shows there too', gpc.iop.procState(1).enabled, false);
     check('...and leaves the MSC alone', gpc.iop.procState(0).enabled, true);
+
+    const b7 = gpc.iop.bce[6];
+    gpc.iop.recvFromCPU(PCO_ENABLE, gpc.iop.procBit(7));
+    b7.recv = {pc: 0x100, addr: 0x200, left: 16, sinceNs: 0, gotAny: false,
+               deliverAt: 0, turnsAt: 0, startWall: 0, sinceWall: 0};
+    gpc.iop.recvPending += 1;
+    gpc.iop.procSet(gpc.iop.regBusyWait, 7, 1);
+    check('a BCE in a receive is busy', gpc.iop.procState(7).busy, true);
+    gpc.iop.recvFromCPU(PCO_HALT, gpc.iop.procBit(7));
+    check('halting it drops the receive', b7.recv, null);
+    check('...leaves it in wait', gpc.iop.procState(7).busy, false);
+    check('...with no reply owed', gpc.iop.recvPending, 0);
+    check('...and BCE 8 untouched', gpc.iop.procState(8).busy, false);
 
     // The MIA enables are per-BCE and read back the same way.
     gpc.iop.recvFromCPU(0x85040000, 0x40000000);     // MIA transmitter enable, BCE 1
@@ -463,7 +476,7 @@ function check(label, got, want) {
     // time, main storage and its protect bits, all 25 local store pages,
     // the IOP's registers, the DMA queue and the watchdog.
     const { AGEHarness } = await bundle('ageharness.coffee');
-    const FCM = path.join(SRC, 'gpc', 'gen', 'SIMPLE.fcm');
+    const FCM = path.join(SRC, 'test', 'gpc', 'data', '021-SIMPLE.fcm');
     const snapshot = (h) => {
         const cpu = h.cpu, iop = h.gpc.iop, mem = [], prot = [], ls = [];
         for (let a = 0; a < 0x2000; a++) {
@@ -578,10 +591,12 @@ function check(label, got, want) {
     check('a receive with no words does not advance',
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x400);
     check('...and writes nothing', gpc.cpu.mainStorage.get16(0x1000), 0);
+    check('re-fetching a receive counts one outstanding reply', gpc.iop.recvPending, 1);
     gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222]);
     runBCE(gpc, 2);
     check('a word takes a word time, so only one of the two is taken',
           gpc.cpu.mainStorage.get16(0x1001), 0);
+    check('the first word clears the outstanding reply', gpc.iop.recvPending, 0);
     runRecv(gpc, 3);
     check('...takes the words that have arrived',
           gpc.cpu.mainStorage.get16(0x1001), 0x2222);
@@ -593,6 +608,21 @@ function check(label, got, want) {
           gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
     check('...having written every word',
           gpc.cpu.mainStorage.get16(0x1002), 0x3333);
+    check('completion leaves no outstanding reply', gpc.iop.recvPending, 0);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x3ffff);
+    gpc.cpu.mainStorage.setStoreProtect(0x3ffff, false);
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 1);
+    gpc.iop.bce[BCE - 1].mia.deliver([0xabcd, 0xef01]);
+    runRecv(gpc, 4);
+    check('receive writes at the last IOP address',
+          gpc.cpu.mainStorage.get16(0x3ffff), 0xabcd);
+    check('the next receive address wraps to zero',
+          gpc.cpu.mainStorage.get16(0), 0xef01);
+    check('a wrapping receive completes', gpc.iop.bce[BCE - 1].recv, null);
 
     // The receiver, not the sender, sets the rate.  A subsystem modelled in
     // another process schedules on the wall clock and can deliver a whole
@@ -617,6 +647,73 @@ function check(label, got, want) {
     runBCE(gpc, 1);
     check('...and the next word a word time later',
           gpc.iop.bce[BCE - 1].recv.left, 2);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.procSet(gpc.iop.regXmitEna, BCE, 0);   // listening
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);          // MTO = 16.5 ms
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 3); // #RDLI 3 -> 4 halfwords
+    gpc.cpu.timeNs = 10 * BUS_WORD_NS;
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222, 0x3333, 0x4444],
+                                     { ageUs: 3 * BUS_WORD_NS / 1000 });
+    runBCE(gpc, 12);
+    check('a transmission three word times old has all four words due',
+          gpc.iop.ls.at(BCE, 0, 2).get32(), 0x402);
+    check('...and the last of them written', gpc.cpu.mainStorage.get16(0x1003), 0x4444);
+
+    const early = gpc.iop.bce[BCE - 1].mia;
+    early.clearState();
+    gpc.cpu.timeNs = 10 * BUS_WORD_NS;
+    early.deliver([0x1111, 0x2222, 0x3333]);
+    gpc.cpu.timeNs += 2 * BUS_WORD_NS;
+    early.rxBegin(gpc.cpu.timeNs);
+    check('a receive beginning two word times into a transmission keeps its schedule',
+          early.rxNextNs, 10 * BUS_WORD_NS);
+    early.getData(); early.getData();
+    check('...and the words due are taken back to back', early.dataAvailable(), true);
+    early.getData();
+    check('...until the schedule is caught up with', early.dataAvailable(), false);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);          // MTO = 16.5 ms
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 1); // #RDLI 1 -> 2 halfwords
+    gpc.cpu.timeNs = 5000000;
+    const late = gpc.iop.bce[BCE - 1].mia;
+    late.lastCmdNs = gpc.cpu.timeNs;
+    late.deliver([0x1111, 0x2222], { delayUs: 234 });
+    runBCE(gpc, 4);
+    check('a reply due later is not taken at once', gpc.iop.bce[BCE - 1].recv.left, 2);
+    gpc.cpu.timeNs = 5000000 + 233000;
+    runBCE(gpc, 2);
+    check('...nor a microsecond early', gpc.iop.bce[BCE - 1].recv.left, 2);
+    gpc.cpu.timeNs = 5000000 + 234000;
+    runBCE(gpc, 1);
+    check('...and its first word is taken when the sender said',
+          gpc.iop.bce[BCE - 1].recv.left, 1);
+    check('...into memory', gpc.cpu.mainStorage.get16(0x1000), 0x1111);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);          // MTO = 16.5 ms
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);        // BASE
+    gpc.iop.ls.at(BCE, 2, 5).set32(10);            // IUAR: MDM FF1
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 2); // #RDLI 2 -> 3 halfwords
+    gpc.cpu.timeNs = 0;
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111, 0x2222, 0x3333], { sev: [5, 7, 5] });
+    runRecv(gpc, 1);
+    check('a valid word ahead of a flagged one is stored', gpc.cpu.mainStorage.get16(0x1000), 0x1111);
+    runRecv(gpc, 2);
+    check('the word with E set is not', gpc.cpu.mainStorage.get16(0x1001), 0);
+    check('...the BCE error terminated: no receive open', gpc.iop.bce[BCE - 1].recv, null);
+    check('...NO-GO', gpc.iop.procState(BCE).go, false);
+    check('...with E at bit 6 and the IUA at bits 8-12 of its status register',
+          ((gpc.iop.ls.at(BCE, 2, 6).get16() << 16) | gpc.iop.ls.at(BCE, 2, 7).get16()) >>> 0,
+          (0x02000000 | (10 << 19)) >>> 0);
+    check('...and the words behind it dropped', gpc.iop.bce[BCE - 1].mia.recvQueue.length, 0);
+    check('an error after the first word leaves no outstanding reply', gpc.iop.recvPending, 0);
 
     // A bus is a wire, not a queue: what goes by unheard is gone.  This is
     // how a bus program skips the rest of a mass memory block -- it DELAYS
@@ -833,7 +930,10 @@ function check(label, got, want) {
     gpc.cpu.timeNs = 0;
     runBCE(gpc, 2);
     check('before the time out the BCE is still going', gpc.iop.procState(BCE).busy, true);
-    gpc.cpu.timeNs = 20e6;                          // past 16.5 ms, still nothing
+    gpc.cpu.timeNs = 16.5e6 - 1;
+    runBCE(gpc, 2);
+    check('a receive remains busy just before its deadline', gpc.iop.procState(BCE).busy, true);
+    gpc.cpu.timeNs = 16.5e6;
     runBCE(gpc, 2);
     check('a receive time out takes the BCE out of the busy state',
           gpc.iop.procState(BCE).busy, false);
@@ -843,6 +943,28 @@ function check(label, got, want) {
     check('...and drops what the MIA had taken',
           gpc.iop.bce[BCE - 1].mia.recvQueue.length, 0);
     check('...and the transfer is over', gpc.iop.bce[BCE - 1].recv, null);
+    check('a timeout before the first word clears the outstanding reply', gpc.iop.recvPending, 0);
+    gpc.iop.clearBCETransfer(BCE);
+    check('clearing an ended receive preserves the reply count', gpc.iop.recvPending, 0);
+
+    gpc = mkGPC();
+    armBCE(gpc, 0x400);
+    gpc.iop.ls.at(BCE, 1, 3).set32(1000);
+    gpc.iop.ls.at(BCE, 2, 3).set32(0x1000);
+    poke(gpc, 0x400, 0xf300); poke(gpc, 0x401, 1);
+    runBCE(gpc, 2);
+    gpc.cpu.timeNs = 10e6;
+    gpc.iop.bce[BCE - 1].mia.deliver([0x1111]);
+    runBCE(gpc, 2);
+    gpc.cpu.timeNs = 26.5e6 - 1;
+    runBCE(gpc, 2);
+    check('an accepted word renews the receive deadline', gpc.iop.procState(BCE).busy, true);
+    gpc.cpu.timeNs = 26.5e6;
+    runBCE(gpc, 2);
+    check('the partial receive ends at its renewed deadline', gpc.iop.procState(BCE).busy, false);
+    check('a partial timeout retains the word already stored',
+          gpc.cpu.mainStorage.get16(0x1000), 0x1111);
+    check('a partial timeout leaves no outstanding reply', gpc.iop.recvPending, 0);
 
     // A BCE taken out of the busy state part way through a receive
     // abandons it: words left queued would be handed to the next
