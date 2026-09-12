@@ -4571,25 +4571,39 @@ class Instruction extends PackedBits
                     f:['MVS R1,D2(B2)','MVS R1,D2(X2,B2)']
                     d:'01100xxx11111abb/X'
                     e:(t,v) ->
-                        # R1 = input, R1+1 = upper limit, memory = lower limit
+                        # The middle of the three operands replaces R1.  The
+                        # condition code names the one selected: 0 the input,
+                        # 1 the R1+1 operand, 3 the main storage operand,
+                        # which is the limiter table above.
                         input = FloatIBM.From32(t.f(v.x).get32())
-                        upper = FloatIBM.From32(t.f(v.x + 1).get32())
-                        lower = FloatIBM.From32(t.g_EAF(v))
-                        # POO 8.16: MVS compares input to limits at full
+                        reg   = FloatIBM.From32(t.f(v.x + 1).get32())
+                        mem   = FloatIBM.From32(t.g_EAF(v))
+                        # POO 8.16: MVS compares the operands at full
                         # precision.
                         cmpDiff = (a, b) ->
                             {result} = subE(a, b)
                             return 0 if result.gFracBits().isZero()
                             return -1 if result.gSign() < 0
                             return  1
-                        if cmpDiff(input, lower) < 0
-                            t.f(v.x).set32(lower.to32())
-                            t.psw.setCC(3)
-                        else if cmpDiff(input, upper) > 0
-                            t.f(v.x).set32(upper.to32())
-                            t.psw.setCC(1)
+                        ir = cmpDiff(input, reg)
+                        im = cmpDiff(input, mem)
+                        rm = cmpDiff(reg, mem)
+                        mid = 'input'
+                        if ir <= 0
+                            unless im >= 0
+                                mid = if rm <= 0 then 'reg' else 'mem'
                         else
-                            t.psw.setCC(0)
+                            unless im <= 0
+                                mid = if rm >= 0 then 'reg' else 'mem'
+                        switch mid
+                            when 'reg'
+                                t.f(v.x).set32(reg.to32())
+                                t.psw.setCC(1)
+                            when 'mem'
+                                t.f(v.x).set32(mem.to32())
+                                t.psw.setCC(3)
+                            else
+                                t.psw.setCC(0)
                 }
 
         # MULTIPLY (EXTENDED OPERANDS)

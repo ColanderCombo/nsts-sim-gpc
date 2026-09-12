@@ -1,8 +1,8 @@
-// test_cpu_instr.cjs — CPU instruction semantics that the timing and
+// cpu_instr.cjs — CPU instruction semantics that the timing and
 // interrupt suites don't reach: operand ordering within an instruction,
 // and what an instruction leaves behind when it takes a program interrupt.
 //
-// Usage:  node test/test_cpu_instr.cjs
+// Usage:  node test/gpc/cpu_instr.cjs
 //
 // Exit status is 1 iff any assertion fails.
 
@@ -13,7 +13,7 @@ const os      = require('os');
 const esbuild = require('esbuild');
 const coffeePlugin = require('esbuild-coffeescript');
 
-const SRC = path.resolve(__dirname, '..', 'gpc');
+const SRC = path.resolve(__dirname, '..', '..', 'src', 'gpc');
 
 async function bundle(entry) {
     const out = path.join(os.tmpdir(),
@@ -282,6 +282,46 @@ function check(label, got, want) {
         };
         check('...and with that bit set, the pointer\'s own sector',
               hi(), 0xc6c6);
+    }
+
+    // HAL/S-FC places -4095 in R1+1 and +4095 in main storage for
+    // MIDVAL(x, -4095, +4095), so exercise both operand orderings.
+    // MVS 0,X'000a'(1) = 60f9 000a.  The main storage displacement is in
+    // halfwords.
+    {
+        const mvs = (input, reg, mem) => {
+            const cpu = new CPU();
+            cpu.r(1).set32(0x20000000);
+            cpu.f(0).set32(input);
+            cpu.f(1).set32(reg);
+            cpu.ram.set32(0x200a, mem);
+            exec(cpu, 0x60f9, 0x000a);
+            return { f0: cpu.f(0).get32() >>> 0, cc: cpu.psw.getCC() };
+        };
+        const P4095 = 0x43fff000, N4095 = 0xc3fff000;
+        const P2000 = 0x437d0000, P8000 = 0x441f4000, N8000 = 0xc41f4000;
+
+        // Register operand above memory operand.
+        check('within limits leaves R1 alone',
+              mvs(P2000, P4095, N4095).f0, P2000);
+        check('...and sets CC 0',
+              mvs(P2000, P4095, N4095).cc, 0);
+        check('above the upper limit takes R1+1',
+              mvs(P8000, P4095, N4095).f0, P4095);
+        check('...and sets CC 1',
+              mvs(P8000, P4095, N4095).cc, 1);
+        check('below the lower limit takes main storage',
+              mvs(N8000, P4095, N4095).f0, N4095);
+        check('...and sets CC 3',
+              mvs(N8000, P4095, N4095).cc, 3);
+
+        // Register operand below memory operand.
+        check('the limits reversed still select the mid value',
+              mvs(P2000, N4095, P4095).f0, P2000);
+        check('...and above both operands takes the larger',
+              mvs(P8000, N4095, P4095).f0, P4095);
+        check('...and below both takes the smaller',
+              mvs(N8000, N4095, P4095).f0, N4095);
     }
 
     console.log(`\n${pass} passed, ${fail} failed`);
